@@ -8,6 +8,15 @@
     "url": "https://github.com/didit-protocol/mcp",
     "source": "github"
   },
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/didit-protocol/mcp/main/assets/didit-mcp-icon-400.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "400x400"
+      ]
+    }
+  ],
   "version": "5.0.0",
   "remotes": [
     {
