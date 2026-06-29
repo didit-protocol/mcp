@@ -2,7 +2,7 @@
 
 The official [Model Context Protocol](https://modelcontextprotocol.io) server for [Didit](https://didit.me) — bring KYC, KYB, AML screening, transaction monitoring, biometrics, and full workspace operations to Claude, Cursor, VS Code, Windsurf, Zed, and any MCP client.
 
-- **110+ tools** across sessions, workflows, vendor users/businesses, transactions, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
+- **121 tools** across sessions, workflows, vendor users/businesses, transactions, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
 - **Auth is "Log in with Didit" (OAuth 2.1 + PKCE)** — the MCP acts as the signed-in **user** with their role's permissions. There is **no API-key mode**: every tool calls the user-scoped console endpoints, which only accept a Bearer token.
 - Every tool calls a single Didit REST endpoint and returns the JSON verbatim.
 
@@ -30,6 +30,22 @@ claude mcp add --transport http didit https://mcp.didit.me/mcp
 { "mcpServers": { "didit": { "url": "https://mcp.didit.me/mcp" } } }
 ```
 
+**VS Code** (`.vscode/mcp.json`)
+
+```json
+{ "servers": { "didit": { "type": "http", "url": "https://mcp.didit.me/mcp" } } }
+```
+
+**Claude custom connector**
+
+```text
+https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Didit&connectorUrl=https%3A%2F%2Fmcp.didit.me%2Fmcp
+```
+
+**ChatGPT / OpenAI remote MCP**
+
+Use server URL `https://mcp.didit.me/mcp` and OAuth authentication.
+
 **Windsurf / Zed** (via the `mcp-remote` bridge)
 
 ```json
@@ -50,7 +66,7 @@ See [Authentication](https://docs.didit.me/integration/mcp/authentication).
 
 ## Tools
 
-110+ tools, grouped by area. The full catalogue with read/write/destructive markers is in [`docs/TOOLS.md`](docs/TOOLS.md) and at [docs.didit.me](https://docs.didit.me/integration/mcp/tools). Highlights:
+121 tools, grouped by area. The full catalogue with read/write/destructive markers is in [`docs/TOOLS.md`](docs/TOOLS.md) and at [docs.didit.me](https://docs.didit.me/integration/mcp/tools). Highlights:
 
 - **Discovery & cross-app:** `didit_context_get`, `didit_session_search`, `didit_transaction_search`, `didit_vendor_user_search`, `didit_analytics` — aggregate across every org/app in one call.
 - **Sessions:** create, list, get decision, update status, reviews, bulk import.
@@ -76,6 +92,15 @@ DIDIT_ACCESS_TOKEN=<user-access-token> node dist/index.js  # stdio (headless)
 ```
 
 All Didit base URLs and OAuth endpoints are environment variables with public defaults (`verification.didit.me`, `apx.didit.me`, `business.didit.me`) — override them for a private deployment. See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`.env.example`](.env.example) for the full reference.
+
+## Registry metadata
+
+This repository includes:
+
+- [`server.json`](server.json) for the official MCP Registry and downstream MCP directories.
+- [`llms-install.md`](llms-install.md) for coding agents and marketplaces that validate one-click setup from repository instructions.
+
+Hosted registry listings should use `https://mcp.didit.me/mcp`, Streamable HTTP, and OAuth. Do not list `DIDIT_API_KEY` as a required hosted-server environment variable.
 
 ## Contributing
 

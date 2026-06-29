@@ -1,0 +1,49 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "me.didit/mcp",
+  "title": "Didit MCP Server",
+  "description": "Identity and fraud infrastructure for AI agents.",
+  "websiteUrl": "https://didit.me",
+  "repository": {
+    "url": "https://github.com/didit-protocol/mcp",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/didit-protocol/mcp/main/assets/didit-mcp-icon-400.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "400x400"
+      ]
+    }
+  ],
+  "version": "5.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.didit.me/mcp"
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "support": "hello@didit.me",
+      "privacy": "https://didit.me/terms/privacy-policy",
+      "categories": [
+        "security",
+        "compliance",
+        "developer-tools",
+        "finance"
+      ],
+      "tags": [
+        "identity-verification",
+        "kyc",
+        "kyb",
+        "aml",
+        "fraud",
+        "biometrics",
+        "transaction-monitoring",
+        "oauth"
+      ]
+    }
+  }
+}
