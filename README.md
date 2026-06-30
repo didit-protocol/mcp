@@ -1,110 +1,226 @@
 # Didit MCP Server
 
-The official [Model Context Protocol](https://modelcontextprotocol.io) server for [Didit](https://didit.me) — bring KYC, KYB, AML screening, transaction monitoring, biometrics, and full workspace operations to Claude, Cursor, VS Code, Windsurf, Zed, and any MCP client.
+Run KYC, KYB, AML, fraud screening, transaction monitoring, and workspace operations from any MCP-compatible AI client.
 
-- **121 tools** across sessions, workflows, vendor users/businesses, transactions, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
-- **Auth is "Log in with Didit" (OAuth 2.1 + PKCE)** — the MCP acts as the signed-in **user** with their role's permissions. There is **no API-key mode**: every tool calls the user-scoped console endpoints, which only accept a Bearer token.
-- Every tool calls a single Didit REST endpoint and returns the JSON verbatim.
+This is the official [Model Context Protocol](https://modelcontextprotocol.io) server for [Didit](https://didit.me), infrastructure for identity and fraud. It lets AI agents create verification sessions, run identity and business checks, screen wallets and transactions, manage workflows, review cases, export reports, and operate a Didit workspace with the same permissions as the signed-in user.
 
-> Full documentation: **https://docs.didit.me/integration/mcp/overview**
+Hosted MCP endpoint:
 
-## Quick start
-
-### Hosted (recommended)
-
-No install, no API key — point your client at the hosted URL and sign in via the browser:
-
-```
+```text
 https://mcp.didit.me/mcp
 ```
 
-**Claude Code**
+Public docs:
+
+- Overview: https://docs.didit.me/integration/mcp/overview
+- Installation: https://docs.didit.me/integration/mcp/installation
+- Tool reference: https://docs.didit.me/integration/mcp/tools
+
+## What You Can Do
+
+- **KYC / user verification:** create verification sessions, retrieve decisions, review ID verification, liveness, face match, proof of address, AML, and IP/device checks.
+- **KYB / business verification:** search business registries, retrieve company records, review officers and ultimate beneficial owners, and start linked KYC sessions for UBOs.
+- **AML screening:** screen people and companies for sanctions, PEP, adverse media, and ongoing monitoring workflows.
+- **Transaction monitoring:** create and review transactions, triage flagged activity, manage remediation flows, and investigate suspicious behavior.
+- **Wallet screening:** screen crypto wallets for sanctions exposure, high-risk counterparties, and fraud risk.
+- **Workflow management:** create, update, validate, publish, and inspect verification workflows with branching, questionnaires, and webhooks.
+- **Investigation management:** create and manage cases, assign reviews, escalate issues, reopen cases, export evidence, and prepare reports.
+- **Lists and risk controls:** manage blocklists, allowlists, custom lists, and face entries.
+- **Workspace operations:** manage organizations, applications, members, roles, webhooks, branding, audit logs, billing, balance, and API keys.
+
+## Example Prompts
+
+```text
+Create a KYC session for vendor user customer-123 and return the verification link.
+```
+
+```text
+Open the sessions in review, group them by risk reason, and summarize which ones need manual action.
+```
+
+```text
+Search for Acme Ltd in the UK registry, show officers and beneficial owners, and start linked KYC for each UBO.
+```
+
+```text
+Run AML screening on Jane Doe, born 1990, nationality ES, and summarize any matches.
+```
+
+```text
+Screen this wallet address before withdrawal and summarize sanctions or high-risk exposure.
+```
+
+```text
+Create a transaction, screen it for fraud risk, and tell me whether it should be escalated.
+```
+
+```text
+Open a case for this flagged transaction, assign it to compliance, and export the evidence.
+```
+
+```text
+Create a workflow with ID verification, passive liveness, face match, AML screening, and a webhook callback.
+```
+
+```text
+Show my organization balance, monthly usage, active applications, members, and webhook destinations.
+```
+
+## Quick Start
+
+### Hosted Endpoint
+
+No install and no API key. Point your MCP client at the hosted URL and sign in with Didit:
+
+```text
+https://mcp.didit.me/mcp
+```
+
+### Claude Code
 
 ```bash
 claude mcp add --transport http didit https://mcp.didit.me/mcp
 ```
 
-**Cursor** (`~/.cursor/mcp.json`)
+Then run:
+
+```bash
+claude /mcp
+```
+
+### Cursor
+
+Add this to `~/.cursor/mcp.json`:
 
 ```json
-{ "mcpServers": { "didit": { "url": "https://mcp.didit.me/mcp" } } }
+{
+  "mcpServers": {
+    "didit": {
+      "url": "https://mcp.didit.me/mcp"
+    }
+  }
+}
 ```
 
-**VS Code** (`.vscode/mcp.json`)
+### VS Code
+
+Add this to `.vscode/mcp.json`:
 
 ```json
-{ "servers": { "didit": { "type": "http", "url": "https://mcp.didit.me/mcp" } } }
+{
+  "servers": {
+    "didit": {
+      "type": "http",
+      "url": "https://mcp.didit.me/mcp"
+    }
+  }
+}
 ```
 
-**Claude custom connector**
+### ChatGPT / OpenAI Remote MCP
 
-```text
-https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Didit&connectorUrl=https%3A%2F%2Fmcp.didit.me%2Fmcp
-```
+Use server URL `https://mcp.didit.me/mcp` with OAuth authentication.
 
-**ChatGPT / OpenAI remote MCP**
+### Windsurf / Zed
 
-Use server URL `https://mcp.didit.me/mcp` and OAuth authentication.
-
-**Windsurf / Zed** (via the `mcp-remote` bridge)
+Use `mcp-remote` if the client needs a local stdio bridge:
 
 ```json
-{ "mcpServers": { "didit": { "command": "npx", "args": ["-y", "mcp-remote@latest", "https://mcp.didit.me/mcp"] } } }
+{
+  "mcpServers": {
+    "didit": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@latest", "https://mcp.didit.me/mcp"]
+    }
+  }
+}
 ```
-
-See [per-client setup](https://docs.didit.me/integration/mcp/installation) for Claude Desktop and VS Code.
 
 ## Authentication
 
-The MCP is an OAuth 2.1 **resource server**; the Didit console (`business.didit.me`) is the **authorization server**. On first connect your client opens a browser, you **Log in with Didit** and approve the scopes, and the MCP then acts as **you** — across every organization you belong to, with your role's permissions. Tokens are short-lived and refreshed automatically.
+The hosted MCP server uses OAuth 2.1 with PKCE:
 
-Scopes: `didit:management` (workspace operations) and `didit:verification` (running checks). Your console **role** is enforced server-side on every call.
+1. Your MCP client opens the Didit login page.
+2. You log in with Didit and approve the requested scopes.
+3. The MCP acts as your signed-in Didit user.
+4. Didit enforces your existing organization role and permissions on every call.
 
-> **There is no API-key mode.** Every tool targets the user-scoped console endpoints (`/organization/{org}/application/{app}/…`), which authorize a Bearer token with per-role privileges and reject `x-api-key`. (For raw REST access with an application API key — e.g. creating sessions from your backend — use the [REST API](https://docs.didit.me) directly, not this server.)
+Scopes:
 
-See [Authentication](https://docs.didit.me/integration/mcp/authentication).
+- `didit:verification` for sessions, decisions, standalone checks, users, businesses, transactions, and screening.
+- `didit:management` for workflows, webhooks, members, billing, cases, lists, reports, and workspace settings.
 
-## Tools
+There is no hosted API-key setup. Hosted MCP calls use OAuth Bearer tokens for the signed-in user, not application `x-api-key` credentials. If you want backend-to-backend REST integration with application API keys, use the [Didit API docs](https://docs.didit.me) directly.
 
-121 tools, grouped by area. The full catalogue with read/write/destructive markers is in [`docs/TOOLS.md`](docs/TOOLS.md) and at [docs.didit.me](https://docs.didit.me/integration/mcp/tools). Highlights:
+## Tool Areas
 
-- **Discovery & cross-app:** `didit_context_get`, `didit_session_search`, `didit_transaction_search`, `didit_vendor_user_search`, `didit_analytics` — aggregate across every org/app in one call.
-- **Sessions:** create, list, get decision, update status, reviews, bulk import.
-- **Verification APIs:** `didit_verify_id`, `didit_verify_aml`, `didit_verify_face_match`, `didit_verify_kyb_search`, …
-- **Workflows (incl. branching graphs):** `didit_workflow_search`, `didit_workflow_get_graph`, `didit_workflow_edit_graph` — build conditional/branching workflows (fuzzy-match conditions, Document-AI steps) by sending small ops; large feature configs are kept server-side, never resent.
-- **Compliance:** transaction monitoring, lists/blocklist/allowlist, cases, reports, audit logs, alerts.
-- **Workspace:** questionnaires, webhooks, members, billing, branding.
+The MCP server exposes tools for:
 
-## Run it yourself
+- Context and organization discovery.
+- Sessions, decisions, reviews, imports, PDFs, status updates, and shared sessions.
+- Vendor users and vendor businesses.
+- Standalone verification APIs for ID, AML, KYB, proof of address, database validation, liveness, face match, face search, age, email, and phone.
+- Workflows, workflow drafts, graph editing, graph validation, branching fields, and publishing.
+- Transaction monitoring, wallet screening, cases, alerts, reports, audit logs, blocklists, allowlists, and custom lists.
+- Questionnaires, webhooks, members, roles, API keys, billing, balance, and branding.
 
-The hosted server above is the easy path — no install. To self-host, clone this repo and run it with **Docker** or Node. It authenticates the user the same way (OAuth, or a user Bearer token for headless runs); there is no API-key mode.
+For the full tool list with read/write/destructive annotations, see [`docs/TOOLS.md`](docs/TOOLS.md) or https://docs.didit.me/integration/mcp/tools.
+
+## Self-Host
+
+The hosted server is recommended. To self-host:
 
 ```bash
-git clone https://github.com/didit-protocol/mcp.git && cd mcp
+git clone https://github.com/didit-protocol/mcp.git
+cd mcp
 
-# Docker (recommended) — serves /mcp and /healthz on port 3000
-docker build -t didit-mcp . && docker run -p 3000:3000 --env-file .env didit-mcp
+# Docker
+cp .env.example .env
+docker build -t didit-mcp .
+docker run -p 3000:3000 --env-file .env didit-mcp
 
-# …or with Node
-npm install && npm run build
-node dist/http.js                                          # hosted HTTP/OAuth
-DIDIT_ACCESS_TOKEN=<user-access-token> node dist/index.js  # stdio (headless)
+# Node
+npm install
+npm run build
+node dist/http.js
 ```
 
-All Didit base URLs and OAuth endpoints are environment variables with public defaults (`verification.didit.me`, `apx.didit.me`, `business.didit.me`) — override them for a private deployment. See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`.env.example`](.env.example) for the full reference.
+For headless stdio runs:
 
-## Registry metadata
+```bash
+DIDIT_ACCESS_TOKEN=<user-access-token> node dist/index.js
+```
+
+Self-hosted deployments still authenticate as a Didit user. There is no application API-key mode for MCP tools.
+
+## Registry Metadata
 
 This repository includes:
 
 - [`server.json`](server.json) for the official MCP Registry and downstream MCP directories.
 - [`llms-install.md`](llms-install.md) for coding agents and marketplaces that validate one-click setup from repository instructions.
 
-Hosted registry listings should use `https://mcp.didit.me/mcp`, Streamable HTTP, and OAuth. Do not list `DIDIT_API_KEY` as a required hosted-server environment variable.
+Hosted registry listings should use:
+
+- Server URL: `https://mcp.didit.me/mcp`
+- Transport: Streamable HTTP
+- Authentication: OAuth
+- Repository: `https://github.com/didit-protocol/mcp`
+
+Do not list `DIDIT_API_KEY` as a required hosted-server environment variable.
+
+## Documentation
+
+- Didit website: https://didit.me
+- Didit docs: https://docs.didit.me
+- MCP overview: https://docs.didit.me/integration/mcp/overview
+- MCP installation: https://docs.didit.me/integration/mcp/installation
+- MCP authentication: https://docs.didit.me/integration/mcp/authentication
+- MCP tool reference: https://docs.didit.me/integration/mcp/tools
 
 ## Contributing
 
-Issues and PRs welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Run the hosted server at [`mcp.didit.me/mcp`](https://mcp.didit.me/mcp), or self-host from this repo (Docker / Node) — see [**Run it yourself**](#run-it-yourself).
+Issues and PRs are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
