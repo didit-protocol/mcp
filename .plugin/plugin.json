@@ -1,0 +1,27 @@
+{
+  "name": "didit-mcp",
+  "version": "5.0.1",
+  "description": "KYC, KYB, AML, wallet screening, transaction monitoring, and fraud workflows for AI agents.",
+  "author": {
+    "name": "Didit",
+    "email": "hello@didit.me",
+    "url": "https://didit.me"
+  },
+  "homepage": "https://docs.didit.me/integration/mcp/overview",
+  "repository": "https://github.com/didit-protocol/mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "identity-verification",
+    "kyc",
+    "kyb",
+    "aml",
+    "fraud",
+    "wallet-screening",
+    "transaction-monitoring",
+    "biometrics",
+    "oauth"
+  ],
+  "mcpServers": "./.mcp.json",
+  "rules": "./rules/"
+}

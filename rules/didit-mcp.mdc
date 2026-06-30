@@ -1,0 +1,8 @@
+---
+description: Use Didit MCP for KYC, KYB, AML, wallet screening, transaction monitoring, and fraud investigation workflows.
+alwaysApply: false
+---
+
+Use the Didit MCP server when the task involves identity verification, business verification, AML screening, wallet screening, transaction monitoring, fraud investigation, verification workflows, cases, reports, blocklists, allowlists, webhooks, analytics, billing, or Didit workspace operations.
+
+Connect through the hosted OAuth endpoint at `https://mcp.didit.me/mcp`. Do not ask the user for a Didit API key for the hosted MCP flow. The MCP acts as the authenticated Didit user and respects that user's existing organization roles and permissions.
