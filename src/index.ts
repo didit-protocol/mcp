@@ -199,6 +199,25 @@ const SCOPE_AGNOSTIC_TOOLS = new Set([
   "didit_context_get",
 ]);
 
+// Account bootstrap tools accept passwords/OTP codes and are only for unauthenticated
+// stdio setup. Hosted OAuth clients already have a user Bearer token and should not see
+// credential-collection tools in their public app catalog.
+const ACCOUNT_BOOTSTRAP_TOOLS = new Set([
+  "didit_account_register",
+  "didit_account_verify_email",
+  "didit_account_resend_otp",
+  "didit_account_login",
+]);
+
+// These tools remain available in local/stdio contexts, but should not be part
+// of the authenticated ChatGPT app catalog because public app review disallows
+// digital-credit checkout flows and live credential/secret exposure.
+const HOSTED_APP_EXCLUDED_TOOLS = new Set([
+  ...ACCOUNT_BOOTSTRAP_TOOLS,
+  "didit_org_reveal_application_api_key",
+  "didit_org_top_up",
+]);
+
 // When a tool needs an org/app and the caller passed none (and the token carries none),
 // auto-resolve the single org / single app so single-tenant users never have to pass or
 // discover ids. Mutates the live request-context store (same object the resolvers read).
@@ -271,23 +290,51 @@ const EXPLICIT_DESTRUCTIVE_TOOLS = new Set([
   "didit_case_manage",
 ]);
 
+// Tools that can reach outside the current Didit workspace/account boundary by
+// sending email/SMS, creating third-party checkout, registering webhook delivery
+// endpoints, or sharing verification data with a partner.
+const EXPLICIT_OPEN_WORLD_TOOLS = new Set([
+  "didit_account_register",
+  "didit_account_resend_otp",
+  "didit_org_invite_member",
+  "didit_org_top_up",
+  "didit_session_share",
+  "didit_session_update_status",
+  "didit_verify_email_send",
+  "didit_verify_phone_send",
+  "didit_webhook_create",
+  "didit_webhook_update",
+]);
+
+// These tools have names that include read-like tokens, but their handlers
+// create server-side artifacts/jobs rather than strictly retrieving data.
+const EXPLICIT_WRITE_TOOLS = new Set([
+  "didit_report_export",
+  "didit_session_generate_pdf",
+]);
+
 function annotationsFor(name: string): {
   title: string;
   readOnlyHint: boolean;
+  openWorldHint: boolean;
   destructiveHint: boolean;
 } {
   const tokens = name.replace(/^didit_/, "").split("_");
   const title = toolTitle(name);
+  const openWorldHint = EXPLICIT_OPEN_WORLD_TOOLS.has(name);
   if (EXPLICIT_DESTRUCTIVE_TOOLS.has(name) || tokens.some((t) => DESTRUCTIVE_VERB_TOKENS.has(t))) {
-    return { title, readOnlyHint: false, destructiveHint: true };
+    return { title, readOnlyHint: false, openWorldHint, destructiveHint: true };
+  }
+  if (EXPLICIT_WRITE_TOOLS.has(name)) {
+    return { title, readOnlyHint: false, openWorldHint, destructiveHint: false };
   }
   // Verification APIs (didit_verify_*) are billable POST actions — keep them as writes even
   // when the action token reads like a query (kyb_search / face_search).
   const isBillableAction = name.startsWith("didit_verify_");
   if (!isBillableAction && tokens.some((t) => READ_VERB_TOKENS.has(t))) {
-    return { title, readOnlyHint: true, destructiveHint: false };
+    return { title, readOnlyHint: true, openWorldHint, destructiveHint: false };
   }
-  return { title, readOnlyHint: false, destructiveHint: false };
+  return { title, readOnlyHint: false, openWorldHint, destructiveHint: false };
 }
 
 /**
@@ -304,7 +351,7 @@ export function createServer(): Server {
   // ---------------------------------------------------------------------------
   // Tool definitions
   // ---------------------------------------------------------------------------
-  server.setRequestHandler(ListToolsRequestSchema, async (_request, _extra) => {
+  server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
   const tools = [
     // ── Auth ────────────────────────────────────────────────────────────
     {
@@ -378,7 +425,7 @@ export function createServer(): Server {
     },
     {
       name: "didit_org_get_application",
-      description: "Get application details (client_id etc.). The api_key is REDACTED — a masked preview + api_key_set flag are returned, never the raw secret. Use didit_org_reveal_application_api_key to obtain the raw key.",
+      description: "Get application details (client_id etc.). The api_key is REDACTED — a masked preview + api_key_set flag are returned, never the raw secret.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1303,12 +1350,12 @@ export function createServer(): Server {
     // ── Webhook destinations ────────────────────────────────────────────
     {
       name: "didit_webhook_list",
-      description: "List configured webhook destinations. Each destination has its own URL, version, enabled flag, subscribed events, and signing secret.",
+      description: "List configured webhook destinations. Each destination has its own URL, version, enabled flag, subscribed events, and redacted signing-secret metadata.",
       inputSchema: { type: "object" as const, properties: {} },
     },
     {
       name: "didit_webhook_create",
-      description: "Create a webhook destination. The response includes the signing secret used to verify the X-Signature header on delivered events.",
+      description: "Create a webhook destination. The signing secret is redacted in the response.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1323,7 +1370,7 @@ export function createServer(): Server {
     },
     {
       name: "didit_webhook_get",
-      description: "Get a single webhook destination, including its signing secret.",
+      description: "Get a single webhook destination with redacted signing-secret metadata.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1854,11 +1901,12 @@ export function createServer(): Server {
     },
     {
       name: "didit_org_list_api_keys",
-      description: "List API keys (pass application_id for an app's keys).",
+      description: "List API key metadata with raw key values redacted (pass application_id for an app's keys).",
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
   ];
-  const visible = tools;
+  const hasUserBearer = Boolean(extra?.authInfo?.token || process.env.DIDIT_ACCESS_TOKEN);
+  const visible = hasUserBearer ? tools.filter((t) => !HOSTED_APP_EXCLUDED_TOOLS.has(t.name)) : tools;
   // Annotate each tool so the connector UI splits them into Read-only / Write / Destructive
   // groups (driven by readOnlyHint + destructiveHint) instead of one flat "Other tools"
   // bucket; also tag the logical domain group via _meta for future UI use.
