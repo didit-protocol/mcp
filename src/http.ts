@@ -85,6 +85,15 @@ async function main(): Promise<void> {
     next();
   });
 
+  // OpenAI Apps domain verification. OpenAI fetches this origin-root well-known URL
+  // (https://mcp.didit.me/.well-known/openai-apps-challenge) and checks the body equals
+  // the challenge token. Public domain-proof, unauthenticated — registered before the
+  // auth-metadata router and requireBearerAuth so nothing shadows or 401s it.
+  const OPENAI_APPS_CHALLENGE_TOKEN = "esnQzNgBSkYOqG3Xxihd7Y92FsMalD1UCRfZF5Ql3Ac";
+  app.get("/.well-known/openai-apps-challenge", (_req, res) => {
+    res.type("text/plain").send(OPENAI_APPS_CHALLENGE_TOKEN);
+  });
+
   const resourceServerUrl = new URL(MCP_RESOURCE_URI);
   const oauthMetadata = await resolveAuthorizationServerMetadata();
 
