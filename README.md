@@ -136,6 +136,10 @@ Use `mcp-remote` if the client needs a local stdio bridge:
 }
 ```
 
+## Protocol Support
+
+The HTTP endpoint is dual-era. It speaks the stateless [MCP 2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28) — per-request `_meta` versioning, `server/discover`, mirrored `Mcp-Method`/`Mcp-Name` headers, and `ttlMs`/`cacheScope` cache hints — while keeping the classic `initialize` handshake for legacy clients (Claude Code, Cursor, and other SDK-based connectors). The era is chosen per request; no configuration is needed.
+
 ## Authentication
 
 The hosted MCP server uses OAuth 2.1 with PKCE:
