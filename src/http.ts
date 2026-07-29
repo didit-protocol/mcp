@@ -9,6 +9,7 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 import { createServer, SERVER_VERSION } from "./index";
+import { modernGate, isModernRequest, handleModernRpc } from "./mcp-modern";
 import { DiditTokenVerifier } from "./auth/verifier";
 import { IntrospectionTokenVerifier } from "./auth/introspection-verifier";
 import {
@@ -74,7 +75,7 @@ async function main(): Promise<void> {
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Authorization, Content-Type, mcp-protocol-version, mcp-session-id, last-event-id",
+      "Authorization, Content-Type, mcp-protocol-version, mcp-session-id, mcp-method, mcp-name, last-event-id",
     );
     res.setHeader("Access-Control-Expose-Headers", "mcp-session-id, WWW-Authenticate");
     res.setHeader("Access-Control-Max-Age", "86400");
@@ -117,6 +118,34 @@ async function main(): Promise<void> {
   // Stateless Streamable HTTP: a fresh server + transport per request avoids
   // JSON-RPC id collisions across concurrent clients and needs no ALB affinity.
   app.post("/mcp", bearerAuth, async (req, res) => {
+    // MCP 2026-07-28 dual-era dispatch: modern requests pin their protocol
+    // version on every message and skip the initialize handshake; anything
+    // else takes the legacy Streamable HTTP transport below, unchanged.
+    const rpc = req.body ?? {};
+    const gateError = modernGate(rpc, req.headers);
+
+    if (gateError) {
+      res.status(400).json({ jsonrpc: "2.0", error: gateError, id: rpc.id ?? null });
+      return;
+    }
+    if (isModernRequest(rpc, req.headers)) {
+      try {
+        const reply = await handleModernRpc(rpc, req.auth);
+        if (reply) res.json(reply);
+        else res.status(202).end();
+      } catch (err) {
+        console.error(`[didit-mcp] modern request error: ${String(err)}`);
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: "2.0",
+            error: { code: -32603, message: "Internal server error" },
+            id: rpc.id ?? null,
+          });
+        }
+      }
+      return;
+    }
+
     const server = createServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {
