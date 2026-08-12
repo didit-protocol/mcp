@@ -160,6 +160,37 @@ async function inScope<R>(
   return runForScope(organizationId, applicationId, () => fn(workflow));
 }
 
+/** Returned data (data minimization): which data points the client/relying party receives in the
+ *  decision API and webhooks. The graph endpoint does not carry `response_attributes`, and an
+ *  agent that cannot see it fills the gap by guessing from which features run ("it has OCR, so
+ *  the client gets kyc.*") — the exact hallucination this block exists to prevent. The resolved
+ *  `wf` only carries the field when it came from the settings-detail endpoint, so fall back to
+ *  fetching it; if even that fails, say so explicitly instead of implying the default. */
+async function returnedData(wf: any): Promise<any> {
+  const settings =
+    wf && typeof wf === "object" && "response_attributes" in wf
+      ? wf
+      : await apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/`)).catch(() => null);
+
+  // A payload that omits the key is NOT an explicit null: null means "all data
+  // points", and that permissive default must never be implied on uncertain data.
+  if (!settings || typeof settings !== "object" || !("response_attributes" in settings)) {
+    return {
+      unavailable: true,
+      hint: "The returned-data config could not be read this turn — tell the user you cannot see it; do NOT guess.",
+    };
+  }
+
+  return {
+    response_attributes: settings.response_attributes ?? null,
+    semantics:
+      "The ONLY source of truth for what the client/relying party receives in the decision API " +
+      "and webhooks. null or missing (the whole object or a feature key) = ALL data points " +
+      "returned; [] = NONE (the client only sees status/warnings/node id); [names] = only " +
+      "those fields. Never infer this from which features the workflow runs.",
+  };
+}
+
 /** GET the current graph for a workflow, plus its status/version and whether it's editable.
  *  Large feature configs are SUMMARIZED by default (set includeConfig to get them verbatim) so
  *  the response never overflows context. */
@@ -169,10 +200,15 @@ export async function getWorkflowGraph(
   includeConfig = false,
 ): Promise<any> {
   return inScope(workflowId, scope, async (wf) => {
-    const res = await apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/workflow-graph/`));
-    if (includeConfig || !res?.graph) return res;
+    const [res, returned_data] = await Promise.all([
+      apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/workflow-graph/`)),
+      returnedData(wf),
+    ]);
+    if (!res || typeof res !== "object") return res;
+    if (includeConfig || !res.graph) return { ...res, returned_data };
     return {
       ...res,
+      returned_data,
       graph: summarizeGraph(res.graph),
       config_summarized: true,
       hint:
