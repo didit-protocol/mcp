@@ -841,7 +841,9 @@ export function createServer(): Server {
     },
     {
       name: "didit_workflow_get",
-      description: "Get the full configuration of a specific workflow.",
+      description:
+        "Get the full configuration of a specific workflow, including `response_attributes` " +
+        "(returned data / data minimization): which data points the client receives per feature.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -903,7 +905,7 @@ export function createServer(): Server {
     },
     {
       name: "didit_workflow_get_graph",
-      description: "Get the node/graph for a workflow (the structure: nodes, branches, conditions, Document-AI steps) + `status`/`version`/`is_editable`. Large feature configs (documents_allowed, poa_documents_allowed, phone countries) are SUMMARIZED by default so the response never overflows — set `include_config:true` for the raw config. Pass just `workflow_id`; the owning org/app is resolved automatically. To MODIFY the graph, prefer didit_workflow_edit_graph (small ops, no need to resend big configs).",
+      description: "Get the node/graph for a workflow (the structure: nodes, branches, conditions, Document-AI steps) + `status`/`version`/`is_editable`. Large feature configs (documents_allowed, poa_documents_allowed, phone countries) are SUMMARIZED by default so the response never overflows — set `include_config:true` for the raw config. Includes `returned_data` (response_attributes): the ONLY source of truth for what data the client/relying party receives in the API response and webhooks — never infer that from which features run. Pass just `workflow_id`; the owning org/app is resolved automatically. To MODIFY the graph, prefer didit_workflow_edit_graph (small ops, no need to resend big configs).",
       inputSchema: {
         type: "object" as const,
         properties: {
