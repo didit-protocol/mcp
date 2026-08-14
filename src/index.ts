@@ -65,11 +65,21 @@ const FORM_ELEMENT_TYPES = [
   "NUMBER", "IMAGE", "FILE_UPLOAD", "TIME", "EMAIL", "ADDRESS", "PHONE", "COUNTRY",
   "DATE_PICKER", "CONSENT", "SECTION_HEADER", "SEPARATOR", "HEADING", "REPEATABLE_GROUP",
 ];
+const QUESTIONNAIRE_LANG_PROPS = {
+  languages: {
+    type: "array",
+    items: { type: "string" },
+    description: "Locales the questionnaire is offered in. Defaults to [\"en\"]; \"en\" must always be included.",
+  },
+  default_language: { type: "string", description: "Locale shown by default (must be in `languages`). Defaults to the first language." },
+  status: { type: "string", enum: ["draft", "published"], description: "Omit to publish immediately; 'draft' saves without publishing." },
+} as const;
+
 const FORM_ELEMENTS_PROP = {
   form_elements: {
     type: "array",
     description:
-      "REQUIRED. Array of form-element objects. Each: { element_type (uppercase, one of the allowed types), title (object of locale→string, e.g. {\"en\":\"Your name\"}), is_required (bool), and for choice types a `choices` array }.",
+      "REQUIRED. Array of form-element objects, in the order the user answers them. Each: { element_type (uppercase, one of the allowed types), title (a plain string, or an object of locale→string e.g. {\"en\":\"Your name\"}), is_required (bool), placeholder (hint text), and for choice types a `choices` array }. A per-question hint goes in `placeholder`: `description` is only accepted on HEADING, SECTION_HEADER and PARAGRAPH elements.",
     items: {
       type: "object",
       properties: {
@@ -1017,17 +1027,19 @@ export function createServer(): Server {
     {
       name: "didit_questionnaire_list",
       description: "List all custom questionnaires for your application.",
-      inputSchema: { type: "object" as const, properties: {} },
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
     {
       name: "didit_questionnaire_create",
-      description: "Create a custom questionnaire. The backend expects `title` + `form_elements` (an array of form-element objects, each with an UPPERCASE element_type) — NOT `questions`.",
+      description: "Create a custom questionnaire from an ordered list of questions. Send `title` + `form_elements` (an array of form-element objects, each with an UPPERCASE element_type) — NOT `questions`. The MCP assembles them into the questionnaire graph the backend stores (node ids and their ordering are derived here), so send the questions in the order the user should answer them and never build a graph yourself. Pass status:'draft' to keep it unpublished.",
       inputSchema: {
         type: "object" as const,
         properties: {
+          ...ORG_APP_PROPS,
           title: { type: "string", description: "Questionnaire title" },
           description: { type: "string", description: "Description shown to the user" },
           ...FORM_ELEMENTS_PROP,
+          ...QUESTIONNAIRE_LANG_PROPS,
         },
         required: ["title", "form_elements"],
       },
@@ -1038,6 +1050,7 @@ export function createServer(): Server {
       inputSchema: {
         type: "object" as const,
         properties: {
+          ...ORG_APP_PROPS,
           questionnaire_id: { type: "string", description: "Questionnaire UUID" },
         },
         required: ["questionnaire_id"],
@@ -1045,14 +1058,16 @@ export function createServer(): Server {
     },
     {
       name: "didit_questionnaire_update",
-      description: "Update a questionnaire's title, description, or form_elements (array of form-element objects with UPPERCASE element_type).",
+      description: "Update a questionnaire's title, description, or form_elements (array of form-element objects with UPPERCASE element_type). Sending form_elements REPLACES the whole question list — pass every question you want to keep, in order.",
       inputSchema: {
         type: "object" as const,
         properties: {
+          ...ORG_APP_PROPS,
           questionnaire_id: { type: "string", description: "Questionnaire UUID" },
           title: { type: "string" },
           description: { type: "string" },
           ...FORM_ELEMENTS_PROP,
+          ...QUESTIONNAIRE_LANG_PROPS,
         },
         required: ["questionnaire_id"],
       },
@@ -1063,6 +1078,7 @@ export function createServer(): Server {
       inputSchema: {
         type: "object" as const,
         properties: {
+          ...ORG_APP_PROPS,
           questionnaire_id: { type: "string", description: "Questionnaire UUID" },
         },
         required: ["questionnaire_id"],
