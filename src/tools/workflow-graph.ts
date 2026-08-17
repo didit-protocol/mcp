@@ -273,35 +273,58 @@ function ageAssurance(graph: any): any {
  *  document route (age restrictions on the OCR step) is invisible there — asked which workflows
  *  do age assurance, the agent can only preselect by the AGE_ESTIMATION feature it can see and
  *  silently misses the rest (observed 2026-08-17 against a real account). Reading every graph is
- *  the only way to know, so it happens SERVER-side, in parallel, behind an opt-in flag: the rows
- *  cost one boolean of context each and the caller pays no extra round trips. */
-const AGE_ANNOTATION_CAP = 40;
+ *  the only way to know, so it happens SERVER-side, in parallel, behind an opt-in flag. Rows stay
+ *  TINY on purpose: the verdict and its methods, never the shared semantics (repeating that
+ *  string per row cost 20KB of context on a 40-row list) and never the signals, which
+ *  didit_workflow_get_graph already carries for the one workflow the agent drills into. */
+const AGE_ANNOTATION_CAP = 50; // matches searchWorkflows' default limit, so no row is left unjudged
 const AGE_ANNOTATION_CONCURRENCY = 8;
 
+/** One encoding of "unknown", carrying its own instruction: an unreadable row that merely went
+ *  missing from the verdict list would re-open the false negative this whole flag exists to close. */
+const AGE_UNREADABLE = {
+  does_age_assurance: null,
+  age_assurance_note:
+    "Graph unreadable this turn: say you could not check this workflow — never leave it out of " +
+    "the answer and never report it as not doing age assurance.",
+};
+
 async function rowAgeAssurance(row: any): Promise<void> {
-  const id = row?.uuid ?? row?.workflow_id;
-  const read = () => apiRequest(orgAppPath(`/verification-settings/${id}/workflow-graph/`));
+  const read = () => apiRequest(orgAppPath(`/verification-settings/${row.uuid}/workflow-graph/`));
   const inRowScope =
-    row?.organization_id && row?.application_id
+    row.organization_id && row.application_id
       ? () => runForScope(row.organization_id, row.application_id, read)
       : read;
   const res = await inRowScope().catch(() => null);
+  const verdict = res?.graph ? ageAssurance(res.graph) : null;
 
-  // A graph we could not read is UNKNOWN, never "does not do age assurance".
-  Object.assign(row, res ? ageAssurance(res.graph) : { age_assurance_unavailable: true });
+  Object.assign(row, verdict ? { does_age_assurance: verdict.does_age_assurance, methods: verdict.methods } : AGE_UNREADABLE);
 }
 
-/** Annotate each non-archived row with its `age_assurance` verdict, in place. */
+function listRows(payload: any): any[] {
+  if (Array.isArray(payload)) return payload;
+  const rows = payload?.results ?? payload?.workflows;
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** Annotate each non-archived row with its age-assurance verdict, in place. */
 export async function annotateAgeAssurance(payload: any): Promise<any> {
-  const rows: any[] = Array.isArray(payload) ? payload : (payload?.results ?? payload?.workflows ?? []);
-  const targets = rows.filter((r) => r && !r.is_archived && (r.uuid || r.workflow_id));
+  // Only `uuid` addresses the graph endpoint: a stable workflow_id needs the extra
+  // resolve probe and would 404 into a spurious "unreadable".
+  const targets = listRows(payload).filter((r) => r && !r.is_archived && r.uuid);
   const checked = targets.slice(0, AGE_ANNOTATION_CAP);
 
   await mapWithConcurrency(checked, AGE_ANNOTATION_CONCURRENCY, rowAgeAssurance);
 
-  if (checked.length === targets.length) return payload;
+  // Spreading an ARRAY payload into an object literal would hand back {"0":…,"1":…}, so the
+  // truncation note only rides on an object; the per-row verdicts survive either way.
+  if (checked.length === targets.length || Array.isArray(payload) || !payload) return payload;
 
-  return { ...payload, age_assurance_note: `Only the first ${AGE_ANNOTATION_CAP} of ${targets.length} non-archived workflows were checked for age assurance; the rest carry no verdict.` };
+  return {
+    ...payload,
+    age_assurance_note: `Only the first ${AGE_ANNOTATION_CAP} of ${targets.length} non-archived workflows were checked; the rest carry no verdict, so do not report them as not doing age assurance.`,
+  };
 }
 
 /** GET the current graph for a workflow, plus its status/version and whether it's editable.
