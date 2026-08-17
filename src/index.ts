@@ -821,8 +821,17 @@ export function createServer(): Server {
     // ── Workflows (Verification Settings) ───────────────────────────────
     {
       name: "didit_workflow_list",
-      description: "List verification workflows. With multiple apps (or no scope) it auto-spans every app, each row tagged with its org/app. To find one workflow by id/label across all apps, prefer didit_workflow_search.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description: "List verification workflows. With multiple apps (or no scope) it auto-spans every app, each row tagged with its org/app. To find one workflow by id/label across all apps, prefer didit_workflow_search. The `features` on a row do NOT tell you whether a workflow checks age: age assurance done from the DOCUMENT (age restrictions on the OCR step) shows no feature of its own. For any question about which workflows do age assurance, pass `include_age_assurance:true` — it annotates each row with `does_age_assurance`/`methods` server-side, which is the only reliable way to find them.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          include_age_assurance: {
+            type: "boolean",
+            description: "Annotate each non-archived row with whether it does age assurance, and how. Required to find workflows that check age from the document.",
+          },
+        },
+      },
     },
     {
       name: "didit_workflow_create",
@@ -902,7 +911,7 @@ export function createServer(): Server {
     },
     {
       name: "didit_workflow_search",
-      description: "Find verification workflows ACROSS ALL your apps/orgs in one call. Pass `workflow_id` to locate a specific workflow by its version uuid OR stable workflow_id (returns which org/app it lives in), or `search` to match by label. Use this instead of guessing the application when you only have a workflow id.",
+      description: "Find verification workflows ACROSS ALL your apps/orgs in one call. Pass `workflow_id` to locate a specific workflow by its version uuid OR stable workflow_id (returns which org/app it lives in), or `search` to match by label. Use this instead of guessing the application when you only have a workflow id. `search` matches the LABEL ONLY: a CAPABILITY (age assurance, AML screening, …) is not searchable by name — for age assurance use didit_workflow_list with `include_age_assurance:true`, which reports what each workflow actually does.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -915,7 +924,7 @@ export function createServer(): Server {
     },
     {
       name: "didit_workflow_get_graph",
-      description: "Get the node/graph for a workflow (the structure: nodes, branches, conditions, Document-AI steps) + `status`/`version`/`is_editable`. Large feature configs (documents_allowed, poa_documents_allowed, phone countries) are SUMMARIZED by default so the response never overflows — set `include_config:true` for the raw config. Includes `returned_data` (response_attributes): the ONLY source of truth for what data the client/relying party receives in the API response and webhooks — never infer that from which features run. Pass just `workflow_id`; the owning org/app is resolved automatically. To MODIFY the graph, prefer didit_workflow_edit_graph (small ops, no need to resend big configs).",
+      description: "Get the node/graph for a workflow (the structure: nodes, branches, conditions, Document-AI steps) + `status`/`version`/`is_editable`. Large feature configs (documents_allowed, poa_documents_allowed, phone countries) are SUMMARIZED by default so the response never overflows — set `include_config:true` for the raw config. Includes `returned_data` (response_attributes): the ONLY source of truth for what data the client/relying party receives in the API response and webhooks — never infer that from which features run. Also includes `age_assurance`: whether the workflow checks age, and by which method (document age restrictions and/or AGE_ESTIMATION) — decide that from this block, never from the workflow's name. Pass just `workflow_id`; the owning org/app is resolved automatically. To MODIFY the graph, prefer didit_workflow_edit_graph (small ops, no need to resend big configs).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -2465,6 +2474,12 @@ export function createServer(): Server {
 
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+    }
+
+    // Annotated here, after BOTH paths (the scoped list and the cross-app aggregate
+    // fallback) have produced their rows, so the flag behaves the same either way.
+    if (name === "didit_workflow_list" && args?.include_age_assurance) {
+      result = await workflowGraph.annotateAgeAssurance(result);
     }
 
     return {

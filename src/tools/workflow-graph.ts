@@ -1,5 +1,5 @@
 import { apiRequest, orgAppPath } from "../config";
-import { runForScope } from "../orgapp";
+import { mapWithConcurrency, runForScope } from "../orgapp";
 import { resolveWorkflowScope } from "./search";
 
 // Node/graph ("branching") workflows. The console drives these through dedicated endpoints on
@@ -187,7 +187,143 @@ async function returnedData(wf: any): Promise<any> {
       "The ONLY source of truth for what the client/relying party receives in the decision API " +
       "and webhooks. null or missing (the whole object or a feature key) = ALL data points " +
       "returned; [] = NONE (the client only sees status/warnings/node id); [names] = only " +
-      "those fields. Never infer this from which features the workflow runs.",
+      "those fields. Never infer this from which features the workflow runs. When the value is " +
+      "null/missing ('all data points'), do NOT enumerate field names — you do not have the " +
+      "field catalogue here: say the client receives everything those features produce, " +
+      "including document data and, when a selfie/liveness step runs, the selfie image and " +
+      "liveness video, and point at the workflow's Returned data panel for the exact list. " +
+      "Only an explicit [names] list may be enumerated.",
+  };
+}
+
+/** Age assurance is an umbrella PURPOSE, not a feature: verifying age from a document (the OCR
+ *  node's age restrictions) and estimating it from a selfie (AGE_ESTIMATION) both count, and
+ *  neither shows up in the workflow's NAME. Asked "what do my age assurance workflows return?",
+ *  an agent that can only substring-match the label finds nothing and answers for whichever
+ *  workflow looked closest — the failure this block exists to prevent. Derived from the FULL
+ *  graph (before summarizing, which collapses the big `age_restrictions_by_country` map). */
+const AGE_VERIFICATION_FIELDS = ["kyc.age"];
+const AGE_ESTIMATION_FIELDS = ["face.estimated_age", "age_estimation."];
+
+const AGE_ASSURANCE_SEMANTICS =
+  "Age assurance is the UMBRELLA: verifying age from a document (OCR age restrictions) and " +
+  "estimating it from a selfie (AGE_ESTIMATION) both count, as does inferring it. This " +
+  "workflow does age assurance if `does_age_assurance` is true — decide from THIS, never " +
+  "from the workflow's name, and never narrow the question to age estimation alone. When " +
+  "it is false the workflow does NOT do age assurance: if that is what the user asked " +
+  "about, tell them they have none rather than answering for this workflow instead.";
+
+const matchesAny = (field: string, prefixes: string[]) =>
+  prefixes.some((prefix) => field === prefix || field.startsWith(prefix));
+
+/** The age fields a branch rule reads, deduped. `field@node_id` is the console's encoding. */
+function ageConditionFields(nodes: any[]): string[] {
+  const fields = nodes
+    .flatMap((node) => (Array.isArray(node?.branches) ? node.branches : []))
+    .flatMap((branch: any) =>
+      Array.isArray(branch?.rules) ? branch.rules : [],
+    )
+    .map((rule: any) => String(rule?.field ?? "").split("@")[0])
+    .filter((field: string) =>
+      matchesAny(field, [...AGE_VERIFICATION_FIELDS, ...AGE_ESTIMATION_FIELDS]),
+    );
+
+  return [...new Set(fields)];
+}
+
+function ageAssurance(graph: any): any {
+  // No graph read, no verdict: "does_age_assurance: false" on missing data would
+  // deny a capability the workflow may well have — the same permissive-default
+  // trap `returned_data` guards against.
+  if (!graph || typeof graph !== "object" || !graph.nodes) {
+    return {
+      unavailable: true,
+      hint: "The graph could not be read this turn — say you cannot tell whether this workflow does age assurance; do NOT report that it does not.",
+    };
+  }
+
+  const nodes = Object.values<any>(graph.nodes);
+  const ocr_age_restrictions = nodes.some(
+    (n) => n?.config?.is_age_restrictions_enabled === true,
+  );
+  const age_estimation_feature = nodes.some(
+    (n) => n?.feature === "AGE_ESTIMATION",
+  );
+  const age_conditions = ageConditionFields(nodes);
+  const verifies =
+    ocr_age_restrictions ||
+    age_conditions.some((f) => matchesAny(f, AGE_VERIFICATION_FIELDS));
+  const estimates =
+    age_estimation_feature ||
+    age_conditions.some((f) => matchesAny(f, AGE_ESTIMATION_FIELDS));
+  const methods = [
+    ...(verifies ? ["age_verification"] : []),
+    ...(estimates ? ["age_estimation"] : []),
+  ];
+
+  return {
+    methods,
+    does_age_assurance: methods.length > 0,
+    signals: { ocr_age_restrictions, age_estimation_feature, age_conditions },
+    semantics: AGE_ASSURANCE_SEMANTICS,
+  };
+}
+
+/** Age assurance on a LIST row. The listing endpoint returns `features` but no graph, so the
+ *  document route (age restrictions on the OCR step) is invisible there — asked which workflows
+ *  do age assurance, the agent can only preselect by the AGE_ESTIMATION feature it can see and
+ *  silently misses the rest (observed 2026-08-17 against a real account). Reading every graph is
+ *  the only way to know, so it happens SERVER-side, in parallel, behind an opt-in flag. Rows stay
+ *  TINY on purpose: the verdict and its methods, never the shared semantics (repeating that
+ *  string per row cost 20KB of context on a 40-row list) and never the signals, which
+ *  didit_workflow_get_graph already carries for the one workflow the agent drills into. */
+const AGE_ANNOTATION_CAP = 50; // matches searchWorkflows' default limit, so no row is left unjudged
+const AGE_ANNOTATION_CONCURRENCY = 8;
+
+/** One encoding of "unknown", carrying its own instruction: an unreadable row that merely went
+ *  missing from the verdict list would re-open the false negative this whole flag exists to close. */
+const AGE_UNREADABLE = {
+  does_age_assurance: null,
+  age_assurance_note:
+    "Graph unreadable this turn: say you could not check this workflow — never leave it out of " +
+    "the answer and never report it as not doing age assurance.",
+};
+
+async function rowAgeAssurance(row: any): Promise<void> {
+  const read = () => apiRequest(orgAppPath(`/verification-settings/${row.uuid}/workflow-graph/`));
+  const inRowScope =
+    row.organization_id && row.application_id
+      ? () => runForScope(row.organization_id, row.application_id, read)
+      : read;
+  const res = await inRowScope().catch(() => null);
+  const verdict = res?.graph ? ageAssurance(res.graph) : null;
+
+  Object.assign(row, verdict ? { does_age_assurance: verdict.does_age_assurance, methods: verdict.methods } : AGE_UNREADABLE);
+}
+
+function listRows(payload: any): any[] {
+  if (Array.isArray(payload)) return payload;
+  const rows = payload?.results ?? payload?.workflows;
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** Annotate each non-archived row with its age-assurance verdict, in place. */
+export async function annotateAgeAssurance(payload: any): Promise<any> {
+  // Only `uuid` addresses the graph endpoint: a stable workflow_id needs the extra
+  // resolve probe and would 404 into a spurious "unreadable".
+  const targets = listRows(payload).filter((r) => r && !r.is_archived && r.uuid);
+  const checked = targets.slice(0, AGE_ANNOTATION_CAP);
+
+  await mapWithConcurrency(checked, AGE_ANNOTATION_CONCURRENCY, rowAgeAssurance);
+
+  // Spreading an ARRAY payload into an object literal would hand back {"0":…,"1":…}, so the
+  // truncation note only rides on an object; the per-row verdicts survive either way.
+  if (checked.length === targets.length || Array.isArray(payload) || !payload) return payload;
+
+  return {
+    ...payload,
+    age_assurance_note: `Only the first ${AGE_ANNOTATION_CAP} of ${targets.length} non-archived workflows were checked; the rest carry no verdict, so do not report them as not doing age assurance.`,
   };
 }
 
@@ -205,10 +341,14 @@ export async function getWorkflowGraph(
       returnedData(wf),
     ]);
     if (!res || typeof res !== "object") return res;
-    if (includeConfig || !res.graph) return { ...res, returned_data };
+    const age_assurance = ageAssurance(res.graph);
+
+    if (includeConfig || !res.graph) return { ...res, returned_data, age_assurance };
+
     return {
       ...res,
       returned_data,
+      age_assurance,
       graph: summarizeGraph(res.graph),
       config_summarized: true,
       hint:
