@@ -902,7 +902,7 @@ export function createServer(): Server {
     },
     {
       name: "didit_workflow_search",
-      description: "Find verification workflows ACROSS ALL your apps/orgs in one call. Pass `workflow_id` to locate a specific workflow by its version uuid OR stable workflow_id (returns which org/app it lives in), or `search` to match by label. Use this instead of guessing the application when you only have a workflow id.",
+      description: "Find verification workflows ACROSS ALL your apps/orgs in one call. Pass `workflow_id` to locate a specific workflow by its version uuid OR stable workflow_id (returns which org/app it lives in), or `search` to match by label. Use this instead of guessing the application when you only have a workflow id. `search` matches the LABEL ONLY: a CAPABILITY (age assurance, AML screening, …) is not searchable by name — list the workflows and read their graphs, which report what each one actually does.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -915,7 +915,7 @@ export function createServer(): Server {
     },
     {
       name: "didit_workflow_get_graph",
-      description: "Get the node/graph for a workflow (the structure: nodes, branches, conditions, Document-AI steps) + `status`/`version`/`is_editable`. Large feature configs (documents_allowed, poa_documents_allowed, phone countries) are SUMMARIZED by default so the response never overflows — set `include_config:true` for the raw config. Includes `returned_data` (response_attributes): the ONLY source of truth for what data the client/relying party receives in the API response and webhooks — never infer that from which features run. Pass just `workflow_id`; the owning org/app is resolved automatically. To MODIFY the graph, prefer didit_workflow_edit_graph (small ops, no need to resend big configs).",
+      description: "Get the node/graph for a workflow (the structure: nodes, branches, conditions, Document-AI steps) + `status`/`version`/`is_editable`. Large feature configs (documents_allowed, poa_documents_allowed, phone countries) are SUMMARIZED by default so the response never overflows — set `include_config:true` for the raw config. Includes `returned_data` (response_attributes): the ONLY source of truth for what data the client/relying party receives in the API response and webhooks — never infer that from which features run. Also includes `age_assurance`: whether the workflow checks age, and by which method (document age restrictions and/or AGE_ESTIMATION) — decide that from this block, never from the workflow's name. Pass just `workflow_id`; the owning org/app is resolved automatically. To MODIFY the graph, prefer didit_workflow_edit_graph (small ops, no need to resend big configs).",
       inputSchema: {
         type: "object" as const,
         properties: {
