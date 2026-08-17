@@ -911,7 +911,7 @@ export function createServer(): Server {
     },
     {
       name: "didit_workflow_search",
-      description: "Find verification workflows ACROSS ALL your apps/orgs in one call. Pass `workflow_id` to locate a specific workflow by its version uuid OR stable workflow_id (returns which org/app it lives in), or `search` to match by label. Use this instead of guessing the application when you only have a workflow id. `search` matches the LABEL ONLY: a CAPABILITY (age assurance, AML screening, …) is not searchable by name — list the workflows and read their graphs, which report what each one actually does.",
+      description: "Find verification workflows ACROSS ALL your apps/orgs in one call. Pass `workflow_id` to locate a specific workflow by its version uuid OR stable workflow_id (returns which org/app it lives in), or `search` to match by label. Use this instead of guessing the application when you only have a workflow id. `search` matches the LABEL ONLY: a CAPABILITY (age assurance, AML screening, …) is not searchable by name — for age assurance use didit_workflow_list with `include_age_assurance:true`, which reports what each workflow actually does.",
       inputSchema: {
         type: "object" as const,
         properties: {

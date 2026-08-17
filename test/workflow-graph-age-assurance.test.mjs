@@ -140,11 +140,57 @@ test("the list annotation finds the document-route workflow the features hide", 
   assert.equal("does_age_assurance" in by["wf-old"], false);
 });
 
-test("a row whose graph cannot be read is unknown, not a denial", async () => {
-  globalThis.fetch = async () => json({ detail: "boom" }, 500);
-  const payload = { results: [{ uuid: "wf-x", ...SCOPE, is_archived: false }] };
-  const out = await inContext("tok-aa-list-2", () => annotateAgeAssurance(payload));
+// Both failure shapes — a rejected request and a 200 that simply carries no graph —
+// must land on ONE encoding of "unknown", and it has to carry its own instruction:
+// a row that merely goes missing from the verdict list is the false negative again.
+for (const [label, respond] of [
+  ["a rejected request", async () => json({ detail: "boom" }, 500)],
+  ["a 200 with no graph", async () => json({ status: "published" })],
+]) {
+  test(`${label} leaves the row unknown, never denied`, async () => {
+    globalThis.fetch = respond;
+    const payload = { results: [{ uuid: "wf-x", ...SCOPE, is_archived: false }] };
+    const out = await inContext(`tok-aa-${label.length}`, () => annotateAgeAssurance(payload));
+    const row = out.results[0];
 
-  assert.equal(out.results[0].age_assurance_unavailable, true);
-  assert.equal("does_age_assurance" in out.results[0], false);
+    assert.equal(row.does_age_assurance, null);
+    assert.match(row.age_assurance_note, /never leave it out of the answer/);
+    assert.equal("unavailable" in row, false);
+    assert.equal("hint" in row, false);
+  });
+}
+
+test("an over-cap ARRAY payload stays an array instead of becoming {0:…,1:…}", async () => {
+  globalThis.fetch = async () => json({ graph: { start_node: "a", nodes: {} } });
+  const rows = Array.from({ length: 55 }, (_, i) => ({ uuid: `wf-${i}`, ...SCOPE, is_archived: false }));
+  const out = await inContext("tok-aa-array", () => annotateAgeAssurance(rows));
+
+  assert.equal(Array.isArray(out), true);
+  assert.equal(out.length, 55);
+});
+
+test("an over-cap object payload says what it did NOT check", async () => {
+  globalThis.fetch = async () => json({ graph: { start_node: "a", nodes: {} } });
+  const results = Array.from({ length: 55 }, (_, i) => ({ uuid: `wf-${i}`, ...SCOPE, is_archived: false }));
+  const out = await inContext("tok-aa-cap", () => annotateAgeAssurance({ results }));
+
+  assert.match(out.age_assurance_note, /Only the first 50 of 55/);
+  assert.equal(out.results[54].does_age_assurance, undefined);
+});
+
+test("a non-array results field is ignored rather than throwing away the list", async () => {
+  const payload = { results: { detail: "unexpected" } };
+  const out = await inContext("tok-aa-shape", () => annotateAgeAssurance(payload));
+
+  assert.deepEqual(out, payload);
+});
+
+test("rows carry the verdict only — the shared semantics never repeat per row", async () => {
+  globalThis.fetch = async () => json({ graph: { start_node: "a", nodes: { a: { node_type: "feature", feature: "AGE_ESTIMATION" } } } });
+  const payload = { results: [{ uuid: "wf-1", ...SCOPE, is_archived: false }] };
+  const out = await inContext("tok-aa-lean", () => annotateAgeAssurance(payload));
+
+  assert.deepEqual(Object.keys(out.results[0]).sort(), [
+    "application_id", "does_age_assurance", "is_archived", "methods", "organization_id", "uuid",
+  ]);
 });
