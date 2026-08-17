@@ -821,8 +821,17 @@ export function createServer(): Server {
     // ── Workflows (Verification Settings) ───────────────────────────────
     {
       name: "didit_workflow_list",
-      description: "List verification workflows. With multiple apps (or no scope) it auto-spans every app, each row tagged with its org/app. To find one workflow by id/label across all apps, prefer didit_workflow_search.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description: "List verification workflows. With multiple apps (or no scope) it auto-spans every app, each row tagged with its org/app. To find one workflow by id/label across all apps, prefer didit_workflow_search. The `features` on a row do NOT tell you whether a workflow checks age: age assurance done from the DOCUMENT (age restrictions on the OCR step) shows no feature of its own. For any question about which workflows do age assurance, pass `include_age_assurance:true` — it annotates each row with `does_age_assurance`/`methods` server-side, which is the only reliable way to find them.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          include_age_assurance: {
+            type: "boolean",
+            description: "Annotate each non-archived row with whether it does age assurance, and how. Required to find workflows that check age from the document.",
+          },
+        },
+      },
     },
     {
       name: "didit_workflow_create",
@@ -2465,6 +2474,12 @@ export function createServer(): Server {
 
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+    }
+
+    // Annotated here, after BOTH paths (the scoped list and the cross-app aggregate
+    // fallback) have produced their rows, so the flag behaves the same either way.
+    if (name === "didit_workflow_list" && args?.include_age_assurance) {
+      result = await workflowGraph.annotateAgeAssurance(result);
     }
 
     return {
