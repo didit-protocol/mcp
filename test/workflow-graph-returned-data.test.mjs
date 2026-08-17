@@ -54,6 +54,9 @@ test("falls back to the settings endpoint when the resolved row lacks response_a
   const res = await inContext("tok-rd-2", () => getWorkflowGraph("stable-2", SCOPE));
 
   assert.equal(res.returned_data.response_attributes, null);
+  // "All data points" is where the agent used to invent a field-by-field table (and a field
+  // that does not exist, `age_estimation.liveness`): the block must forbid enumerating.
+  assert.match(res.returned_data.semantics, /do NOT enumerate field names/);
 });
 
 test("reports the config as unavailable instead of implying the default when unreadable", async () => {
