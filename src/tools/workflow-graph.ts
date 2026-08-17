@@ -1,5 +1,5 @@
 import { apiRequest, orgAppPath } from "../config";
-import { runForScope } from "../orgapp";
+import { mapWithConcurrency, runForScope } from "../orgapp";
 import { resolveWorkflowScope } from "./search";
 
 // Node/graph ("branching") workflows. The console drives these through dedicated endpoints on
@@ -267,6 +267,41 @@ function ageAssurance(graph: any): any {
     signals: { ocr_age_restrictions, age_estimation_feature, age_conditions },
     semantics: AGE_ASSURANCE_SEMANTICS,
   };
+}
+
+/** Age assurance on a LIST row. The listing endpoint returns `features` but no graph, so the
+ *  document route (age restrictions on the OCR step) is invisible there — asked which workflows
+ *  do age assurance, the agent can only preselect by the AGE_ESTIMATION feature it can see and
+ *  silently misses the rest (observed 2026-08-17 against a real account). Reading every graph is
+ *  the only way to know, so it happens SERVER-side, in parallel, behind an opt-in flag: the rows
+ *  cost one boolean of context each and the caller pays no extra round trips. */
+const AGE_ANNOTATION_CAP = 40;
+const AGE_ANNOTATION_CONCURRENCY = 8;
+
+async function rowAgeAssurance(row: any): Promise<void> {
+  const id = row?.uuid ?? row?.workflow_id;
+  const read = () => apiRequest(orgAppPath(`/verification-settings/${id}/workflow-graph/`));
+  const inRowScope =
+    row?.organization_id && row?.application_id
+      ? () => runForScope(row.organization_id, row.application_id, read)
+      : read;
+  const res = await inRowScope().catch(() => null);
+
+  // A graph we could not read is UNKNOWN, never "does not do age assurance".
+  Object.assign(row, res ? ageAssurance(res.graph) : { age_assurance_unavailable: true });
+}
+
+/** Annotate each non-archived row with its `age_assurance` verdict, in place. */
+export async function annotateAgeAssurance(payload: any): Promise<any> {
+  const rows: any[] = Array.isArray(payload) ? payload : (payload?.results ?? payload?.workflows ?? []);
+  const targets = rows.filter((r) => r && !r.is_archived && (r.uuid || r.workflow_id));
+  const checked = targets.slice(0, AGE_ANNOTATION_CAP);
+
+  await mapWithConcurrency(checked, AGE_ANNOTATION_CONCURRENCY, rowAgeAssurance);
+
+  if (checked.length === targets.length) return payload;
+
+  return { ...payload, age_assurance_note: `Only the first ${AGE_ANNOTATION_CAP} of ${targets.length} non-archived workflows were checked for age assurance; the rest carry no verdict.` };
 }
 
 /** GET the current graph for a workflow, plus its status/version and whether it's editable.
