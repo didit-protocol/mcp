@@ -117,6 +117,62 @@ export async function updateQuestionnaire(uuid: string, data: QuestionnaireWrite
   });
 }
 
+type ChoiceInput = NonNullable<FormElementInput["choices"]>[number];
+
+/** The node a choice batch targets: the explicit id when given, otherwise the only node that
+ * carries choices — with several candidates the caller must name one. */
+function resolveChoiceNode(nodes: Record<string, any>, nodeId?: string): string {
+  const candidates = Object.keys(nodes).filter((id) => Array.isArray(nodes[id]?.choices));
+  const target = nodeId ?? (candidates.length === 1 ? candidates[0] : undefined);
+
+  if (!target || !nodes[target]) {
+    throw new Error(
+      `node_id must be one of the question nodes with choices: [${candidates.join(", ")}]`,
+    );
+  }
+
+  return target;
+}
+
+/** Append ONE batch of choices to a stored question. A long option list cannot travel in a
+ * single create/update call — the model emits the call token by token and the step's output
+ * budget cuts it off mid-JSON, silently keeping only the first ~100 options — so the batches
+ * arrive here one call at a time. Dedup by value makes a retried batch safe, and the compact
+ * result spares the model the full graph it would otherwise re-read after every batch.
+ *
+ * Draft discipline: a PATCH that omits `status` PUBLISHES a draft, and a published
+ * questionnaire rejects every further edit — so intermediate batches pin `status: "draft"`
+ * and only a `publish: true` batch (the last one) lets the PATCH publish. */
+export async function appendQuestionnaireChoices(
+  uuid: string,
+  data: { node_id?: string; choices?: ChoiceInput[]; publish?: boolean },
+): Promise<any> {
+  const current = await getQuestionnaire(uuid);
+  const graph = current?.graph ?? { nodes: {} };
+  const languages: string[] = current?.languages?.length ? current.languages : ["en"];
+  const nodeId = resolveChoiceNode(graph.nodes ?? {}, data.node_id);
+  const node = graph.nodes[nodeId];
+  const stored = new Set((node.choices ?? []).map((choice: any) => choice?.value));
+  const incoming = (data.choices ?? []).map((choice) =>
+    toChoice(choice as Record<string, unknown>, languages),
+  );
+  const fresh = incoming.filter((choice) => !stored.has(choice.value));
+
+  node.choices = [...(node.choices ?? []), ...fresh];
+  if (fresh.length || data.publish) {
+    await updateQuestionnaire(uuid, data.publish ? { graph } : { graph, status: "draft" });
+  }
+
+  return {
+    questionnaire_id: uuid,
+    node_id: nodeId,
+    appended: fresh.length,
+    skipped_existing: incoming.length - fresh.length,
+    total_choices: node.choices.length,
+    status: data.publish ? "published" : (current?.status ?? "draft"),
+  };
+}
+
 export async function deleteQuestionnaire(uuid: string): Promise<any> {
   return apiRequest(orgAppPath(`/questionnaires/${uuid}/`), { method: "DELETE" });
 }
