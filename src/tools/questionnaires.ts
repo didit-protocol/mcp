@@ -125,7 +125,7 @@ function resolveChoiceNode(nodes: Record<string, any>, nodeId?: string): string 
   const candidates = Object.keys(nodes).filter((id) => Array.isArray(nodes[id]?.choices));
   const target = nodeId ?? (candidates.length === 1 ? candidates[0] : undefined);
 
-  if (!target || !nodes[target]) {
+  if (!target || !candidates.includes(target)) {
     throw new Error(
       `node_id must be one of the question nodes with choices: [${candidates.join(", ")}]`,
     );

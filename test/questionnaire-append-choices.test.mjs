@@ -126,6 +126,21 @@ test("with a single choice-bearing question, node_id may be omitted", async () =
   assert.equal(result.total_choices, 1);
 });
 
+test("an explicit node_id must name a choice-bearing question", async () => {
+  const stored = storedQuestionnaire([]);
+  stored.graph.start_node = "intro";
+  stored.graph.nodes.intro = { element_type: "SECTION_HEADER", next: "q1" };
+  const sent = stubApi(stored);
+
+  await assert.rejects(
+    requestContext.run(CTX, () =>
+      appendQuestionnaireChoices("q-1", { node_id: "intro", choices: [{ value: "A" }] }),
+    ),
+    /question nodes with choices: \[q1\]/,
+  );
+  assert.equal(sent.method, undefined);
+});
+
 test("with several choice-bearing questions, an omitted node_id names the candidates", async () => {
   const stored = storedQuestionnaire([]);
   stored.graph.nodes.q2 = { element_type: "DROPDOWN", choices: [], next: null };
