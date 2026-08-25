@@ -1040,7 +1040,7 @@ export function createServer(): Server {
     },
     {
       name: "didit_questionnaire_create",
-      description: "Create a custom questionnaire from an ordered list of questions. Send `title` + `form_elements` (an array of form-element objects, each with an UPPERCASE element_type) — NOT `questions`. The MCP assembles them into the questionnaire graph the backend stores (node ids and their ordering are derived here), so send the questions in the order the user should answer them and never build a graph yourself. Pass status:'draft' to keep it unpublished.",
+      description: "Create a custom questionnaire from an ordered list of questions. Send `title` + `form_elements` (an array of form-element objects, each with an UPPERCASE element_type) — NOT `questions`. The MCP assembles them into the questionnaire graph the backend stores (node ids and their ordering are derived here), so send the questions in the order the user should answer them and never build a graph yourself. Pass status:'draft' to keep it unpublished. A choice list longer than ~100 options does NOT fit in one call (the call is emitted token by token and gets cut off mid-JSON): create with status:'draft' carrying only the first ~100 choices, then add the rest with didit_questionnaire_append_choices in batches (its publish flag publishes with the final batch — a published questionnaire cannot be edited further).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1051,6 +1051,35 @@ export function createServer(): Server {
           ...QUESTIONNAIRE_LANG_PROPS,
         },
         required: ["title", "form_elements"],
+      },
+    },
+    {
+      name: "didit_questionnaire_append_choices",
+      description:
+        "Append a batch of answer options to ONE question of an existing DRAFT questionnaire (create it with status:'draft' — a published questionnaire cannot be edited). Use it for long choice lists: create with the first ~100 choices, then append the rest here in batches of ~100 until the source list is exhausted, passing publish:true on the FINAL batch to publish. Choices the question already has (same value) are skipped, so retrying a batch never duplicates. Returns a compact summary whose total_choices is the stored count — verify against it instead of re-fetching the questionnaire.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          questionnaire_id: { type: "string", description: "Questionnaire UUID" },
+          node_id: {
+            type: "string",
+            description:
+              "Graph node id of the question (e.g. 'q1', positional from the create call). Optional when exactly one question has choices.",
+          },
+          choices: {
+            type: "array",
+            items: { type: "object" },
+            description:
+              "Batch of choices to append, ~100 per call maximum. Each: { value, label?, requires_text_input? }",
+          },
+          publish: {
+            type: "boolean",
+            description:
+              "Pass true on the LAST batch to publish the questionnaire; intermediate batches keep it a draft.",
+          },
+        },
+        required: ["questionnaire_id", "choices"],
       },
     },
     {
@@ -2178,6 +2207,11 @@ export function createServer(): Server {
       case "didit_questionnaire_create":
         result = await questionnaires.createQuestionnaire(args as Record<string, any>);
         break;
+      case "didit_questionnaire_append_choices": {
+        const { questionnaire_id, ...data } = args as Record<string, any>;
+        result = await questionnaires.appendQuestionnaireChoices(questionnaire_id, data);
+        break;
+      }
       case "didit_questionnaire_get":
         result = await questionnaires.getQuestionnaire(args!.questionnaire_id as string);
         break;
