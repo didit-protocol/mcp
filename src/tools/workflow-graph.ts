@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { apiRequest, orgAppPath } from "../config";
 import { runForScope } from "../orgapp";
 import { resolveWorkflowScope } from "./search";
@@ -262,14 +263,116 @@ export async function createWorkflowDraft(workflowId: string, scope: Scope = {})
   );
 }
 
-/** Publish a draft workflow version (makes it the live version for new sessions). */
-export async function publishWorkflow(workflowId: string, scope: Scope = {}): Promise<any> {
-  return inScope(workflowId, scope, (wf) =>
-    apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/`), {
-      method: "PATCH",
-      json: { status: "published" },
-    }),
+/** The graph as the backend STORED it, or null when it could not be re-read. Deliberately has no
+ *  fallback to the graph we sent: returning the intent as if it were the result is how "I removed
+ *  those fields" survived a save that kept them. */
+async function persistedGraph(uuid: string): Promise<any | null> {
+  try {
+    const res = await apiRequest(orgAppPath(`/verification-settings/${uuid}/workflow-graph/`));
+
+    return res?.graph ?? res ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Config keys a merge_node_config op asked for that the STORED graph does not match. Reported as
+ *  UNCONFIRMED rather than dropped: the backend may legitimately normalise a value it accepted, so
+ *  the honest claim is "re-read this before telling the user it changed" — which is the check that
+ *  was missing when seven registry fields were reported removed and were still being collected. */
+function unconfirmedConfigKeys(stored: any, operations: GraphOp[]): string[] {
+  const nodes = stored?.nodes ?? {};
+
+  return operations.flatMap((op) =>
+    op.op !== "merge_node_config" || !op.config || !op.node_id
+      ? []
+      : Object.keys(op.config)
+          .filter((key) => !isDeepStrictEqual(nodes[op.node_id!]?.config?.[key], op.config![key]))
+          .map((key) => `${op.node_id}.config.${key}`),
   );
+}
+
+/** What the caller may claim about a save. Names the version_uuid a publish has to target, because
+ *  the stable workflow_id resolves to the already-published version and telling the caller to
+ *  "call didit_workflow_publish" without naming the version is what sent it to the wrong one. */
+function readBackNote(stored: any, published: boolean, versionUuid: string): string {
+  if (stored === null) {
+    return (
+      `The save was accepted but the stored graph could NOT be re-read, so what is actually in ` +
+      `version ${versionUuid} is unverified. Re-read it with didit_workflow_get_graph before ` +
+      `telling the user what changed.`
+    );
+  }
+  if (published) return `Saved and published — version ${versionUuid} is live for new sessions.`;
+
+  return (
+    `Saved to DRAFT version ${versionUuid}, which is NOT live. Publish it with ` +
+    `didit_workflow_publish({ workflow_id: "${versionUuid}" }) — passing the stable workflow_id ` +
+    `instead targets the version that is already published. Existing sessions are unaffected.`
+  );
+}
+
+/** PATCH one version to published and report the status the API CONFIRMS, never the one we asked
+ *  for. A body carrying no status (204, bare success) means the PATCH did not error but nothing
+ *  read it back, so it is reported as unconfirmed instead of being dressed up as a read-back. */
+async function publishVersion(uuid: string): Promise<{ status: string; confirmed: boolean }> {
+  const res = await apiRequest(orgAppPath(`/verification-settings/${uuid}/`), {
+    method: "PATCH",
+    json: { status: "published" },
+  });
+  const status = typeof res?.status === "string" ? res.status.toLowerCase() : null;
+
+  return { status: status ?? "published", confirmed: status !== null };
+}
+
+/** The version a publish must target. A draft publishes itself; a PUBLISHED version can never
+ *  carry an edit, because set_graph/edit_graph apply to a draft — so its pending changes live in
+ *  that draft and publishing the published version again makes nothing live. create-draft is
+ *  idempotent (max 1 draft per workflow group), so it hands back the draft that holds the edits
+ *  rather than making another one. */
+async function versionToPublish(wf: any): Promise<string> {
+  if (String(wf.status ?? "").toLowerCase() === "draft") return wf.uuid;
+  // Requires a POSITIVE signal that a draft exists (list rows carry has_draft). Without one,
+  // create-draft would clone the live version and publishing that clone is a new version that
+  // changes nothing — a no-op dressed up as a publish, which is the whole defect.
+  if (wf.has_draft !== true) {
+    throw new Error(
+      `Workflow version ${wf.uuid} is already published, with no draft version to publish, so ` +
+        `there is nothing to publish and nothing changed. Edit the workflow first ` +
+        `(didit_workflow_edit_graph) and publish the version_uuid that edit returns.`,
+    );
+  }
+  const draft = await apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/create-draft/`), {
+    method: "POST",
+  });
+  const uuid = draft?.uuid ?? draft?.workflow_id;
+  if (!uuid) throw new Error(`Could not resolve the draft version of ${wf.uuid} to publish.`);
+
+  return uuid;
+}
+
+/** Publish the version that actually holds the pending changes (makes it live for new sessions).
+ *  Accepts a draft version uuid or the stable workflow_id: the stable id resolves to the LISTED
+ *  version, which is the published one, so publishing it verbatim republished a version nobody had
+ *  edited and reported success. */
+export async function publishWorkflow(workflowId: string, scope: Scope = {}): Promise<any> {
+  return inScope(workflowId, scope, async (wf) => {
+    const target = await versionToPublish(wf);
+    const { status, confirmed } = await publishVersion(target);
+    const live = status === "published";
+
+    return {
+      workflow_id: wf.workflow_id ?? workflowId,
+      version_uuid: target,
+      status,
+      published: live,
+      status_confirmed: confirmed,
+      note: live
+        ? `Version ${target} is live for new sessions. Existing sessions are unaffected.`
+        : `The API reports status "${status}" for version ${target} after the publish — it is NOT ` +
+          `live. Say so; do not report this workflow as published.`,
+    };
+  });
 }
 
 /** Replace a workflow's graph. If the resolved version is published, a DRAFT is auto-created and
@@ -299,18 +402,12 @@ export async function setWorkflowGraph(
       targetUuid = draft?.uuid ?? draft?.workflow_id ?? targetUuid;
       createdDraft = true;
     }
-    const saved = await apiRequest(
-      orgAppPath(`/verification-settings/${targetUuid}/workflow-graph/`),
-      { method: "PUT", json: { graph } },
-    );
-    let published = false;
-    if (publish) {
-      await apiRequest(orgAppPath(`/verification-settings/${targetUuid}/`), {
-        method: "PATCH",
-        json: { status: "published" },
-      });
-      published = true;
-    }
+    await apiRequest(orgAppPath(`/verification-settings/${targetUuid}/workflow-graph/`), {
+      method: "PUT",
+      json: { graph },
+    });
+    const stored = await persistedGraph(targetUuid);
+    const published = publish ? (await publishVersion(targetUuid)).status === "published" : false;
     return {
       workflow_id: workflowId,
       version_uuid: targetUuid,
@@ -319,11 +416,9 @@ export async function setWorkflowGraph(
       created_draft: createdDraft,
       published,
       status: published ? "published" : "draft",
-      graph: summarizeGraph(saved?.graph ?? graph),
-      note: published
-        ? "Graph saved and published — live for new sessions."
-        : "Graph saved to a DRAFT version. Review it in the console and publish it (or call " +
-          "didit_workflow_publish) to make it live. Existing sessions are unaffected.",
+      graph_read_back: stored !== null,
+      ...(stored ? { graph: summarizeGraph(stored) } : {}),
+      note: readBackNote(stored, published, targetUuid),
     };
   });
 }
@@ -383,18 +478,13 @@ export async function editWorkflowGraph(
       targetUuid = draft?.uuid ?? draft?.workflow_id ?? targetUuid;
       createdDraft = true;
     }
-    const saved = await apiRequest(
-      orgAppPath(`/verification-settings/${targetUuid}/workflow-graph/`),
-      { method: "PUT", json: { graph: merged } },
-    );
-    let published = false;
-    if (publish) {
-      await apiRequest(orgAppPath(`/verification-settings/${targetUuid}/`), {
-        method: "PATCH",
-        json: { status: "published" },
-      });
-      published = true;
-    }
+    await apiRequest(orgAppPath(`/verification-settings/${targetUuid}/workflow-graph/`), {
+      method: "PUT",
+      json: { graph: merged },
+    });
+    const stored = await persistedGraph(targetUuid);
+    const unconfirmed = stored ? unconfirmedConfigKeys(stored, operations) : [];
+    const published = publish ? (await publishVersion(targetUuid)).status === "published" : false;
     return {
       applied: true,
       changes,
@@ -406,11 +496,15 @@ export async function editWorkflowGraph(
       published,
       status: published ? "published" : "draft",
       node_count: Object.keys(merged.nodes || {}).length,
-      graph: summarizeGraph(saved?.graph ?? merged),
-      note: published
-        ? "Edits applied and published — live for new sessions."
-        : "Edits applied to a DRAFT (all existing config preserved server-side). Review in the " +
-          "console and publish (or call didit_workflow_publish) when ready. Existing sessions are unaffected.",
+      graph_read_back: stored !== null,
+      ...(stored ? { graph: summarizeGraph(stored) } : {}),
+      ...(unconfirmed.length > 0 ? { unconfirmed_config_keys: unconfirmed } : {}),
+      note:
+        unconfirmed.length > 0
+          ? `The stored graph does NOT match what was requested for ${unconfirmed.join(", ")}. ` +
+            `Re-read those with didit_workflow_get_graph before telling the user they changed. ` +
+            readBackNote(stored, published, targetUuid)
+          : readBackNote(stored, published, targetUuid),
     };
   });
 }
