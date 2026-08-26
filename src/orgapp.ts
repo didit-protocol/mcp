@@ -11,6 +11,11 @@ import { listOrganizations, listApplications } from "./tools/auth";
 export interface AppRef {
   appId: string;
   appName: string;
+  /** "live" | "sandbox" — the application's mode, as the auth API reports it. Carried through
+   *  because "am I about to bill this customer?" is unanswerable without it: sandbox sessions are
+   *  never billed and mock every provider, and a copilot that cannot see this told a customer she
+   *  was testing in sandbox while it drove her live application. Absent when the API omits it. */
+  mode?: string;
 }
 export interface OrgRef {
   orgId: string;
@@ -39,6 +44,8 @@ function extractResults(payload: any): any[] {
 const idOf = (o: any): string | undefined =>
   o?.uuid ?? o?.id ?? o?.organization_id ?? o?.application_id;
 const nameOf = (o: any): string => o?.name ?? o?.display_name ?? idOf(o) ?? "";
+const modeOf = (o: any): { mode?: string } =>
+  typeof o?.mode === "string" && o.mode ? { mode: o.mode } : {};
 
 async function buildOrgAppMap(): Promise<OrgRef[]> {
   const orgs = extractResults(await listOrganizations());
@@ -51,7 +58,7 @@ async function buildOrgAppMap(): Promise<OrgRef[]> {
         apps = extractResults(await listApplications(orgId))
           .map((a): AppRef | null => {
             const appId = idOf(a);
-            return appId ? { appId, appName: nameOf(a) } : null;
+            return appId ? { appId, appName: nameOf(a), ...modeOf(a) } : null;
           })
           .filter((a): a is AppRef => a !== null);
       } catch {
