@@ -584,6 +584,7 @@ export function createServer(): Server {
           callback: { type: "string", description: "URL to redirect the user to after verification" },
           callback_method: { type: "string", enum: ["initiator", "completer", "both"], description: "Which device/flow the callback applies to" },
           language: { type: "string", enum: LANGUAGE_CODES, description: "Pre-set the verification UI language (ISO code)" },
+          sandbox_scenario: { type: "string", description: "SANDBOX ONLY (an application whose mode is 'sandbox' — see didit_context_get): predefine the outcome instead of running real providers, so the session is never billed. Slugs are 'approve', 'decline_*' (e.g. decline_aml_hit, decline_document_expired, decline_kyb_registry_mismatch) and 'review_*' (e.g. review_aml_possible_match). Ignored by a live application, where every session IS billed." },
           metadata: { type: "object", description: "Arbitrary JSON stored on the session and echoed in webhooks" },
           contact_details: { type: "object", description: "Pre-fill contact info (e.g. email, phone) for the session" },
           expected_details: { type: "object", description: "Expected values to validate against (e.g. expected country, IP)" },
@@ -1012,11 +1013,11 @@ export function createServer(): Server {
     },
     {
       name: "didit_workflow_publish",
-      description: "Publish a draft workflow version — makes it the live version for NEW sessions. Existing sessions are unaffected.",
+      description: "Publish the workflow version that holds the pending changes — makes it live for NEW sessions. Existing sessions are unaffected. Pass the `version_uuid` that set_graph/edit_graph returned: a published version can never hold an edit, so a stable workflow_id resolves to the version that is ALREADY live. Publishing a live version with no draft is refused instead of reported as done.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          workflow_id: { type: "string", description: "Draft workflow version uuid or stable workflow_id" },
+          workflow_id: { type: "string", description: "The DRAFT version uuid to publish — the `version_uuid` returned by didit_workflow_set_graph / didit_workflow_edit_graph. A stable workflow_id also resolves, and then the draft holding the changes is published rather than the version already live." },
           ...ORG_APP_PROPS,
         },
         required: ["workflow_id"],
