@@ -21,7 +21,7 @@ Public docs:
 - **KYC / user verification:** create verification sessions, retrieve decisions, review ID verification, liveness, face match, proof of address, AML, and IP/device checks.
 - **KYB / business verification:** search business registries, retrieve company records, review officers and ultimate beneficial owners, and start linked KYC sessions for UBOs.
 - **AML screening:** screen people and companies for sanctions, PEP, adverse media, and ongoing monitoring workflows.
-- **Transaction monitoring:** create and review transactions, triage flagged activity, manage remediation flows, and investigate suspicious behavior.
+- **Transaction monitoring:** create and review transactions, triage flagged activity, manage remediation flows, and investigate suspicious behavior. Manage the monitoring rules themselves: list, inspect, create, update, delete, and backtest custom rules, and browse, install, or uninstall the preset rule library.
 - **Wallet screening:** screen crypto wallets for sanctions exposure, high-risk counterparties, and fraud risk.
 - **Workflow management:** create, update, validate, publish, and inspect verification workflows with branching, questionnaires, and webhooks.
 - **Investigation management:** create and manage cases, assign reviews, escalate issues, reopen cases, export evidence, and prepare reports.
