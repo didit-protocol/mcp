@@ -140,6 +140,173 @@ const WORKFLOW_GRAPH_SCHEMA = {
   required: ["start_node", "nodes"],
 } as const;
 
+// Transaction-monitoring (KYT) rule schemas — mirror the engine in
+// service-didit-verification src/applications/services/transactions.py exactly (see
+// rule-api-contract.md). Shared by rule_create/update/backtest so the nested condition/
+// aggregation/scope/action shapes stay identical across all three.
+const RULE_CONDITION_OPERATORS = [
+  "eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains", "not_contains",
+  "contains_any", "regex", "fuzzy_match", "exists", "is_not_empty", "is_not_null",
+  "not_exists", "is_empty", "is_null",
+];
+const RULE_CONDITION_ITEM = {
+  type: "object" as const,
+  properties: {
+    field: {
+      type: "string",
+      description:
+        "Field path from the transaction field catalog, e.g. amount, currency, direction, action_type, score, " +
+        "transaction_type, subject_country, counterparty_country, subject_vendor_data, subject_device_fingerprint, " +
+        "subject_payment_method_type, travel_rule_status, travel_rule_required, tags, subject_days_since_previous_transaction, " +
+        "custom_values.<key> (any key submitted as custom_properties on transaction create). Country codes, travel_rule_status, " +
+        "and payment_method_type are normalized on both sides before comparison.",
+    },
+    operator: {
+      type: "string",
+      enum: RULE_CONDITION_OPERATORS,
+      description:
+        "in/not_in expect value to be a list (membership). contains/not_contains are a case-insensitive substring match, " +
+        "value is a string. contains_any expects value to be a list of strings, matches if any is a case-insensitive " +
+        "substring of the field value. regex matches value (the pattern) against str(field) via a safe regex. fuzzy_match " +
+        "requires `score` (0-100 threshold, rapidfuzz WRatio) and value is the comparison string. gt/gte/lt/lte are false " +
+        "when either side is null/not comparable. exists/is_not_empty/is_not_null are aliases for a presence check; " +
+        "not_exists/is_empty/is_null are aliases for its negation — both ignore `value`.",
+    },
+    value: {
+      description: "Comparison value; shape depends on operator and value_type. Omit for the exists/not_exists alias operators.",
+    },
+    value_type: {
+      type: "string",
+      enum: ["list", "field", "relative_date"],
+      description:
+        "list: value is a List UUID — the blocklist/allowlist/custom list's entries become the comparison value. " +
+        "field: value is another field path — compares field-to-field. relative_date: value is resolved as a relative " +
+        "date expression. Omit for a literal value.",
+    },
+    score: { type: "number", description: "Required match threshold 0-100 when operator is fuzzy_match." },
+    group_index: {
+      type: "integer",
+      description: "Presence on ANY condition switches the whole list into grouped mode; conditions sharing a group_index form one group.",
+    },
+    group_logic: { type: "string", enum: ["AND", "OR"], description: "Combines conditions WITHIN a group. Default AND." },
+    groups_logic: {
+      type: "string",
+      enum: ["AND", "OR"],
+      description:
+        "Combines the group outcomes; only meaningful on the FIRST condition. Default OR. When grouping is used it " +
+        "overrides evaluation_mode entirely; a flat (ungrouped) list falls back to evaluation_mode ALL/ANY.",
+    },
+  },
+  required: ["field", "operator"],
+};
+const RULE_AGGREGATION_ITEM = {
+  type: "object" as const,
+  description:
+    "One velocity-window check (e.g. \"more than 5 withdrawals in 1h from the same subject\"). ALL aggregation " +
+    "entries on a rule must match (AND) regardless of evaluation_mode.",
+  properties: {
+    metric: {
+      type: "string",
+      enum: ["count", "sum", "max", "min", "avg", "distinct_count", "unique_count"],
+      description: "unique_count is accepted as an alias of distinct_count.",
+    },
+    field: { type: "string", description: "Numeric or id field to aggregate. Defaults to 'amount'; ignored for count." },
+    operator: { type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte"], description: "Comparison of the aggregated metric against `value`." },
+    value: { type: "number", description: "Threshold the aggregated metric is compared against." },
+    window: {
+      type: "string",
+      pattern: "^\\d+[mhd]$",
+      description: "Velocity window: '<N>m' (MINUTES, not months), '<N>h' (hours), or '<N>d' (days). Defaults to '1d'.",
+    },
+    filters: {
+      type: "object",
+      description:
+        "Restricts which historical transactions (same application, within [transaction time - window, transaction time]) " +
+        "count toward the aggregate, keyed by field. A value of \"__current__\" resolves to that field's value on the " +
+        "transaction being evaluated (e.g. {\"subject_vendor_data\": \"__current__\"} = same subject). An array value means " +
+        "membership (IN). direction/action_type/transaction_type/status filters run in SQL; every other field is evaluated " +
+        "through the same field catalog as conditions.",
+    },
+  },
+  required: ["metric", "operator", "value"],
+};
+const RULE_SCOPE_SCHEMA = {
+  type: "object" as const,
+  description:
+    "Restricts which transactions the rule is even considered for. Empty/omitted lists mean no restriction. Aliases are " +
+    "normalized (e.g. travelRule -> travel_rule).",
+  properties: {
+    transaction_types: {
+      type: "array",
+      items: { type: "string" },
+      description: "e.g. finance, kyc, travel_rule, user_event, audit_trail_event, gambling_bet, gambling_limit_change, gambling_bonus_change.",
+    },
+    directions: { type: "array", items: { type: "string", enum: ["INBOUND", "OUTBOUND"] } },
+    action_types: { type: "array", items: { type: "string" }, description: "Application-specific action types, e.g. withdrawal, deposit." },
+  },
+};
+const RULE_ACTION_ITEM = {
+  type: "object" as const,
+  description:
+    "One action, applied when the rule matches (all actions on a match run together; a TEST-mode rule records the run " +
+    "but skips every action). `type` selects the variant and which of the other keys apply: " +
+    "add_score {type, value:<integer, may be negative>}. " +
+    "change_status {type, value:'IN_REVIEW'|'DECLINED'|'AWAITING_USER'|'APPROVED', workflow_id?:<workflow uuid>} — " +
+    "workflow_id is REQUIRED when value is AWAITING_USER (Didit creates a remediation verification session for the " +
+    "subject using that workflow); rejected with 400 otherwise. " +
+    "add_tags {type, tag_uuid?:<ApplicationTag uuid>, tag_name?:<name, will be uppercased>, tag_color?:'#RRGGBB'} — " +
+    "provide tag_uuid or tag_name. " +
+    "add_note {type, note:<text>}. " +
+    "add_to_list {type, list_id:<List uuid>} — adds the subject's vendor_data to that list. " +
+    "open_case {type, blueprint?:<case blueprint uuid>, grouping?:'by_applicant'|'by_rule_and_applicant', " +
+    "attach_matched_transaction?:boolean} — only the FIRST open_case action in the array is applied. " +
+    "Without an explicit change_status action, the transaction's status is derived from cumulative score vs the " +
+    "application's review/decline thresholds.",
+  properties: {
+    type: { type: "string", enum: ["add_score", "change_status", "add_tags", "add_note", "add_to_list", "open_case"] },
+    value: { description: "add_score: integer score delta. change_status: target status (alias: status)." },
+    workflow_id: { type: "string", description: "change_status only; required when value is AWAITING_USER (alias: remediation_workflow_id)." },
+    tag_uuid: { type: "string", description: "add_tags only." },
+    tag_name: { type: "string", description: "add_tags only." },
+    tag_color: { type: "string", description: "add_tags only, e.g. #FF0000." },
+    note: { type: "string", description: "add_note only (alias: value)." },
+    list_id: { type: "string", description: "add_to_list only." },
+    blueprint: { type: "string", description: "open_case only." },
+    grouping: { type: "string", enum: ["by_applicant", "by_rule_and_applicant"], description: "open_case only." },
+    attach_matched_transaction: { type: "boolean", description: "open_case only." },
+  },
+  required: ["type"],
+};
+const RULE_CONDITIONS_PROP = {
+  conditions: {
+    type: "array",
+    items: RULE_CONDITION_ITEM,
+    description: "Flat list of conditions, combined per evaluation_mode (ALL/ANY) unless grouped (see group_index).",
+  },
+} as const;
+const RULE_AGGREGATION_PROP = {
+  aggregation: {
+    type: "array",
+    items: RULE_AGGREGATION_ITEM,
+    description: "Velocity checks against historical transactions. All entries must match.",
+  },
+} as const;
+const RULE_ACTIONS_PROP = {
+  actions: {
+    type: "array",
+    items: RULE_ACTION_ITEM,
+    description: "Actions applied together when the rule matches.",
+  },
+} as const;
+const RULE_EVALUATION_MODE_PROP = {
+  evaluation_mode: {
+    type: "string",
+    enum: ["ALL", "ANY"],
+    description: "How the flat `conditions` list combines when no condition sets group_index. Default ALL.",
+  },
+} as const;
+const RULE_SCOPE_PROP = { scope: RULE_SCOPE_SCHEMA } as const;
+
 // Org/app selectors shared by the console (management) tools, which target
 // /organization/{org}/application/{app}/... endpoints. Spread into each such tool's
 // `properties`. Resolved (arg → token context → env default) by orgAppPath in config.ts;
@@ -283,8 +450,8 @@ function aggregateFallbackFor(name: string): ((a: Record<string, any>) => Promis
 // is exactly what GitHub/Linear/Sentry avoid by annotating their tools). Derived from the
 // domain-first name (whole-token match, so the "lists"/"blocklist" domains don't read as
 // the "list" verb) — maintenance-free as tools are added.
-const READ_VERB_TOKENS = new Set(["list", "get", "search", "statistics", "analytics", "export", "pdf", "validate"]);
-const DESTRUCTIVE_VERB_TOKENS = new Set(["delete", "remove"]);
+const READ_VERB_TOKENS = new Set(["list", "get", "search", "statistics", "analytics", "export", "pdf", "validate", "backtest"]);
+const DESTRUCTIVE_VERB_TOKENS = new Set(["delete", "remove", "uninstall"]);
 function toolTitle(name: string): string {
   return name
     .replace(/^didit_/, "")
@@ -1365,6 +1532,181 @@ export function createServer(): Server {
       },
     },
 
+    // ── Transaction-monitoring rules (KYT) ──────────────────────────────
+    {
+      name: "didit_transaction_rule_list",
+      description:
+        "List transaction-monitoring rules for one app. Rules combine conditions/velocity aggregations with actions " +
+        "(score, status change, tags, notes, list adds, cases) evaluated against every monitored transaction. " +
+        "Filter by source (PRESET = library rules you installed, CUSTOM = rules you authored), category, mode " +
+        "(ACTIVE evaluates and acts, TEST evaluates and records but never touches score/status, DISABLED is skipped), " +
+        "bundle, or free-text search. Paginated (limit/offset).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          source: { type: "string", enum: ["PRESET", "CUSTOM"] },
+          category: { type: "string", description: "e.g. finance, aml_ctf, anomaly_detection, fatf, device_intelligence, crypto_monitoring, travel_rule, responsible_gaming, e_commerce." },
+          mode: { type: "string", enum: ["ACTIVE", "DISABLED", "TEST"] },
+          bundle: { type: "string" },
+          search: { type: "string" },
+          ordering: {
+            type: "string",
+            description:
+              "One of run_count, approved_pct, reviewed_pct, declined_pct, latest_triggered_at, title, created_at, " +
+              "source — prefix with '-' to reverse (e.g. '-created_at').",
+          },
+          limit: { type: "string" },
+          offset: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "didit_transaction_rule_get",
+      description: "Get a single transaction-monitoring rule: its full conditions/aggregation/scope/actions plus run/approved/reviewed/declined counters.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          rule_uuid: { type: "string", description: "REQUIRED. Rule UUID (from didit_transaction_rule_list)." },
+        },
+        required: ["rule_uuid"],
+      },
+    },
+    {
+      name: "didit_transaction_rule_create",
+      description:
+        "Create a custom transaction-monitoring rule. title must be unique among this application's non-deleted rules " +
+        "(duplicate -> 400). SAFETY: prefer creating a new or materially changed rule in mode:'TEST' first and running " +
+        "didit_transaction_rule_backtest against recent history — TEST rules evaluate and record runs but never touch " +
+        "score/status, so you can see hit volume before it can affect real decisions. Only switch mode to 'ACTIVE' " +
+        "(via didit_transaction_rule_update) once the backtest hit rate looks right. Created rules always get source:CUSTOM; " +
+        "severity is not settable here (that's preset-only, read-only informational).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          title: { type: "string", description: "REQUIRED. Unique per application." },
+          category: {
+            type: "string",
+            description: "REQUIRED. e.g. finance, aml_ctf, anomaly_detection, fatf, device_intelligence, crypto_monitoring, travel_rule, responsible_gaming, e_commerce.",
+          },
+          mode: { type: "string", enum: ["ACTIVE", "DISABLED", "TEST"], description: "REQUIRED. Prefer starting in TEST — see the safety note above." },
+          description: { type: "string" },
+          ...RULE_EVALUATION_MODE_PROP,
+          ...RULE_SCOPE_PROP,
+          ...RULE_CONDITIONS_PROP,
+          ...RULE_AGGREGATION_PROP,
+          ...RULE_ACTIONS_PROP,
+          metadata: { type: "object", description: "Free-form key/value metadata." },
+        },
+        required: ["title", "category", "mode"],
+      },
+    },
+    {
+      name: "didit_transaction_rule_update",
+      description:
+        "Partially update a transaction-monitoring rule (PATCH — only send the fields you want to change). PRESET " +
+        "(library) rules only allow changing `mode` — any other field on a preset returns 400; edit conditions/actions " +
+        "by uninstalling and creating a custom rule instead. SAFETY: when raising the impact of a rule (e.g. TEST -> " +
+        "ACTIVE, or adding a change_status/add_score action), backtest first with didit_transaction_rule_backtest.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          rule_uuid: { type: "string", description: "REQUIRED. Rule UUID." },
+          title: { type: "string", description: "Unique per application." },
+          category: { type: "string" },
+          mode: { type: "string", enum: ["ACTIVE", "DISABLED", "TEST"] },
+          description: { type: "string" },
+          ...RULE_EVALUATION_MODE_PROP,
+          ...RULE_SCOPE_PROP,
+          ...RULE_CONDITIONS_PROP,
+          ...RULE_AGGREGATION_PROP,
+          ...RULE_ACTIONS_PROP,
+          metadata: { type: "object" },
+        },
+        required: ["rule_uuid"],
+      },
+    },
+    {
+      name: "didit_transaction_rule_delete",
+      description: "Delete a CUSTOM transaction-monitoring rule. PRESET (library) rules cannot be deleted this way — use didit_transaction_rule_uninstall instead (400 otherwise).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          rule_uuid: { type: "string", description: "REQUIRED. Rule UUID." },
+        },
+        required: ["rule_uuid"],
+      },
+    },
+    {
+      name: "didit_transaction_rule_backtest",
+      description:
+        "Dry-run a candidate rule shape against up to the most recent transactions in this app, WITHOUT creating or " +
+        "saving anything and without any billing impact. Returns {evaluated, matched, affected_entities, period_days}. " +
+        "Use this before creating a rule (to size its blast radius) and before flipping an existing rule from TEST to " +
+        "ACTIVE (to confirm the hit rate is what you expect).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          ...RULE_CONDITIONS_PROP,
+          ...RULE_AGGREGATION_PROP,
+          ...RULE_EVALUATION_MODE_PROP,
+          ...RULE_SCOPE_PROP,
+          period_days: { type: "number", description: "How many days of history to evaluate against, 1-365. Default 90." },
+        },
+      },
+    },
+    {
+      name: "didit_transaction_rule_library_list",
+      description: "List the preset rule library (Didit-curated rules you can install as-is). Each entry carries its full condition/aggregation/action shape plus bundle, tags, industries, and is_installed. Filter by bundle, category, or search; paginated.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          bundle: { type: "string" },
+          category: { type: "string" },
+          search: { type: "string" },
+          limit: { type: "string" },
+          offset: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "didit_transaction_rule_install",
+      description:
+        "Install one or more preset rules from the library into this app (creates PRESET rules you can then only " +
+        "toggle mode on). Pass library_keys (specific presets) OR bundle (every preset in that bundle) — not both. " +
+        "Returns {installed_library_keys, installed_count}. Installed rules land in whatever mode the preset ships " +
+        "with; consider setting mode:'TEST' via didit_transaction_rule_update and backtesting before relying on them.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          library_keys: { type: "array", items: { type: "string" }, description: "Specific preset library_key values to install." },
+          bundle: { type: "string", description: "Install every preset rule in this bundle." },
+        },
+      },
+    },
+    {
+      name: "didit_transaction_rule_uninstall",
+      description:
+        "Uninstall (remove) preset rules previously installed from the library. Pass library_keys OR bundle — not " +
+        "both. Returns {uninstalled_count}. This deletes the installed rule instances; if you only want to pause " +
+        "them, set mode:'DISABLED' via didit_transaction_rule_update instead.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          library_keys: { type: "array", items: { type: "string" }, description: "Specific preset library_key values to uninstall." },
+          bundle: { type: "string", description: "Uninstall every installed preset rule in this bundle." },
+        },
+      },
+    },
+
     // ── Billing ─────────────────────────────────────────────────────────
     {
       name: "didit_org_get_balance",
@@ -2287,6 +2629,43 @@ export function createServer(): Server {
       case "didit_transaction_screen_wallet":
         result = await transactions.screenWallet(args as Record<string, any>);
         break;
+      case "didit_transaction_rule_list":
+        result = await transactions.listTransactionRules(args as Record<string, any>);
+        break;
+      case "didit_transaction_rule_get":
+        result = await transactions.getTransactionRule(args!.rule_uuid as string);
+        break;
+      case "didit_transaction_rule_create": {
+        const { organization_id, application_id, ...data } = (args ?? {}) as Record<string, any>;
+        result = await transactions.createTransactionRule(data);
+        break;
+      }
+      case "didit_transaction_rule_update": {
+        const { organization_id, application_id, rule_uuid, ...data } = (args ?? {}) as Record<string, any>;
+        result = await transactions.updateTransactionRule(rule_uuid as string, data);
+        break;
+      }
+      case "didit_transaction_rule_delete":
+        result = await transactions.deleteTransactionRule(args!.rule_uuid as string);
+        break;
+      case "didit_transaction_rule_backtest": {
+        const { organization_id, application_id, ...data } = (args ?? {}) as Record<string, any>;
+        result = await transactions.backtestTransactionRule(data);
+        break;
+      }
+      case "didit_transaction_rule_library_list":
+        result = await transactions.listTransactionRuleLibrary(args as Record<string, any>);
+        break;
+      case "didit_transaction_rule_install": {
+        const { organization_id, application_id, ...data } = (args ?? {}) as Record<string, any>;
+        result = await transactions.installTransactionRuleLibrary(data);
+        break;
+      }
+      case "didit_transaction_rule_uninstall": {
+        const { organization_id, application_id, ...data } = (args ?? {}) as Record<string, any>;
+        result = await transactions.uninstallTransactionRuleLibrary(data);
+        break;
+      }
 
       // Billing
       case "didit_org_get_balance":
