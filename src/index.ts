@@ -1710,7 +1710,16 @@ export function createServer(): Server {
     // ── Billing ─────────────────────────────────────────────────────────
     {
       name: "didit_org_get_balance",
-      description: "Get current credit balance and auto-refill settings.",
+      description:
+        "Get current credit balance and auto-refill settings. A `0.00` balance does NOT by itself " +
+        "block verifications, so never answer a \"not enough credits\" report with \"top up\" from this " +
+        "result alone: a workflow whose features are all free-tier (ID verification, passive liveness, " +
+        "face match 1:1, device/IP analysis — 500 free each per month) runs fine on a zero balance. " +
+        "Read the failing workflow with didit_workflow_list first — `is_white_label_enabled: true` adds " +
+        "$0.20/session AND drops the workflow out of the free tier entirely, which is the single most " +
+        "common cause. This result also carries `allow_free_usage` (false = the free tier is off for " +
+        "this organization) and `usage_summary.white_label_sessions`. Only a NEGATIVE balance stops " +
+        "free-tier work; zero does not.",
       inputSchema: { type: "object" as const, properties: {} },
     },
     {
