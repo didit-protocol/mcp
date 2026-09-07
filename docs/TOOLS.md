@@ -1,6 +1,6 @@
 # Tools
 
-Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **121 tools**, grouped by domain.
+Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **135 tools**, grouped by domain.
 For the categorized reference with read/write/destructive markers, see
 https://docs.didit.me/integration/mcp/tools.
 
@@ -81,6 +81,7 @@ https://docs.didit.me/integration/mcp/tools.
 
 ## questionnaire
 
+- `didit_questionnaire_append_choices`
 - `didit_questionnaire_create`
 - `didit_questionnaire_delete`
 - `didit_questionnaire_get`
@@ -120,6 +121,15 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_transaction_create`
 - `didit_transaction_get`
 - `didit_transaction_list`
+- `didit_transaction_rule_backtest`
+- `didit_transaction_rule_create`
+- `didit_transaction_rule_delete`
+- `didit_transaction_rule_get`
+- `didit_transaction_rule_install`
+- `didit_transaction_rule_library_list`
+- `didit_transaction_rule_list`
+- `didit_transaction_rule_uninstall`
+- `didit_transaction_rule_update`
 - `didit_transaction_screen_wallet`
 - `didit_transaction_search`
 
@@ -167,17 +177,22 @@ https://docs.didit.me/integration/mcp/tools.
 
 ## workflow
 
+- `didit_workflow_build_graph`
 - `didit_workflow_create`
 - `didit_workflow_create_draft`
 - `didit_workflow_delete`
 - `didit_workflow_edit_graph`
 - `didit_workflow_get`
 - `didit_workflow_get_branch_fields`
+- `didit_workflow_get_feature_config_schema`
 - `didit_workflow_get_field_definitions`
 - `didit_workflow_get_graph`
+- `didit_workflow_get_id_verification_methods_catalog`
+- `didit_workflow_get_kyb_registry_catalog`
 - `didit_workflow_list`
 - `didit_workflow_publish`
 - `didit_workflow_search`
 - `didit_workflow_set_graph`
 - `didit_workflow_update`
 - `didit_workflow_validate_graph`
+

@@ -1,0 +1,3506 @@
+{
+  "checksum": "sha256:200a66d7054aaf6cdddd94d7bd9c62050912862bf6e291908b667b20436ef4cd",
+  "features": {
+    "AGE_ESTIMATION": {
+      "description": "Configuration for Age Estimation feature.",
+      "fields": {
+        "borderline_maximum_age_threshold": {
+          "maximum": 100,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "borderline_minimum_age_threshold": {
+          "maximum": 100,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "enable_id_verification_fallback": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "external_capture_device_action": {
+          "description": "Verdict when an external capture device is detected.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_audio_recording_enabled": {
+          "description": "Record the microphone during the selfie capture, so a reviewer can hear the session. Off by default.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "face_liveness_duplicated_face_name_mismatch_action": {
+          "description": "Verdict when a duplicate face is found under a different name.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_flash_mode": {
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_max_attempts": {
+          "maximum": 3,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_liveness_method": {
+          "enum": [
+            "ACTIVE_3D",
+            "FLASHING",
+            "PASSIVE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_multiple_faces_action": {
+          "description": "Verdict when more than one face is present in the capture.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_possible_duplicated_face_action": {
+          "description": "Verdict when this face matches a previously seen user.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_score_decline_threshold": {
+          "nullable": true,
+          "required": false,
+          "type": "number"
+        },
+        "face_liveness_score_review_threshold": {
+          "nullable": true,
+          "required": false,
+          "type": "number"
+        },
+        "face_luminance_max_action": {
+          "description": "Verdict when the selfie is brighter than `face_luminance_max_threshold`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_luminance_max_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_luminance_min_action": {
+          "description": "Verdict when the selfie is darker than `face_luminance_min_threshold`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_luminance_min_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_privacy_mode_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "face_quality_decline_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_quality_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "frame_injection_action": {
+          "description": "Verdict when injected video frames are detected.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "minimum_age_threshold": {
+          "maximum": 100,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "screen_capture_action": {
+          "description": "Verdict when the selfie is a photo of a screen.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        },
+        "virtual_camera_action": {
+          "description": "Verdict when a virtual camera feed is detected.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "serializer": "AgeEstimationFeatureConfigSerializer"
+    },
+    "AML": {
+      "description": "Configuration for AML feature (used for both KYC AML and KYB Company AML).",
+      "fields": {
+        "aml_country_weight": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "aml_dob_weight": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "aml_match_score_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "aml_name_weight": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "aml_score_approve_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "aml_score_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "case_blueprint": {
+          "description": "Which case blueprint the automatically-created case is built from. Only meaningful with `create_cases_on_hit`; the account default is used when unset.",
+          "nullable": true,
+          "required": false,
+          "type": "uuid"
+        },
+        "create_cases_on_hit": {
+          "description": "Open a case automatically when the screening returns a hit, instead of leaving the hit to be triaged from the session. Off by default.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "fallback_to_native": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "is_aml_ongoing_monitoring_enabled": {
+          "description": "Keep screening the PERSON after the session is approved, raising a new hit when they later appear on a watchlist. Off by default.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_company_aml_country_weight": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "kyb_company_aml_dob_weight": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "kyb_company_aml_match_score_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "kyb_company_aml_name_weight": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "kyb_enable_ongoing_monitoring": {
+          "description": "The same, for the COMPANY on a KYB workflow. The two switches are independent.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_score_approve_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "kyb_score_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "provider_key": {
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "serializer": "AMLFeatureConfigSerializer"
+    },
+    "DATABASE_VALIDATION": {
+      "description": "Configuration for Database Validation feature.",
+      "fields": {
+        "database_validation_countries": {
+          "description": "The databases to check, per country - this node runs NOTHING until at least one country carries at least one service id. Service ids come from the country's live catalog (e.g. `bra_cpf` for BRA); ids that do not belong to the named country, and countries with no live service, are dropped on save. The legacy `{\"<ISO3>\": \"one_by_one\"|\"two_by_two\"|\"not_enabled\"}` shape is still accepted and auto-expanded to that country's live services.",
+          "example": {
+            "BRA": {
+              "services": [
+                "bra_cpf"
+              ]
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO3>\": {\"services\": [\"<service_id>\", ...]}}",
+          "type": "json"
+        },
+        "database_validation_field_sources": {
+          "description": "Where to read a database input that no earlier step in the graph can fill. `source` names the producer and `key` names the value inside it: a Document AI field key for `document_ai`, a questionnaire node id for `questionnaire`, and `expected_details.<field>` or `metadata.<key>` for `expected_data`. Exact-key matches against an upstream step resolve automatically and are deliberately not persisted, so renaming a Document AI field never freezes a stale mapping into the config. A malformed entry is dropped on save rather than rejected, which un-satisfies its service and drops it from the selection.",
+          "example": {
+            "tax_id": {
+              "key": "expected_details.document_number",
+              "source": "expected_data"
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<db_validation_input_field>\": {\"source\": \"document_ai\"|\"questionnaire\"|\"expected_data\", \"key\": \"<docai field key>|<questionnaire node id>|expected_details.<field>|metadata.<key>\"}}",
+          "type": "json"
+        },
+        "database_validation_no_match_action": {
+          "description": "Verdict when the database returns no match at all.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "database_validation_not_applicable_action": {
+          "description": "Verdict when no selected database covers the holder's country or document.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "database_validation_partial_match_action": {
+          "description": "Verdict when the database matches some, but not all, of the submitted fields.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "notes": "The node is opt-in and does nothing while `database_validation_countries` is empty - the editor blocks publishing in that state and the compliance check reports it as a gap. Place it after the step that produces its inputs (usually OCR), and use `database_validation_field_sources` only for inputs no upstream step can fill.",
+      "serializer": "DatabaseValidationFeatureConfigSerializer"
+    },
+    "DOCUMENT_AI": {
+      "description": "Configuration for the Document AI feature.",
+      "fields": {
+        "document_ai_document_tampering_action": {
+          "description": "Verdict when the document looks tampered with.",
+          "enum": [
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_ai_documents": {
+          "items": {
+            "fields": {
+              "description": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "description_i18n": {
+                "default": {},
+                "nullable": false,
+                "required": false,
+                "type": "json"
+              },
+              "document_key": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "fields": {
+                "items": {
+                  "fields": {
+                    "instruction": {
+                      "default": "",
+                      "nullable": false,
+                      "required": false,
+                      "type": "string"
+                    },
+                    "is_full_name": {
+                      "default": false,
+                      "nullable": false,
+                      "required": false,
+                      "type": "boolean"
+                    },
+                    "key": {
+                      "nullable": false,
+                      "required": true,
+                      "type": "string"
+                    },
+                    "name": {
+                      "nullable": false,
+                      "required": true,
+                      "type": "string"
+                    },
+                    "name_i18n": {
+                      "default": {},
+                      "nullable": false,
+                      "required": false,
+                      "type": "json"
+                    },
+                    "required": {
+                      "default": false,
+                      "nullable": false,
+                      "required": false,
+                      "type": "boolean"
+                    },
+                    "type": {
+                      "default": "text",
+                      "enum": [
+                        "text",
+                        "number",
+                        "date"
+                      ],
+                      "nullable": false,
+                      "required": false,
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "nullable": false,
+                "required": true,
+                "type": "array"
+              },
+              "title": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "title_i18n": {
+                "default": {},
+                "nullable": false,
+                "required": false,
+                "type": "json"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        },
+        "document_ai_max_attempts_exceeded_action": {
+          "description": "Verdict when the user runs out of `document_ai_max_retry_attempts`.",
+          "enum": [
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_ai_max_retry_attempts": {
+          "maximum": 5,
+          "minimum": 2,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_ai_missing_required_fields_action": {
+          "description": "Verdict when a field marked `required` could not be extracted.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_ai_name_match_score_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_ai_name_mismatch_action": {
+          "description": "Verdict when the field flagged `is_full_name` disagrees with the verified identity's full name, scored against `document_ai_name_match_score_threshold`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_ai_unreadable_document_action": {
+          "description": "Verdict when the uploaded document cannot be read at all.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_ai_unsupported_file_action": {
+          "description": "Verdict when the uploaded file type is not supported.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "notes": "At most 3 documents per node, field keys unique within a document, and at most one field per document may set `is_full_name` (it is optional - a document may mark none).",
+      "serializer": "DocumentAIFeatureConfigSerializer"
+    },
+    "EMAIL_VERIFICATION": {
+      "description": "Configuration for Email Verification feature.",
+      "fields": {
+        "breached_email_action": {
+          "description": "Verdict when the address appears in a known credential breach.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "cross_org_fraud_email_action": {
+          "description": "Verdict when this address was flagged as fraudulent by another organization in the network.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "disposable_email_action": {
+          "description": "Verdict when the address belongs to a disposable-mail provider.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "duplicated_email_action": {
+          "description": "Verdict when the address was already verified for this application.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "email_alphanumeric_code": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "email_code_size": {
+          "maximum": 8,
+          "minimum": 4,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "email_enrichment_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "email_intelligence_score_action": {
+          "description": "Verdict when the enrichment score is worse than `email_intelligence_score_threshold`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "email_intelligence_score_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "email_max_check_attempts": {
+          "maximum": 5,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "email_max_retries": {
+          "maximum": 5,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "frequent_email_breach_action": {
+          "description": "Verdict when the address appears in many breaches.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "only_corporate_emails_allowed": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "recent_email_breach_action": {
+          "description": "Verdict when the address appears in a recent breach.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "serializer": "EmailFeatureConfigSerializer"
+    },
+    "FACE_MATCH": {
+      "description": "Configuration for Face Match feature.",
+      "fields": {
+        "face_match_eyes_covered_action": {
+          "default": "NO_ACTION",
+          "description": "Verdict when calibrated evidence says the eyes region is covered in the selfie. NO_ACTION records evidence without changing Face Match; REVIEW sends Face Match to review; DECLINE declines it. The signal remains shadow-only until the region reports calibrated=true.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": false,
+          "required": false,
+          "type": "string"
+        },
+        "face_match_face_covered_action": {
+          "default": "NO_ACTION",
+          "description": "Verdict when calibrated evidence says the face region is covered in the selfie. NO_ACTION records evidence without changing Face Match; REVIEW sends Face Match to review; DECLINE declines it. The signal remains shadow-only until the region reports calibrated=true.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": false,
+          "required": false,
+          "type": "string"
+        },
+        "face_match_max_attempts": {
+          "maximum": 3,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_match_mouth_covered_action": {
+          "default": "NO_ACTION",
+          "description": "Verdict when calibrated evidence says the mouth region is covered in the selfie. NO_ACTION records evidence without changing Face Match; REVIEW sends Face Match to review; DECLINE declines it. The signal remains shadow-only until the region reports calibrated=true.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": false,
+          "required": false,
+          "type": "string"
+        },
+        "face_match_not_computed_action": {
+          "description": "Verdict when no face-match score could be produced (missing portrait or selfie).",
+          "enum": [
+            "DECLINE",
+            "REVIEW"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_match_score_decline_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_match_score_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "serializer": "FaceMatchFeatureConfigSerializer"
+    },
+    "IP_ANALYSIS": {
+      "description": "Configuration for Device & IP Analysis feature.",
+      "fields": {
+        "automation_detected_action": {
+          "description": "Verdict when the session looks driven by automation rather than a person.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "cross_org_fraud_device_action": {
+          "description": "Verdict when this device was flagged as fraudulent by another organization in the network.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "cross_org_fraud_ip_action": {
+          "description": "Verdict when this IP was flagged as fraudulent by another organization in the network.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "device_app_tampered_action": {
+          "description": "Verdict when the host application binary looks tampered with.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "device_blocklist_action": {
+          "description": "Verdict when the device is on the organization's block list.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "device_debugger_action": {
+          "description": "Verdict when a debugger is attached to the host application.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "device_emulator_action": {
+          "description": "Verdict when the device is an emulator rather than real hardware.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "device_hooking_action": {
+          "description": "Verdict when runtime hooking or instrumentation is detected.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "device_integrity_missing_action": {
+          "description": "Verdict when no platform device-integrity attestation was returned.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "device_rooted_action": {
+          "description": "Verdict when the device is rooted or jailbroken.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "duplicated_device_action": {
+          "description": "Verdict when this device was already used by another verified user.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "duplicated_ip_action": {
+          "description": "Verdict when this IP was already used by another verified user.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "expected_ip_mismatch_action": {
+          "description": "Verdict when the IP disagrees with the expected IP sent on the session.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "ip_geofencing_action": {
+          "description": "Verdict when the connecting IP's country is not allowed by `ip_geofencing_by_country`.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "ip_geofencing_by_country": {
+          "description": "Country allow/deny rules for the connecting IP address, applied only while `is_ip_geofencing_enabled` is true. `allowed` is required and must be a real boolean; `states` is optional and null when the country needs no per-state rule. Countries that are not valid ISO3 are dropped on save.",
+          "example": {
+            "ESP": {
+              "allowed": true,
+              "states": null
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO3>\": {\"allowed\": true|false, \"states\"?: {\"<state_code>\": {\"allowed\": true|false}} | null}}",
+          "type": "json"
+        },
+        "ip_mismatch_action": {
+          "description": "Verdict when the IP country disagrees with the document's issuing country.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "is_ip_geofencing_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "multiple_devices_action": {
+          "description": "Verdict when the session was driven from more than one device.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "recovered_device_action": {
+          "description": "Verdict when the device reports a recovered or restored state.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        },
+        "vpn_detection_action": {
+          "description": "Verdict when the connection comes through a VPN, proxy or Tor exit.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "serializer": "IPAnalysisFeatureConfigSerializer"
+    },
+    "KYB_DOCUMENTS": {
+      "description": "",
+      "fields": {
+        "kyb_document_age_action": {
+          "description": "Verdict when a document is older than its configured freshness window.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "kyb_document_critical_mismatch_action": {
+          "description": "Verdict when a document contradicts the registry on a critical company detail.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "kyb_document_max_attempts_exceeded_action": {
+          "description": "Verdict when the user runs out of `kyb_document_max_retry_attempts`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "kyb_document_max_retry_attempts": {
+          "maximum": 5,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "kyb_document_non_critical_mismatch_action": {
+          "description": "Verdict when a document contradicts the registry on a minor detail.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "kyb_document_subtype_config": {
+          "description": "Per-group or per-subtype switch and freshness window. Keys must be a known KYB document group or subtype code. `max_age_days` is null for the default window, -1 for unlimited, or an integer 0-3650; anything else is rejected.",
+          "example": {
+            "LEGAL_PRESENCE": {
+              "enabled": true,
+              "max_age_days": 90
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<KYB_DOCUMENT_GROUP|KYB_DOCUMENT_SUBTYPE>\": {\"enabled\": true|false, \"max_age_days\": <0-3650>|-1|null}}",
+          "type": "json"
+        },
+        "kyb_document_tampering_action": {
+          "description": "Verdict when a company document looks tampered with.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "kyb_required_document_groups": {
+          "description": "The company paperwork to collect, as a list of document-GROUP codes - each group is satisfied by any one of the document types it covers. The KYB Documents feature refuses to save with an empty list: a node that requires nothing is the same as not having the node.",
+          "example": [
+            "LEGAL_PRESENCE"
+          ],
+          "nullable": true,
+          "required": false,
+          "shape": "[\"<KYB_DOCUMENT_GROUP>\", ...]",
+          "type": "json"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "serializer": "KYBDocumentsConfigSerializer"
+    },
+    "KYB_KEY_PEOPLE": {
+      "description": "",
+      "fields": {
+        "kyb_corporate_ubo_verification_workflow": {
+          "nullable": true,
+          "required": false,
+          "type": "uuid"
+        },
+        "kyb_key_people_company_fields": {
+          "description": "Which company details are collected for a CORPORATE key person. Same list-of-descriptors shape and same rules as `kyb_key_people_person_fields`.",
+          "example": [
+            {
+              "custom": false,
+              "key": "registration_number",
+              "label": "Registration number",
+              "required": true,
+              "type": "text"
+            }
+          ],
+          "nullable": true,
+          "required": false,
+          "shape": "[{\"key\": \"<field key>\", \"label\": \"<label>\", \"type\": \"text\"|\"number\"|\"date\"|\"phone\"|\"email\", \"required\": true|false, \"custom\": true|false}]",
+          "type": "json"
+        },
+        "kyb_key_people_document_mismatch_action": {
+          "description": "Verdict when a key person's document disagrees with the details declared for them.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "kyb_key_people_ownership_required": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_key_people_person_fields": {
+          "description": "Which personal details are collected for an individual key person, as an ORDERED LIST of field descriptors (not a map). `key` is required and non-empty; `type` must be one of text, number, date, phone or email; `custom` marks a field the customer added rather than one of the built-ins.",
+          "example": [
+            {
+              "custom": false,
+              "key": "date_of_birth",
+              "label": "Date of birth",
+              "required": true,
+              "type": "date"
+            }
+          ],
+          "nullable": true,
+          "required": false,
+          "shape": "[{\"key\": \"<field key>\", \"label\": \"<label>\", \"type\": \"text\"|\"number\"|\"date\"|\"phone\"|\"email\", \"required\": true|false, \"custom\": true|false}]",
+          "type": "json"
+        },
+        "kyb_key_people_prefill_from_registry": {
+          "description": "Pre-fill the key-people list from the company registry result, so the customer confirms and corrects rather than typing every officer and shareholder in.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_notify_parties_by_email": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_officer_verification_workflow": {
+          "nullable": true,
+          "required": false,
+          "type": "uuid"
+        },
+        "kyb_reject_if_ubo_rejected": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_require_corporate_ubo_kyb": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_require_officer_kyc": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_require_ubo_kyc": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_reuse_verified_individuals": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_role_config": {
+          "description": "Per-role rules for the people behind the company. Role keys come from the existing config - never invent one. A role with `require_kyc: true` MUST also carry a `verification_workflow` (the uuid of a separate KYC workflow) or the save is rejected. A list of `{\"role\": ..., ...}` entries is accepted as an alternative to the map.",
+          "example": {
+            "director": {
+              "enabled": true,
+              "require_kyc": false
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<role_key>\": {\"enabled\"?: true|false, \"require_kyc\"?: true|false, \"verification_workflow\"?: \"<workflow uuid>\"|null, \"allow_skip\"?: true|false}}",
+          "type": "json"
+        },
+        "kyb_shareholder_ownership_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "kyb_shareholder_verification_workflow": {
+          "nullable": true,
+          "required": false,
+          "type": "uuid"
+        },
+        "kyb_ubo_ownership_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "kyb_ubo_verification_workflow": {
+          "nullable": true,
+          "required": false,
+          "type": "uuid"
+        },
+        "kyb_wait_for_all_ubos": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "notes": "The workflow ids here point at separate KYC workflows: a KYB graph verifies the company, and the people behind it are verified by the linked person workflows.",
+      "serializer": "KYBKeyPeopleConfigSerializer"
+    },
+    "KYB_REGISTRY": {
+      "description": "",
+      "fields": {
+        "kyb_accepted_countries": {
+          "description": "Which company-registry countries the business may be incorporated in, as a list of ISO-2 codes (note: ISO-2 here, unlike the ISO-3 used by the OCR and IP allow-lists). An empty list or null accepts every supported registry.",
+          "example": [
+            "ES",
+            "GB"
+          ],
+          "nullable": true,
+          "required": false,
+          "shape": "[\"<ISO2>\", ...]",
+          "type": "json"
+        },
+        "kyb_manual_company_action": {
+          "description": "Verdict when the company could not be found in a registry and was entered by hand.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "kyb_registry_countries_config": {
+          "description": "Per-country registry routing configuration. Each enabled country selects the data tier charged when a company is selected. Only tiers marked available by the pricing endpoint can be enabled. At least one country must be enabled: a registry check that searches nowhere is rejected. Manual company entry does not use this configuration and is billed at its own flat fee of USD 0.75 per company.",
+          "example": {
+            "ES": {
+              "enabled": true,
+              "tier": "basic"
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO2>\": {\"enabled\": true|false, \"tier\": \"basic\"|\"shareholders\"|\"ubo\"}}",
+          "type": "json"
+        },
+        "kyb_registry_fields_config": {
+          "description": "Per-registry-field overrides controlling which company details are collected and which of them are mandatory. Field keys come from the backend's configurable-field catalog (registration_number, incorporation_date, legal_address, vat_number, alternative_names, tax_number, company_type, legal_entity_identifier, location_of_registration, nature_of_business, registered_capital_amount, registered_capital_currency, website, email, phone, ...); an unknown key, or any sub-key other than `enabled` / `required`, is rejected.",
+          "example": {
+            "vat_number": {
+              "enabled": true,
+              "required": false
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<registry_field>\": {\"enabled\"?: true|false, \"required\"?: true|false}}",
+          "type": "json"
+        },
+        "kyb_registry_monitoring_enabled": {
+          "description": "Keep the COMPANY's registry record under continuous monitoring after a Shareholders or UBO result: changes of status, officers, ownership or address move the session back to review and fire a webhook. Only where the registry provider offers monitoring; USD 2.00 per company per year, cancellable at any time. Off by default.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "kyb_vat_invalid_action": {
+          "description": "Verdict when the VAT number is rejected by the tax authority.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "kyb_vat_unverified_action": {
+          "description": "Verdict when the VAT number could not be checked at all.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "serializer": "KYBRegistryConfigSerializer"
+    },
+    "LIVENESS": {
+      "description": "Configuration for Liveness feature.",
+      "fields": {
+        "cross_org_fraud_face_action": {
+          "description": "Deprecated and no longer applied. It treated a face as if it carried a fraud verdict. Use `cross_org_identity_claim_pattern_action`.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "cross_org_identity_claim_pattern_action": {
+          "description": "Verdict when other organizations in the network recorded identity-claim events for this same person in which the claimed identity did not match. Review or no action only - a decline set here is downgraded to review.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "external_capture_device_action": {
+          "description": "Verdict when an external capture device is detected.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_audio_recording_enabled": {
+          "description": "Record the microphone during the selfie capture, so a reviewer can hear the session. Off by default.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "face_liveness_duplicated_face_name_mismatch_action": {
+          "description": "Verdict when a duplicate face is found under a different name.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_flash_mode": {
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_max_attempts": {
+          "maximum": 3,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_liveness_method": {
+          "enum": [
+            "ACTIVE_3D",
+            "FLASHING",
+            "PASSIVE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_mode": {
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_multiple_faces_action": {
+          "description": "Verdict when more than one face is present in the capture.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_possible_duplicated_face_action": {
+          "description": "Verdict when this face matches a previously seen user.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_liveness_score_decline_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_liveness_score_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_luminance_max_action": {
+          "description": "Verdict when the selfie is brighter than `face_luminance_max_threshold`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_luminance_max_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_luminance_min_action": {
+          "description": "Verdict when the selfie is darker than `face_luminance_min_threshold`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "face_luminance_min_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_privacy_mode_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "face_quality_decline_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "face_quality_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "frame_injection_action": {
+          "description": "Verdict when injected video frames are detected.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "race_map_similarity_thresholds": {
+          "description": "Per-demographic overrides of the face-similarity bands used against the allow-list and duplicate-face sets, so match rates stay even across groups. `possible` is the lower band (defaults to 62) and `high` the upper (68); a group with no entry uses those defaults.",
+          "example": {
+            "asian": {
+              "high": 68,
+              "possible": 62
+            }
+          },
+          "nullable": false,
+          "required": false,
+          "shape": "{\"<race>\": {\"possible\": 0-100, \"high\": 0-100}}",
+          "type": "json"
+        },
+        "screen_capture_action": {
+          "description": "Verdict when the selfie is a photo of a screen.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        },
+        "virtual_camera_action": {
+          "description": "Verdict when a virtual camera feed is detected.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "serializer": "LivenessFeatureConfigSerializer"
+    },
+    "NFC": {
+      "description": "Configuration for NFC/ePassport feature.",
+      "fields": {
+        "allow_nfc_skip": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "skip_nfc_action": {
+          "description": "Verdict when the user skips the NFC chip read (only reachable with `allow_nfc_skip`).",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        },
+        "trust_anchor_missing_action": {
+          "description": "Verdict when chip data-group hashes are intact but the certificate chain cannot be verified because the issuing country's CSCA trust anchor is not loaded.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "unverified_chip_action": {
+          "description": "Verdict when the chip is read but its signature cannot be verified.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "serializer": "NFCFeatureConfigSerializer"
+    },
+    "OCR": {
+      "description": "Configuration for OCR/ID Verification feature.",
+      "fields": {
+        "age_restrictions_by_country": {
+          "description": "Per-country (and optionally per-state) age gate. `minimum_age` is required for every country listed; `maximum_age` may be null.",
+          "example": {
+            "ESP": {
+              "maximum_age": null,
+              "minimum_age": 18,
+              "states": null
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO3>\": {\"minimum_age\": 1-120, \"maximum_age\": 1-120|null, \"states\"?: {\"<STATE_CODE>\": {\"minimum_age\": 1-120, \"maximum_age\": 1-120|null}}}}",
+          "type": "json"
+        },
+        "cross_org_fraud_document_action": {
+          "description": "Verdict when this document was flagged as fraudulent by another organization in the network.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_audio_recording_enabled": {
+          "description": "Record the microphone during document capture, so a reviewer can hear the session. Off by default.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "document_blur_fields_by_country": {
+          "description": "Fields to blur out of the stored document image, per country. Only fields the country's document layout supports are accepted.",
+          "example": {
+            "ESP": [
+              "document_number"
+            ]
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO3>\": [\"<blur_field_name>\", ...]}",
+          "type": "json"
+        },
+        "document_liveness_portrait_replace_decline_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_liveness_portrait_replace_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_liveness_printed_copy_decline_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_liveness_printed_copy_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_liveness_screen_replay_decline_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_liveness_screen_replay_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_or_personal_number_format_mismatch_action": {
+          "description": "Verdict when the document or personal number does not match the country's expected format.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_selfie_portrait_match_decline_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_selfie_portrait_match_review_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "document_without_portrait_action": {
+          "description": "Verdict when the scanned document family carries no portrait on any side. Node-config only - there is no account-level setting; the runtime default is REVIEW.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "documents_allowed": {
+          "description": "Which identity documents are accepted, per issuing country. Omit the key entirely to accept the full catalog; an empty object means the same thing. At least one document must end up enabled or the save is rejected.",
+          "example": {
+            "ESP": {
+              "P": {
+                "enabled": 1
+              }
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO3>\": {\"<DOC_CODE>\": {\"enabled\": 0|1, \"sides\"?: 1|2, \"subtypes\"?: [\"<SUBTYPE_CODE>\", ...]}}}",
+          "type": "json"
+        },
+        "duplicated_user_action": {
+          "description": "Verdict when the identity was already verified for this application.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "expected_details_mismatch_action": {
+          "description": "Verdict when the extracted identity contradicts the `expected_details` sent with the session.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "expiration_date_not_detected_action": {
+          "description": "Verdict when no expiry date could be read from the document.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "id_document_quality_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "id_verification_max_retry_attempts": {
+          "maximum": 5,
+          "minimum": 2,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "id_verification_name_match_score_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "image_capture_methods_allowed": {
+          "description": "Capture methods the end user may use for the document photo. Declared as a list of free strings, so the vocabulary is not in the field itself: CAMERA_SCAN (live capture) and UPLOAD (pick an existing file). An empty list falls back to the account default.",
+          "example": [
+            "CAMERA_SCAN"
+          ],
+          "items": {
+            "nullable": false,
+            "required": true,
+            "type": "string"
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "[\"CAMERA_SCAN\" | \"UPLOAD\", ...]",
+          "type": "array"
+        },
+        "image_quality_too_low_action": {
+          "description": "Verdict when overall document image quality is below the bar.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "image_too_blurry_action": {
+          "description": "Verdict when the captured document image is too blurry to trust.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "image_too_bright_action": {
+          "description": "Verdict when the captured document image is overexposed.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "image_too_dark_action": {
+          "description": "Verdict when the captured document image is underexposed.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "inconsistent_data_action": {
+          "description": "Verdict when the document's own fields contradict each other.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "invalid_code_action": {
+          "description": "Verdict when a document check digit or barcode fails validation.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "invalid_mrz_action": {
+          "description": "Verdict when the machine-readable zone is missing or inconsistent.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "invalid_validation_action": {
+          "description": "Verdict when a document authenticity validation fails.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "is_age_restrictions_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "is_document_selfie_portrait_match_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "is_image_capture_review_screen_enabled": {
+          "description": "Show the user a review screen after each document capture, letting them retake the photo before it is submitted. Off by default.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "is_ocr_id_verification_data_review_enabled": {
+          "description": "Let the user review and correct the extracted identity data before the step completes. Off by default. A correction is scored against `ocr_id_verification_data_review_critical_fields`, and a disagreement takes the critical or the minor action accordingly. The review still runs when the workflow includes NFC - a later chip read simply supersedes it.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "maximum_age": {
+          "maximum": 120,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "maximum_age_action": {
+          "description": "Verdict when the holder is older than `maximum_age`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "methods": {
+          "description": "Which ID verification methods each country may use: document capture (today's behaviour), non-doc lookup against a government or other authoritative source, and digital identity wallets. Omit the key, or a country, or a method, and that country is document only. Every method must be available for the country in the capability catalog (GET workflow-graph/id-verification-methods-catalog/); wallets are an accept-list with no ordering. Each fallback is `fallback_to_document` or `decline`; `max_attempts` (1-5, default 1) counts only lookups the registry answered.",
+          "example": {
+            "DNK": {
+              "document": {
+                "enabled": true
+              },
+              "wallet": {
+                "enabled": true,
+                "providers": [
+                  "mitid"
+                ]
+              }
+            },
+            "ZAF": {
+              "document": {
+                "enabled": true
+              },
+              "id_lookup": {
+                "enabled": true,
+                "max_attempts": 2,
+                "on_no_match": "fallback_to_document"
+              }
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO3>\": {\"document\": {\"enabled\": bool}, \"id_lookup\": {\"enabled\": bool, \"max_attempts\": 1-5, \"skip_liveness_and_face_match\": bool, \"on_partial_match\": \"fallback_to_document\"|\"decline\", \"on_no_match\": \"fallback_to_document\"|\"decline\", \"on_provider_error\": \"fallback_to_document\"|\"decline\", \"response_fields\"?: [\"<field_key>\", ...]}, \"wallet\": {\"enabled\": bool, \"providers\": [\"<wallet_id>\", ...], \"on_failure\": \"fallback_to_document\"|\"decline\"}}}",
+          "type": "json"
+        },
+        "minimum_age": {
+          "maximum": 120,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "minimum_age_action": {
+          "description": "Verdict when the holder is younger than `minimum_age`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "ocr_id_verification_data_review_critical_fields": {
+          "description": "Which extracted identity fields count as critical when the user edits the OCR result, so a mismatch takes the critical action rather than the minor one.",
+          "items": {
+            "enum": [
+              "first_name",
+              "middle_name",
+              "last_name",
+              "date_of_birth",
+              "date_of_issue",
+              "expiration_date",
+              "document_number",
+              "personal_number",
+              "tax_number",
+              "gender",
+              "address",
+              "place_of_birth",
+              "nationality",
+              "marital_status"
+            ],
+            "nullable": false,
+            "required": true,
+            "type": "string"
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "[\"first_name\" | \"last_name\" | \"date_of_birth\" | ...]",
+          "type": "array"
+        },
+        "ocr_id_verification_data_review_critical_mismatch_action": {
+          "description": "Verdict when the user's edit disagrees with OCR on a critical field.",
+          "enum": [
+            "DECLINE",
+            "REVIEW"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "ocr_id_verification_data_review_minor_mismatch_action": {
+          "description": "Verdict when the user's edit disagrees with OCR on a non-critical field.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        },
+        "unparsed_address_action": {
+          "description": "Verdict when the document address could not be parsed into components.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "notes": "Omitting `documents_allowed` stores the full country/document catalog, so the node accepts everything. Put OCR before any feature that reads identity data from the document (FACE_MATCH, NFC, DATABASE_VALIDATION).",
+      "serializer": "OCRFeatureConfigSerializer"
+    },
+    "PHONE_VERIFICATION": {
+      "description": "Configuration for Phone Verification feature.",
+      "fields": {
+        "code_size": {
+          "maximum": 8,
+          "minimum": 4,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "cross_org_fraud_phone_action": {
+          "description": "Verdict when this number was flagged as fraudulent by another organization in the network.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "disposable_number_action": {
+          "description": "Verdict when the number belongs to a disposable-number provider.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "duplicated_phone_number_action": {
+          "description": "Verdict when the number was already verified for this application.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "fallback_to_native": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "high_risk_phone_action": {
+          "description": "Verdict when the number carries a high risk signal.",
+          "enum": [
+            "DECLINE",
+            "REVIEW"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "low_phone_trust_action": {
+          "description": "Verdict when the trust index is below `phone_trust_index_threshold`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "phone_enrichment_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "phone_intelligence_score_action": {
+          "description": "Verdict when the enrichment score is worse than `phone_intelligence_score_threshold`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "phone_intelligence_score_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "phone_max_check_attempts": {
+          "maximum": 5,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "phone_max_retries": {
+          "maximum": 5,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "phone_shared_device_mode": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "phone_trust_index_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "phone_type_risk_action": {
+          "description": "Verdict when the line type itself is considered risky.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "phone_verification_countries": {
+          "description": "Which countries and delivery channels the one-time code may be sent through. It is a WHITELIST: a country absent from the map is not offered at all, and a channel absent from a listed country is skipped. `max_retries` overrides the node-level retry cap for that one channel. A bare boolean is the legacy form and still means enabled/disabled with the node-level cap.",
+          "example": {
+            "ES": {
+              "sms": {
+                "enabled": true,
+                "max_retries": 2
+              }
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO2>\": {\"<channel: sms|whatsapp|telegram|rcs|viber|zalo>\": {\"enabled\": true|false, \"max_retries\": <int>} | true|false}}",
+          "type": "json"
+        },
+        "provider_key": {
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "recent_port_action": {
+          "description": "Verdict when the number was ported to a new carrier recently.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        },
+        "voip_number_action": {
+          "description": "Verdict when the number is VoIP rather than a real subscriber line.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "serializer": "PhoneFeatureConfigSerializer"
+    },
+    "PROOF_OF_ADDRESS": {
+      "description": "Configuration for Proof of Address feature.",
+      "fields": {
+        "poa_document_authenticity_action": {
+          "description": "Verdict when the document fails authenticity checks.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "poa_document_issues_action": {
+          "description": "Verdict when the document is damaged, cropped or otherwise unusable.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "poa_documents_allowed": {
+          "description": "Which proof-of-address documents are accepted, per issuing country. Same shape as OCR's `documents_allowed`; omit to accept the full catalog.",
+          "example": {
+            "ESP": {
+              "UTILITY_BILL": {
+                "enabled": 1
+              }
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO3>\": {\"<DOC_CODE>\": {\"enabled\": 0|1, \"sides\"?: 1|2, \"subtypes\"?: [\"<SUBTYPE_CODE>\", ...]}}}",
+          "type": "json"
+        },
+        "poa_issue_date_not_detected_action": {
+          "description": "Verdict when no issue date could be read from the document.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "poa_issuer_not_identified_action": {
+          "description": "Verdict when the issuing company or authority cannot be identified.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "poa_languages_allowed": {
+          "description": "Languages the proof-of-address document may be written in, as a flag per language code. Omit to accept every supported language.",
+          "example": {
+            "en": 1,
+            "es": 1
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<language_code>\": 0|1}",
+          "type": "json"
+        },
+        "poa_max_attempts_exceeded_action": {
+          "description": "Verdict when the user runs out of `poa_max_retry_attempts`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "poa_max_retry_attempts": {
+          "maximum": 5,
+          "minimum": 2,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "poa_name_match_score_threshold": {
+          "maximum": 100,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "poa_name_or_address_mismatch_action": {
+          "description": "Verdict when the name or address on the document disagrees with the verified identity.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "poa_unparsable_or_invalid_address_action": {
+          "description": "Verdict when the address on the document cannot be parsed or is not a real address.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "poa_unsupported_document_type_action": {
+          "description": "Verdict when the uploaded document is not one of `poa_documents_allowed`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "poa_unsupported_language_action": {
+          "description": "Verdict when the document language is not one of `poa_languages_allowed`.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "serializer": "POAFeatureConfigSerializer"
+    },
+    "QUESTIONNAIRE": {
+      "description": "Configuration for Questionnaire feature.",
+      "fields": {
+        "questionnaire_uuid": {
+          "nullable": true,
+          "required": false,
+          "type": "uuid"
+        },
+        "review_questionnaire_manually": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "serializer": "QuestionnaireFeatureConfigSerializer"
+    }
+  },
+  "schema_version": 1,
+  "source": "src/applications/serializers/workflow_graph.py",
+  "value_kinds": {
+    "action": [
+      "NO_ACTION",
+      "REVIEW",
+      "DECLINE"
+    ],
+    "restricted_action": [
+      "REVIEW",
+      "DECLINE"
+    ]
+  }
+}

@@ -162,3 +162,20 @@ test("labels are broadcast to every declared language, like the create path does
 
   assert.deepEqual(sent.body.graph.nodes.q1.choices[0].label, { en: "Yes", es: "Yes" });
 });
+
+test("appending preserves every existing questionnaire translation", async () => {
+  const stored = storedQuestionnaire([
+    { value: "A", label: { en: "Yes", es: "Sí" } },
+  ]);
+  stored.languages = ["en", "es"];
+  stored.title = { en: "Identity", es: "Identidad" };
+  stored.graph.nodes.q1.title = { en: "Pick one", es: "Elige una" };
+  const sent = stubApi(stored);
+
+  await requestContext.run(CTX, () =>
+    appendQuestionnaireChoices("q-1", { choices: [{ value: "B" }] }),
+  );
+
+  assert.deepEqual(sent.body.graph.nodes.q1.title, { en: "Pick one", es: "Elige una" });
+  assert.deepEqual(sent.body.graph.nodes.q1.choices[0].label, { en: "Yes", es: "Sí" });
+});

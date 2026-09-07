@@ -1,219 +1,130 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  listTransactionRules,
-  getTransactionRule,
-  createTransactionRule,
-  updateTransactionRule,
-  deleteTransactionRule,
-  backtestTransactionRule,
-  listTransactionRuleLibrary,
-  installTransactionRuleLibrary,
-  uninstallTransactionRuleLibrary,
-} from "../dist/tools/transactions.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { requestContext } from "../dist/config.js";
-import { DiditError } from "../dist/security.js";
-import { handleModernRpc } from "../dist/mcp-modern.js";
-
-// Transaction-monitoring (KYT) rules — org/app-scoped console resource
-// (/organization/{org}/application/{app}/transactions/rules...). See rule-api-contract.md.
+import { createServer } from "../dist/index.js";
+import {
+  backtestTransactionRule,
+  createTransactionRule,
+  deleteTransactionRule,
+  getTransactionRule,
+  installTransactionRuleLibrary,
+  listTransactionRuleLibrary,
+  listTransactionRules,
+  uninstallTransactionRuleLibrary,
+  updateTransactionRule,
+} from "../dist/tools/transactions.js";
 
 const API = "https://verification.didit.me/v3";
-const BASE = `${API}/organization/org-1/application/app-1/transactions/rules`;
-const CTX = { accessToken: "t-1", organizationId: "org-1", applicationId: "app-1" };
+const APP_BASE = `${API}/organization/org-1/application/app-1/transactions/rules`;
+const CTX = { accessToken: "token-1", organizationId: "org-1", applicationId: "app-1" };
 
-/** Capture the wire request instead of calling the real API. */
-function stubFetch(responseBody = {}, status = 200) {
-  const sent = { calls: [] };
+const inApp = (fn) => requestContext.run(CTX, fn);
+
+function captureRequest(responseBody = {}) {
+  const calls = [];
   globalThis.fetch = async (url, init = {}) => {
-    const call = {
+    calls.push({
       url: String(url),
-      method: init.method || "GET",
+      method: init.method ?? "GET",
       body: init.body ? JSON.parse(init.body) : undefined,
-    };
-    sent.calls.push(call);
-    Object.assign(sent, call);
+    });
     return new Response(JSON.stringify(responseBody), {
-      status,
+      status: 200,
       headers: { "Content-Type": "application/json" },
     });
   };
-  return sent;
+  return calls;
 }
 
-// ── list ──────────────────────────────────────────────────────────────────
-
-test("listTransactionRules: GET rules/ with filters as query params", async () => {
-  const sent = stubFetch({ count: 0, results: [] });
-  await requestContext.run(CTX, () =>
-    listTransactionRules({ source: "CUSTOM", mode: "ACTIVE", category: "aml_ctf", limit: "10", offset: "0" }),
-  );
-  assert.equal(sent.method, "GET");
-  assert.equal(sent.body, undefined);
-  const url = new URL(sent.url);
-  assert.equal(url.origin + url.pathname, `${BASE}/`);
-  assert.equal(url.searchParams.get("source"), "CUSTOM");
-  assert.equal(url.searchParams.get("mode"), "ACTIVE");
-  assert.equal(url.searchParams.get("category"), "aml_ctf");
-  assert.equal(url.searchParams.get("limit"), "10");
-});
-
-// ── get ───────────────────────────────────────────────────────────────────
-
-test("getTransactionRule: GET rules/{uuid}/", async () => {
-  const sent = stubFetch({ uuid: "rule-1" });
-  await requestContext.run(CTX, () => getTransactionRule("rule-1"));
-  assert.equal(sent.method, "GET");
-  assert.equal(sent.url, `${BASE}/rule-1/`);
-});
-
-test("getTransactionRule: missing rule_uuid rejects before any request", async () => {
-  stubFetch();
-  await assert.rejects(
-    requestContext.run(CTX, () => getTransactionRule(undefined)),
-    DiditError,
-  );
-});
-
-// ── create ────────────────────────────────────────────────────────────────
-
-test("createTransactionRule: POST rules/ with the full payload verbatim", async () => {
-  const sent = stubFetch({ uuid: "rule-new" }, 201);
-  const conditions = [
-    { field: "amount", operator: "gte", value: 10000 },
-    { field: "subject_country", operator: "in", value: ["IRN", "PRK"] },
+test("rule handlers use the org/app console contract with exact methods and payloads", async () => {
+  const cases = [
+    {
+      run: () => listTransactionRules({ mode: "TEST", ordering: "-created_at,title" }),
+      path: `${APP_BASE}/?mode=TEST&ordering=-created_at%2Ctitle`,
+      method: "GET",
+    },
+    {
+      run: () => getTransactionRule("rule-1"),
+      path: `${APP_BASE}/rule-1/`,
+      method: "GET",
+    },
+    {
+      run: () => createTransactionRule({ title: "Velocity", mode: "TEST" }),
+      path: `${APP_BASE}/`,
+      method: "POST",
+      body: { title: "Velocity", mode: "TEST" },
+    },
+    {
+      run: () => updateTransactionRule("rule-1", { mode: "ACTIVE" }),
+      path: `${APP_BASE}/rule-1/`,
+      method: "PATCH",
+      body: { mode: "ACTIVE" },
+    },
+    {
+      run: () => deleteTransactionRule("rule-1"),
+      path: `${APP_BASE}/rule-1/`,
+      method: "DELETE",
+    },
+    {
+      run: () => backtestTransactionRule({ conditions: [], aggregation: [], period_days: 30 }),
+      path: `${APP_BASE}/backtest/`,
+      method: "POST",
+      body: { conditions: [], aggregation: [], period_days: 30 },
+    },
+    {
+      run: () => listTransactionRuleLibrary({ bundle: "aml" }),
+      path: `${APP_BASE}/library/?bundle=aml`,
+      method: "GET",
+    },
+    {
+      run: () => installTransactionRuleLibrary({ library_keys: ["structuring-inbound"] }),
+      path: `${APP_BASE}/install/`,
+      method: "POST",
+      body: { library_keys: ["structuring-inbound"] },
+    },
+    {
+      run: () => uninstallTransactionRuleLibrary({ bundle: "aml" }),
+      path: `${APP_BASE}/install/`,
+      method: "DELETE",
+      body: { bundle: "aml" },
+    },
   ];
-  const aggregation = [
-    { metric: "count", operator: "gt", value: 5, window: "1h", filters: { subject_vendor_data: "__current__" } },
-  ];
-  const actions = [
-    { type: "add_score", value: 30 },
-    { type: "change_status", value: "AWAITING_USER", workflow_id: "wf-1" },
-  ];
-  await requestContext.run(CTX, () =>
-    createTransactionRule({
-      title: "High-risk corridor",
-      category: "aml_ctf",
-      mode: "TEST",
-      evaluation_mode: "ALL",
-      scope: { transaction_types: ["finance"], directions: ["OUTBOUND"] },
-      conditions,
-      aggregation,
-      actions,
-      metadata: { owner: "compliance" },
-    }),
-  );
-  assert.equal(sent.method, "POST");
-  assert.equal(sent.url, `${BASE}/`);
-  assert.equal(sent.body.title, "High-risk corridor");
-  assert.equal(sent.body.category, "aml_ctf");
-  assert.equal(sent.body.mode, "TEST");
-  assert.deepEqual(sent.body.conditions, conditions);
-  assert.deepEqual(sent.body.aggregation, aggregation);
-  assert.deepEqual(sent.body.actions, actions);
-  assert.deepEqual(sent.body.scope, { transaction_types: ["finance"], directions: ["OUTBOUND"] });
+
+  for (const contract of cases) {
+    const calls = captureRequest();
+    await inApp(contract.run);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, contract.path);
+    assert.equal(calls[0].method, contract.method);
+    assert.deepEqual(calls[0].body, contract.body);
+  }
 });
 
-// ── update ────────────────────────────────────────────────────────────────
-
-test("updateTransactionRule: PATCH rules/{uuid}/ with only the changed fields", async () => {
-  const sent = stubFetch({ uuid: "rule-1", mode: "ACTIVE" });
-  await requestContext.run(CTX, () => updateTransactionRule("rule-1", { mode: "ACTIVE" }));
-  assert.equal(sent.method, "PATCH");
-  assert.equal(sent.url, `${BASE}/rule-1/`);
-  assert.deepEqual(sent.body, { mode: "ACTIVE" });
-});
-
-test("updateTransactionRule: missing rule_uuid rejects before any request", async () => {
-  stubFetch();
+test("rule UUIDs are guarded before they enter a request path", async () => {
   await assert.rejects(
-    requestContext.run(CTX, () => updateTransactionRule("", { mode: "ACTIVE" })),
-    DiditError,
+    inApp(() => getTransactionRule("../billing")),
+    (error) => error?.shape?.code === "bad_request" && error?.shape?.field === "rule_uuid",
   );
 });
 
-// ── delete ────────────────────────────────────────────────────────────────
+async function listAdvertisedTools() {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const server = createServer();
+  await server.connect(serverTransport);
+  const client = new Client({ name: "transaction-rule-contract-test", version: "1.0.0" }, { capabilities: {} });
+  await client.connect(clientTransport);
+  try {
+    return (await client.listTools()).tools;
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
 
-test("deleteTransactionRule: DELETE rules/{uuid}/, no body", async () => {
-  const sent = stubFetch({ success: true });
-  await requestContext.run(CTX, () => deleteTransactionRule("rule-1"));
-  assert.equal(sent.method, "DELETE");
-  assert.equal(sent.url, `${BASE}/rule-1/`);
-  assert.equal(sent.body, undefined);
-});
-
-test("deleteTransactionRule: missing rule_uuid rejects before any request", async () => {
-  stubFetch();
-  await assert.rejects(
-    requestContext.run(CTX, () => deleteTransactionRule(undefined)),
-    DiditError,
-  );
-});
-
-// ── backtest ──────────────────────────────────────────────────────────────
-
-test("backtestTransactionRule: POST rules/backtest/ with the candidate shape", async () => {
-  const sent = stubFetch({ evaluated: 100, matched: 4, affected_entities: 3, period_days: 30 });
-  const conditions = [{ field: "amount", operator: "gt", value: 5000 }];
-  await requestContext.run(CTX, () =>
-    backtestTransactionRule({ conditions, evaluation_mode: "ALL", period_days: 30 }),
-  );
-  assert.equal(sent.method, "POST");
-  assert.equal(sent.url, `${BASE}/backtest/`);
-  assert.deepEqual(sent.body.conditions, conditions);
-  assert.equal(sent.body.period_days, 30);
-});
-
-// ── library list ──────────────────────────────────────────────────────────
-
-test("listTransactionRuleLibrary: GET rules/library/ with filters as query params", async () => {
-  const sent = stubFetch({ count: 0, results: [] });
-  await requestContext.run(CTX, () => listTransactionRuleLibrary({ bundle: "fatf-basics", search: "velocity" }));
-  assert.equal(sent.method, "GET");
-  const url = new URL(sent.url);
-  assert.equal(url.origin + url.pathname, `${BASE}/library/`);
-  assert.equal(url.searchParams.get("bundle"), "fatf-basics");
-  assert.equal(url.searchParams.get("search"), "velocity");
-});
-
-// ── install / uninstall ──────────────────────────────────────────────────
-
-test("installTransactionRuleLibrary: POST rules/install/ with library_keys", async () => {
-  const sent = stubFetch({ installed_library_keys: ["k1"], installed_count: 1 });
-  await requestContext.run(CTX, () => installTransactionRuleLibrary({ library_keys: ["k1"] }));
-  assert.equal(sent.method, "POST");
-  assert.equal(sent.url, `${BASE}/install/`);
-  assert.deepEqual(sent.body, { library_keys: ["k1"] });
-});
-
-test("installTransactionRuleLibrary: POST rules/install/ with bundle", async () => {
-  const sent = stubFetch({ installed_library_keys: ["k1", "k2"], installed_count: 2 });
-  await requestContext.run(CTX, () => installTransactionRuleLibrary({ bundle: "fatf-basics" }));
-  assert.equal(sent.method, "POST");
-  assert.deepEqual(sent.body, { bundle: "fatf-basics" });
-});
-
-test("uninstallTransactionRuleLibrary: DELETE rules/install/ carrying a JSON body", async () => {
-  const sent = stubFetch({ uninstalled_count: 1 });
-  await requestContext.run(CTX, () => uninstallTransactionRuleLibrary({ library_keys: ["k1"] }));
-  assert.equal(sent.method, "DELETE");
-  assert.equal(sent.url, `${BASE}/install/`);
-  assert.deepEqual(sent.body, { library_keys: ["k1"] });
-});
-
-test("uninstallTransactionRuleLibrary: DELETE rules/install/ with bundle", async () => {
-  const sent = stubFetch({ uninstalled_count: 3 });
-  await requestContext.run(CTX, () => uninstallTransactionRuleLibrary({ bundle: "fatf-basics" }));
-  assert.equal(sent.method, "DELETE");
-  assert.deepEqual(sent.body, { bundle: "fatf-basics" });
-});
-
-// ── MCP tool annotations (readOnlyHint / destructiveHint) ──────────────────
-
-test("annotations: delete and uninstall are destructive; list/get/library_list are read-only", async () => {
-  const reply = await handleModernRpc({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
-  const byName = Object.fromEntries(reply.result.tools.map((t) => [t.name, t]));
-
+test("all nine rule tools are advertised with safe annotations and persistence guidance", async () => {
+  const tools = await listAdvertisedTools();
   const names = [
     "didit_transaction_rule_list",
     "didit_transaction_rule_get",
@@ -225,20 +136,43 @@ test("annotations: delete and uninstall are destructive; list/get/library_list a
     "didit_transaction_rule_install",
     "didit_transaction_rule_uninstall",
   ];
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
   for (const name of names) {
-    assert.ok(byName[name], `${name} missing from tools/list`);
-    assert.equal(byName[name]._meta["anthropic/toolGroup"], "Transactions (AML)");
+    const tool = byName.get(name);
+    assert.ok(tool, `${name} missing from tools/list`);
+    assert.equal(tool._meta?.["anthropic/toolGroup"], "Transactions (AML)");
   }
 
-  assert.equal(byName.didit_transaction_rule_delete.annotations.destructiveHint, true);
-  assert.equal(byName.didit_transaction_rule_uninstall.annotations.destructiveHint, true);
+  assert.equal(byName.get("didit_transaction_rule_backtest").annotations.readOnlyHint, true);
+  assert.equal(byName.get("didit_transaction_rule_delete").annotations.destructiveHint, true);
+  assert.equal(byName.get("didit_transaction_rule_uninstall").annotations.destructiveHint, true);
+  assert.equal(byName.get("didit_transaction_rule_install").annotations.destructiveHint, false);
 
-  assert.equal(byName.didit_transaction_rule_list.annotations.readOnlyHint, true);
-  assert.equal(byName.didit_transaction_rule_get.annotations.readOnlyHint, true);
-  assert.equal(byName.didit_transaction_rule_library_list.annotations.readOnlyHint, true);
+  const create = byName.get("didit_transaction_rule_create");
+  assert.match(create.description, /entire requested persisted rule/i);
+  // Optional `actions` let the model omit the outcome the user asked for while
+  // narrating it as saved ("goes to review" persisted as actions: []) — 2/2 on
+  // gemini, 2026-09-01. Required forces an explicit decision; [] stays legal
+  // for deliberate monitor-only rules.
+  assert.ok(create.inputSchema.required.includes("actions"), "create must require actions");
+  assert.match(create.description, /pass \[\] ONLY when the user explicitly wants a monitor-only rule/);
+  assert.match(create.inputSchema.properties.aggregation.description, /create\/update/i);
+  assert.match(create.inputSchema.properties.actions.description, /backtest never saves actions/i);
+  assert.ok(
+    create.inputSchema.properties.aggregation.items.required.includes("window"),
+    "aggregation window must be explicit instead of silently defaulting to 1d",
+  );
 
-  assert.equal(byName.didit_transaction_rule_list.annotations.destructiveHint, false);
-  assert.equal(byName.didit_transaction_rule_get.annotations.destructiveHint, false);
-  assert.equal(byName.didit_transaction_rule_create.annotations.destructiveHint, false);
-  assert.equal(byName.didit_transaction_rule_update.annotations.destructiveHint, false);
+  const backtest = byName.get("didit_transaction_rule_backtest");
+  assert.equal(backtest.inputSchema.properties.rule_uuid, undefined);
+  assert.equal(backtest.inputSchema.properties.period_days.minimum, 1);
+  assert.equal(backtest.inputSchema.properties.period_days.maximum, 365);
+
+  for (const name of ["didit_transaction_rule_install", "didit_transaction_rule_uninstall"]) {
+    assert.deepEqual(byName.get(name).inputSchema.anyOf, [
+      { required: ["library_keys"] },
+      { required: ["bundle"] },
+    ]);
+  }
 });

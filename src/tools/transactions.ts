@@ -19,10 +19,6 @@ export async function screenWallet(data: Record<string, any>): Promise<any> {
   return apiRequest(orgAppPath("/transactions/screen-wallet/"), { method: "POST", json: data });
 }
 
-// Transaction-monitoring rules (KYT) — org/app-scoped console resource, same paths the
-// business console itself calls. Rules evaluate conditions/aggregations against monitored
-// transactions and apply actions (score, status change, tags, notes, list adds, cases).
-
 const ruleUuid = (id: string) => pathSegment(id, "rule_uuid");
 
 export async function listTransactionRules(params?: Record<string, any>): Promise<any> {
@@ -38,7 +34,10 @@ export async function createTransactionRule(data: Record<string, any>): Promise<
 }
 
 export async function updateTransactionRule(ruleUuidValue: string, data: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath(`/transactions/rules/${ruleUuid(ruleUuidValue)}/`), { method: "PATCH", json: data });
+  return apiRequest(orgAppPath(`/transactions/rules/${ruleUuid(ruleUuidValue)}/`), {
+    method: "PATCH",
+    json: data,
+  });
 }
 
 export async function deleteTransactionRule(ruleUuidValue: string): Promise<any> {
