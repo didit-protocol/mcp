@@ -119,26 +119,8 @@ test("no tool anywhere requires a *_path or lacks its *_base64 twin", async () =
   }
 });
 
-test("compliance tools declare optional organization_id/application_id scoping params", async () => {
-  // Multi-org users cannot be scoped by ensureScopeDefaults, and schema-strict
-  // models (Gemini) never pass parameters a schema does not declare — without
-  // these fields the copilot dead-ends asking the user which organization on
-  // every compliance onboarding turn.
-  const tools = await listAdvertisedTools();
-  const compliance = tools.filter((t) => t.name.startsWith("didit_compliance_"));
-  assert.ok(compliance.length >= 5, `expected the compliance tool group, got ${compliance.length}`);
-  for (const tool of compliance) {
-    const properties = tool.inputSchema?.properties ?? {};
-    assert.ok(properties.organization_id, `${tool.name} must declare organization_id`);
-    assert.ok(properties.application_id, `${tool.name} must declare application_id`);
-    assert.ok(!(tool.inputSchema.required ?? []).includes("organization_id"), `${tool.name}: organization_id must stay optional`);
-    assert.ok(!(tool.inputSchema.required ?? []).includes("application_id"), `${tool.name}: application_id must stay optional`);
-  }
-});
-
 test("questionnaire tools declare optional organization_id/application_id scoping params", async () => {
-  // Same failure as the compliance group above, one tool family later: the
-  // questionnaire endpoints are org/app-scoped (orgAppPath), the Copilot's MCP
+  // The questionnaire endpoints are org/app-scoped (orgAppPath), the Copilot's MCP
   // session carries no application context, and a schema-strict model cannot
   // pass a parameter the schema omits — so every didit_questionnaire_create
   // came back "application_id is required for this operation", even right
@@ -193,18 +175,3 @@ test("app-scoped tools advertise the ids their handler requires", async () => {
   assert.deepEqual(missing.map((t) => t.name), [], "these tools require an app id they never advertise");
 });
 
-test("network tools declare optional organization_id/application_id scoping params", async () => {
-  // Networks endpoints landed app-scoped under /organization/{org}/application/{app}/...;
-  // schema-strict clients must be allowed to pass both selectors after didit_context_get.
-  const tools = await listAdvertisedTools();
-  const networkTools = tools.filter((t) => t.name.startsWith("didit_network_"));
-  assert.equal(networkTools.length, 3, `expected the network tool group, got ${networkTools.length}`);
-  for (const tool of networkTools) {
-    const properties = tool.inputSchema?.properties ?? {};
-    const required = tool.inputSchema?.required ?? [];
-    assert.ok(properties.organization_id, `${tool.name} must declare organization_id`);
-    assert.ok(properties.application_id, `${tool.name} must declare application_id`);
-    assert.ok(!required.includes("organization_id"), `${tool.name}: organization_id must stay optional`);
-    assert.ok(!required.includes("application_id"), `${tool.name}: application_id must stay optional`);
-  }
-});

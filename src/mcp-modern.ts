@@ -13,7 +13,6 @@ import type { IncomingHttpHeaders } from "node:http";
 
 import { createServer } from "./index";
 import { SERVER_VERSION } from "./config";
-import type { CatalogProfile } from "./catalog-profiles";
 
 export const MODERN_VERSION = "2026-07-28";
 /** Advertised in server/discover and in -32022 error data: modern era + every SDK-negotiable legacy version. */
@@ -140,7 +139,6 @@ function invalidEnvelope(rpc: RpcMessage): boolean {
 export async function handleModernRpc(
   rpc: RpcMessage,
   authInfo?: AuthInfo,
-  options: { profile?: CatalogProfile } = {},
 ): Promise<Record<string, unknown> | undefined> {
   // The SDK's Protocol silently drops envelopes that fail schema validation, which
   // would leave this dispatch (and the HTTP request) hanging forever — reject first.
@@ -152,7 +150,7 @@ export async function handleModernRpc(
   }
 
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  const server = createServer({ hosted: true, profile: options.profile });
+  const server = createServer({ hosted: true });
 
   await server.connect(serverSide);
   try {

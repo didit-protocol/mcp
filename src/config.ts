@@ -51,10 +51,6 @@ export const MCP_DEFAULT_ORG = process.env.MCP_DEFAULT_ORG || "";
 // Optional: default application for single-app deployments (used when a tool call
 // omits application_id and the user has no unambiguous default).
 export const MCP_DEFAULT_APP = process.env.MCP_DEFAULT_APP || "";
-// Catalog profile served by the STDIO server (and the default for tests). The hosted server
-// ignores this: it serves `full` at /mcp and `chatgpt` at /mcp/chatgpt by endpoint. Setting
-// MCP_TOOL_PROFILE=chatgpt locally reproduces the ChatGPT catalog for review tooling.
-export const MCP_TOOL_PROFILE = process.env.MCP_TOOL_PROFILE || "full";
 // Authorization Server = the Didit business console (it hosts the "log in + confirm"
 // consent at /authorize and the token exchange at /api/auth/oauth-token, returning the
 // user's Didit token). Token validation still goes to the auth service via introspection.

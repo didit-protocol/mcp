@@ -1,6 +1,6 @@
 # Tools
 
-Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **159 tools**, grouped by domain.
+Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **135 tools**, grouped by domain.
 For the categorized reference with read/write/destructive markers, see
 https://docs.didit.me/integration/mcp/tools.
 
@@ -48,15 +48,6 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_case_search`
 - `didit_case_statistics`
 
-## compliance
-
-- `didit_compliance_check_workflow`
-- `didit_compliance_generate_workflow`
-- `didit_compliance_interview_next`
-- `didit_compliance_profile_get`
-- `didit_compliance_profile_set`
-- `didit_compliance_requirements`
-
 ## context
 
 - `didit_context_get`
@@ -72,18 +63,6 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_lists_get`
 - `didit_lists_list`
 - `didit_lists_update`
-
-## marketplace
-
-- `didit_marketplace_list_catalog`
-- `didit_marketplace_list_connections`
-- `didit_marketplace_request_integration`
-
-## network
-
-- `didit_network_get`
-- `didit_network_list`
-- `didit_network_membership_get`
 
 ## org
 
@@ -152,22 +131,7 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_transaction_rule_uninstall`
 - `didit_transaction_rule_update`
 - `didit_transaction_screen_wallet`
-- `didit_transaction_sdk_token`
 - `didit_transaction_search`
-
-## travel
-
-- `didit_travel_rule_add_wallet_address`
-- `didit_travel_rule_confirm_ownership`
-- `didit_travel_rule_create_widget_session`
-- `didit_travel_rule_delete_wallet_address`
-- `didit_travel_rule_get_settings`
-- `didit_travel_rule_list_wallet_addresses`
-- `didit_travel_rule_register_inbound`
-- `didit_travel_rule_search_vasps`
-- `didit_travel_rule_transfer_action`
-- `didit_travel_rule_update_settings`
-- `didit_travel_rule_update_wallet_address`
 
 ## vendor
 
