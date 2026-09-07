@@ -1,7 +1,7 @@
 // Ported verbatim from the audited mcp-server-v2-public hardening core (config.ts).
 // Surface-agnostic security/correctness helpers: structured errors, DRF error parsing,
 // sanitization, secret redaction, path-segment + SSRF + file-upload guards.
-import { openSync, readSync, closeSync, lstatSync, statSync } from "fs";
+import { openSync, readSync, closeSync, lstatSync, statSync, readFileSync } from "fs";
 import { basename, extname, isAbsolute } from "path";
 
 export interface DiditErrorShape {
@@ -42,10 +42,27 @@ export class DiditError extends Error {
 // "../billing/balance" would silently target a DIFFERENT endpoint. We reject the
 // routing/traversal metacharacters outright AND percent-encode the rest.
 export function pathSegment(value: unknown, field: string): string {
-  if (typeof value !== "string") {
+  // A value that never ARRIVED and a value of the wrong SHAPE are different bugs, and
+  // collapsing them sends the caller to the wrong place. The dispatcher was
+  // stripping the routing ids out of a handler's args before the handler read them, so
+  // `organization_id` reached here as `undefined`, and the caller was told its perfectly
+  // good UUID "must be a string ... with no path separators", a hint describing a condition
+  // the input already satisfied. 18 production calls across 10 traces dead-ended on that
+  // wording because it blamed the value the caller sent instead of reporting that nothing
+  // was received. Report the missing case as missing, and name the type we DID get.
+  if (value === undefined || value === null) {
     throw new DiditError({
       code: "bad_request",
-      message: `${field} must be a string.`,
+      message: `${field} is required but no value was received.`,
+      field,
+      hint: `Pass ${field} in the tool arguments. If you did pass it, the value was dropped before it reached the handler - report this rather than retrying.`,
+    });
+  }
+  if (typeof value !== "string") {
+    const received = Array.isArray(value) ? "array" : typeof value;
+    throw new DiditError({
+      code: "bad_request",
+      message: `${field} must be a string (received ${/^[aeiou]/.test(received) ? "an" : "a"} ${received}).`,
       field,
       hint: "Provide a single id/value with no path separators.",
     });
@@ -129,21 +146,10 @@ const BLOCKED_UPLOAD_BASENAMES = new Set([
 ]);
 
 /**
- * Sniff the leading bytes of a file and return a known image/document type, or
- * null if the magic bytes don't match an allowed format. Reads only the header so
- * a non-image file is rejected BEFORE the (potentially large) full read.
+ * Sniff the leading bytes of an upload and return a known image/document type,
+ * or null if the magic bytes don't match an allowed format.
  */
-function sniffFileType(filePath: string): string | null {
-  let fd: number | undefined;
-  const buf = Buffer.alloc(16);
-  try {
-    fd = openSync(filePath, "r");
-    readSync(fd, buf, 0, 16, 0);
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
+function sniffMagicBytes(buf: Buffer): string | null {
   // PNG  89 50 4E 47 0D 0A 1A 0A
   if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
       buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) return "png";
@@ -160,6 +166,24 @@ function sniffFileType(filePath: string): string | null {
   // PDF  "%PDF-"
   if (buf.slice(0, 5).toString("latin1") === "%PDF-") return "pdf";
   return null;
+}
+
+/**
+ * Sniff the leading bytes of a file. Reads only the header so a non-image file
+ * is rejected BEFORE the (potentially large) full read.
+ */
+function sniffFileType(filePath: string): string | null {
+  let fd: number | undefined;
+  const buf = Buffer.alloc(16);
+  try {
+    fd = openSync(filePath, "r");
+    readSync(fd, buf, 0, 16, 0);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  return sniffMagicBytes(buf);
 }
 
 /**
@@ -263,6 +287,116 @@ export function validateLocalFile(filePath: unknown, field = "image_path"): stri
     });
   }
   return filePath;
+}
+
+// ── Base64 upload safety (hosted transport) ───────────────────────────────────
+
+const DATA_URL_PREFIX = /^data:[^;,]+;base64,/;
+
+/**
+ * Validate an upload supplied as base64 content (raw base64 or a data URL) —
+ * the remote-caller counterpart of validateLocalFile for the hosted HTTP
+ * transport, where the caller has no filesystem on this machine. Enforces the
+ * same size cap and magic-bytes allow-list, and returns the decoded bytes.
+ */
+export function validateUploadBuffer(value: unknown, field = "image_base64"): { buffer: Buffer; type: string } {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new DiditError({
+      code: "bad_request",
+      message: `${field} must be a non-empty base64 string.`,
+      field,
+      hint: "Provide the file content as base64 (raw or a data: URL).",
+    });
+  }
+  const base64 = value.replace(DATA_URL_PREFIX, "").trim();
+  if (!/^[A-Za-z0-9+/]+=*$/.test(base64)) {
+    throw new DiditError({
+      code: "bad_request",
+      message: `${field} is not valid base64.`,
+      field,
+      hint: "Provide the file content as base64 (raw or a data: URL).",
+    });
+  }
+  // Reject on the encoded length first so we never materialise an oversized buffer.
+  if ((base64.length * 3) / 4 > MAX_UPLOAD_BYTES) {
+    throw new DiditError({
+      code: "bad_request",
+      message: `${field} exceeds the ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB upload limit.`,
+      field,
+    });
+  }
+  const buffer = Buffer.from(base64, "base64");
+  if (buffer.length === 0) {
+    throw new DiditError({ code: "bad_request", message: `${field} is empty.`, field });
+  }
+  const type = sniffMagicBytes(buffer.subarray(0, 16));
+  if (!type) {
+    throw new DiditError({
+      code: "bad_request",
+      message: `${field} is not a recognised image or PDF (content check failed).`,
+      field,
+      hint: "Upload a real png/jpg/jpeg/webp/gif/bmp/ico image or a PDF.",
+    });
+  }
+  return { buffer, type };
+}
+
+/** A tool file input: a local absolute path (stdio/local runs) OR base64 content (hosted runs). */
+export interface FileSource {
+  path?: string;
+  base64?: string;
+}
+
+/**
+ * Assert that a required tool file input was actually supplied (either form).
+ * Throws the canonical "file is required" error with the local-vs-hosted hint.
+ */
+export function requireFileSource(source: FileSource | undefined, fieldBase: string): FileSource {
+  if (!source?.path && !source?.base64) {
+    throw new DiditError({
+      code: "bad_request",
+      message: `A file is required: provide ${fieldBase}_path or ${fieldBase}_base64.`,
+      field: `${fieldBase}_path`,
+      hint:
+        `${fieldBase}_path is an absolute path on the machine running the MCP server (local/stdio runs). ` +
+        `${fieldBase}_base64 is the file content as base64 or a data: URL — use it when calling the hosted MCP ` +
+        `(the Didit Copilot resolves attachment references like "att_1" into it automatically).`,
+    });
+  }
+  return source;
+}
+
+/**
+ * Resolve a tool file input to bytes + a filename for multipart upload.
+ * Exactly one of `path`/`base64` must be set when `required`; both set is
+ * always an error. `fieldBase` is the parameter stem (e.g. "front_image" for
+ * front_image_path / front_image_base64) used in error messages.
+ */
+export function resolveFileSource(
+  source: FileSource | undefined,
+  fieldBase: string,
+  { required = false } = {},
+): { buffer: Buffer; filename: string } | undefined {
+  const path = source?.path;
+  const base64 = source?.base64;
+  if (path && base64) {
+    throw new DiditError({
+      code: "bad_request",
+      message: `Provide only one of ${fieldBase}_path or ${fieldBase}_base64, not both.`,
+      field: `${fieldBase}_path`,
+    });
+  }
+  if (!path && !base64) {
+    if (!required) return undefined;
+    requireFileSource(source, fieldBase);
+  }
+  if (path) {
+    const safePath = validateLocalFile(path, `${fieldBase}_path`);
+    return { buffer: readFileSync(safePath), filename: basename(safePath) };
+  }
+  const { buffer, type } = validateUploadBuffer(base64, `${fieldBase}_base64`);
+  const ext = type === "jpeg" ? "jpg" : type;
+  return { buffer, filename: `${fieldBase}.${ext}` };
 }
 
 // ── Webhook SSRF guard (WS-E security) ────────────────────────────────────────
@@ -380,7 +514,12 @@ export function sanitizeText(input: unknown): string {
   // Redact secret-shaped tokens FIRST — BEFORE UUID preservation — so a secret like
   // "didit-<uuid>" / "sk_live_…" is redacted whole instead of having its UUID tail
   // preserved (which would shrink it below the match threshold and let it slip).
-  s = s.replace(/\b(?:didit|sk|pk|rk|whsec|key)[_-][A-Za-z0-9_\-]{6,}/gi, "[redacted-secret]");
+  // Exempt tool names (didit_ + lowercase words, e.g. "didit_context_get"): error
+  // hints reference them so the model knows which tool to call next, and real keys
+  // always carry digits/uppercase, which the exemption pattern cannot match.
+  s = s.replace(/\b(?:didit|sk|pk|rk|whsec|key)[_-][A-Za-z0-9_\-]{6,}/gi, (m) =>
+    /^didit_[a-z_]+$/.test(m) ? m : "[redacted-secret]",
+  );
   // Stash canonical UUIDs so no downstream rule can touch them, then restore.
   const uuids: string[] = [];
   s = s.replace(UUID_RE, (m) => {

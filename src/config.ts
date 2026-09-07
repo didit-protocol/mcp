@@ -1,7 +1,28 @@
-import { readFileSync } from "fs";
-import { basename } from "path";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { DiditError, parseErrorBody, statusToCode, statusToHint, validateLocalFile } from "./security";
+import { DiditError, parseErrorBody, statusToCode, statusToHint, resolveFileSource } from "./security";
+import type { FileSource } from "./security";
+
+// Single source of truth for the version: package.json (falls back if unreadable).
+function readPackageVersion(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require("../package.json").version || "5.0.0";
+  } catch {
+    return "5.0.0";
+  }
+}
+export const SERVER_VERSION = readPackageVersion();
+
+/**
+ * Per-tool permission pre-check (permissions.ts): `shadow` (default) only records what
+ * WOULD be denied on the audit line, `enforce` refuses the call and hides the tool from
+ * tools/list, `off` disables the check. Read per call so a deployment can flip it by env.
+ */
+export function permissionMode(): "shadow" | "enforce" | "off" {
+  const mode = process.env.MCP_PERMISSION_MODE;
+
+  return mode === "enforce" || mode === "off" ? mode : "shadow";
+}
 
 export const DIDIT_AUTH_BASE_URL = process.env.DIDIT_AUTH_BASE_URL || "https://apx.didit.me/auth/v2";
 export const DIDIT_API_BASE_URL = process.env.DIDIT_API_BASE_URL || "https://verification.didit.me/v3";
@@ -10,8 +31,9 @@ export const DIDIT_API_BASE_URL = process.env.DIDIT_API_BASE_URL || "https://ver
 // Only used by src/http.ts. The defaults target Didit production; every value is
 // overridable per environment. service-didit-auth is the OAuth Authorization Server.
 export const MCP_PORT = parseInt(process.env.MCP_PORT || "3000", 10);
-// The RFC 8707 resource identifier for this MCP server (its public URL).
-export const MCP_RESOURCE_URI = process.env.MCP_RESOURCE_URI || "https://mcp.didit.me";
+// The RFC 8707 / RFC 9728 resource identifier for this MCP server.
+// It must match the actual Streamable HTTP transport endpoint.
+export const MCP_RESOURCE_URI = process.env.MCP_RESOURCE_URI || "https://mcp.didit.me/mcp";
 // The dedicated OAuth client registered in service-didit-auth for the MCP.
 export const MCP_OAUTH_CLIENT_ID = process.env.MCP_OAUTH_CLIENT_ID || "";
 // Client secret used for RFC 7662 token introspection (Basic auth to the auth service).
@@ -69,6 +91,8 @@ export interface RequestCredentials {
   accessToken?: string;
   organizationId?: string;
   applicationId?: string;
+  /** Tool being dispatched — sent as User-Agent so the backend audit log attributes the request. */
+  toolName?: string;
 }
 export const requestContext = new AsyncLocalStorage<RequestCredentials>();
 
@@ -144,6 +168,17 @@ function authHeaders(): Record<string, string> {
   return {};
 }
 
+/**
+ * Identifies the MCP server (and the tool behind the request) to the backend. The
+ * backend's audit log stores the User-Agent, so every MCP-originated action shows up
+ * there attributed to its tool without any backend change.
+ */
+export function userAgent(): string {
+  const tool = requestContext.getStore()?.toolName;
+
+  return `didit-mcp-server/${SERVER_VERSION}${tool ? ` tool/${tool}` : ""}`;
+}
+
 export function getHeaders(): Record<string, string> {
   return { "Content-Type": "application/json", ...authHeaders() };
 }
@@ -191,7 +226,7 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
   }
 
   const resolvedHeaders = headers ?? (form ? getMultipartHeaders() : getHeaders());
-  const init: RequestInit = { method, headers: resolvedHeaders };
+  const init: RequestInit = { method, headers: { "User-Agent": userAgent(), ...resolvedHeaders } };
   if (form) {
     init.body = form;
   } else if (json !== undefined) {
@@ -228,23 +263,43 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
 }
 
 /**
- * Build a multipart/form-data body from file paths and optional scalar fields.
- * Shared by the standalone image endpoints and branding customization.
+ * Build a multipart/form-data body from file inputs and optional scalar fields.
+ * Shared by the standalone image endpoints and branding customization. Each
+ * file input is either a local absolute path (string — local/stdio runs) or a
+ * FileSource ({ path?, base64? }) so hosted callers can send file content
+ * inline. The record key doubles as the multipart field name and the
+ * error-message parameter stem.
  */
 export function buildFormData(
-  files: Record<string, string | undefined>,
+  files: Record<string, string | FileSource | undefined>,
   scalars: Record<string, any> = {},
 ): FormData {
   const form = new FormData();
-  for (const [key, filePath] of Object.entries(files)) {
-    if (!filePath) continue;
-    const safePath = validateLocalFile(filePath, key);
-    const buffer = readFileSync(safePath);
-    form.append(key, new Blob([buffer]), basename(safePath));
+  for (const [key, source] of Object.entries(files)) {
+    if (!source) continue;
+    const normalized: FileSource = typeof source === "string" ? { path: source } : source;
+    const resolved = resolveFileSource(normalized, key);
+    if (!resolved) continue;
+    form.append(key, new Blob([resolved.buffer]), resolved.filename);
   }
   for (const [key, value] of Object.entries(scalars)) {
     if (value === undefined || value === null) continue;
     form.append(key, typeof value === "string" ? value : String(value));
   }
   return form;
+}
+
+/**
+ * Drop the routing ids from a tool call's arguments. They are read into
+ * `requestContext` by the CallTool dispatcher before the handler runs, so by
+ * the time a handler sees its args they are pure payload — which is what lets
+ * every app-scoped tool ADVERTISE `organization_id` / `application_id`
+ * (ORG_APP_PROPS) without the handlers that forward their args verbatim
+ * leaking them into a query string or a POST body.
+ */
+export function stripRoutingIds(args: unknown): Record<string, unknown> | undefined {
+  if (!args || typeof args !== "object") return args as undefined;
+  const { organization_id: _org, application_id: _app, ...rest } = args as Record<string, unknown>;
+
+  return rest;
 }

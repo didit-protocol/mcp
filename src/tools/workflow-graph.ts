@@ -1,7 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
 import { apiRequest, orgAppPath } from "../config";
 import { mapWithConcurrency, runForScope } from "../orgapp";
-import { resolveWorkflowScope } from "./search";
+import { resolveWorkflowScope, withWorkflowResolution } from "./search";
+import { DiditError } from "../security";
+import { assertKycKybSegregation, normalizeFeatureConfigs, resolveBranchRuleNodeIds } from "./feature-config";
 
 // Node/graph ("branching") workflows. The console drives these through dedicated endpoints on
 // the verification-settings resource — the flat `features: [...]` list the older workflow tools
@@ -153,12 +155,10 @@ async function inScope<R>(
   scope: Scope,
   fn: (workflow: any) => Promise<R>,
 ): Promise<R> {
-  const { organizationId, applicationId, workflow } = await resolveWorkflowScope(
-    workflowId,
-    scope.organization_id,
-    scope.application_id,
-  );
-  return runForScope(organizationId, applicationId, () => fn(workflow));
+  const resolved = await resolveWorkflowScope(workflowId, scope.organization_id, scope.application_id);
+  const { organizationId, applicationId, workflow } = resolved;
+  const result = await runForScope(organizationId, applicationId, () => fn(workflow));
+  return withWorkflowResolution(result, resolved);
 }
 
 /** Returned data (data minimization): which data points the client/relying party receives in the
@@ -363,37 +363,208 @@ export async function getWorkflowGraph(
 
 /** The full catalog of branchable fields + the operators valid on each (so the agent builds
  *  valid rules — e.g. kyc.extra_fields.profession supports `fuzzy_match`). */
-export async function getWorkflowFieldDefinitions(workflowId: string, scope: Scope = {}): Promise<any> {
-  return inScope(workflowId, scope, () =>
-    apiRequest(orgAppPath(`/workflow-graph/field-definitions/`)),
-  );
+export async function getWorkflowFieldDefinitions(
+  workflowId: string,
+  scope: Scope & { feature?: string } = {},
+): Promise<any> {
+  return inScope(workflowId, scope, async () => {
+    const result = await apiRequest(orgAppPath(`/workflow-graph/field-definitions/`));
+    const feature = scope.feature?.trim().toUpperCase();
+    if (!feature) return result;
+    return {
+      feature,
+      fields: result?.fields_by_feature?.[feature] ?? [],
+      operators_by_field_type: result?.operators_by_field_type ?? {},
+      filtered: true,
+    };
+  });
+}
+
+/** The ID verification methods capability and pricing catalog (DID-57): which countries support
+ *  non-doc lookup, which digital-identity wallets each country offers, their availability
+ *  (available / coming_soon), plain-language request and response fields, and catalog prices.
+ *  Served by the backend with integration routes and costs already stripped. */
+export async function getIdVerificationMethodsCatalog(
+  workflowId: string,
+  scope: Scope & { country?: string } = {},
+): Promise<any> {
+  return inScope(workflowId, scope, async () => {
+    const result = await apiRequest(orgAppPath(`/workflow-graph/id-verification-methods-catalog/`));
+    const country = scope.country?.trim().toUpperCase();
+    if (!country) return result;
+    const wallets = Object.fromEntries(
+      Object.entries(result?.wallets ?? {}).filter(([, w]: [string, any]) => (w?.countries ?? []).includes(country)),
+    );
+    return {
+      country,
+      document: result?.document,
+      id_lookup: result?.id_lookup?.[country] ?? null,
+      wallets,
+      fallback_actions: result?.fallback_actions,
+      max_attempts: result?.max_attempts,
+      filtered: true,
+    };
+  });
+}
+
+/** Retail names the console shows for the KYB registry data tiers (its i18n keys
+ *  kyb-registry-tier-basic / -shareholders / -ubo). */
+const KYB_REGISTRY_TIER_NAMES = { basic: "Lite", shareholders: "Shareholders", ubo: "UBOs" } as const;
+/** Flat fee for a company the applicant types in by hand. The pricing endpoint does not
+ *  serve it; this mirrors the backend's KYB_REGISTRY_MANUAL_ENTRY_PRICE_USD, and the
+ *  contract test pins it to the number the contract's description prints. */
+export const KYB_REGISTRY_MANUAL_ENTRY_PRICE_USD = "0.75";
+
+type KybRegistryTier = keyof typeof KYB_REGISTRY_TIER_NAMES;
+const KYB_REGISTRY_TIERS = Object.keys(KYB_REGISTRY_TIER_NAMES) as KybRegistryTier[];
+type KybRegistryCountry = {
+  name?: string;
+  validated?: boolean;
+  tiers?: Partial<Record<KybRegistryTier, { available?: boolean; price_usd?: string }>>;
+  monitoring?: { available?: boolean; price_usd?: string };
+};
+type KybRegistryRow = [string, KybRegistryCountry];
+
+const ISO2 = /^[A-Z]{2}$/;
+
+/** The backend's normalize_registry_catalog_country: upper-case, `_` → `-`, and keep
+ *  only the country part of a subdivision key ("es_md" → "ES"). */
+function normalizeCountryKey(value: unknown): string {
+  return String(value).trim().toUpperCase().replace(/_/g, "-").split("-")[0] ?? "";
+}
+
+/** A model often sends one code as a bare string; anything else non-array is ignored. */
+function requestedCountries(countries: unknown): string[] {
+  const list = Array.isArray(countries) ? countries : typeof countries === "string" ? [countries] : [];
+  return [...new Set(list.filter((c) => typeof c === "string").map(normalizeCountryKey))].filter(Boolean);
+}
+
+function offers(country: KybRegistryCountry, tier: KybRegistryTier): boolean {
+  return country.tiers?.[tier]?.available === true;
+}
+
+const byAmount = (a: string, b: string) => Number(a) - Number(b);
+const distinctPrices = (prices: (string | undefined)[]) =>
+  [...new Set(prices.filter((p): p is string => typeof p === "string"))].sort(byAmount);
+
+function summarizeTier(rows: KybRegistryRow[], tier: KybRegistryTier) {
+  const offering = rows.filter(([, c]) => offers(c, tier));
+  return {
+    name: KYB_REGISTRY_TIER_NAMES[tier],
+    available_in: offering.length,
+    price_usd: distinctPrices(offering.map(([, c]) => c.tiers?.[tier]?.price_usd)),
+  };
+}
+
+/** Counts plus the SHORT exception lists: which countries have no registry at all and which
+ *  stop at Lite. The full per-country table is ~250 rows, so it only travels on request. */
+function summarizeKybRegistryCatalog(rows: KybRegistryRow[]) {
+  const monitored = rows.filter(([, c]) => c.monitoring?.available === true);
+  return {
+    countries_total: rows.length,
+    tiers: Object.fromEntries(KYB_REGISTRY_TIERS.map((tier) => [tier, summarizeTier(rows, tier)])),
+    no_registry: rows.filter(([, c]) => !offers(c, "basic")).map(([code]) => code),
+    lite_only: rows.filter(([, c]) => offers(c, "basic") && !offers(c, "shareholders") && !offers(c, "ubo")).map(([code]) => code),
+    monitoring: {
+      available_in: monitored.length,
+      price_usd_per_company_per_year: distinctPrices(monitored.map(([, c]) => c.monitoring?.price_usd)),
+    },
+    note: "Pass `countries` (ISO-2) for a country's exact tiers, prices and monitoring availability.",
+  };
+}
+
+/** The KYB registry catalog: per ISO-2 country, which data tiers the
+ *  registries offer (basic = Lite, shareholders, ubo), their retail price, and whether continuous
+ *  monitoring is sold there. Public endpoint: no org/app scope, no provider identity. */
+export async function getKybRegistryCatalog(countries?: unknown): Promise<any> {
+  const catalog = (await apiRequest("/organization/kyb-registry-pricing/")) as Record<string, KybRegistryCountry>;
+  const rows: KybRegistryRow[] =
+    catalog && typeof catalog === "object" && !Array.isArray(catalog)
+      ? Object.entries(catalog).filter(([code]) => ISO2.test(code))
+      : [];
+  if (!rows.length) {
+    // A maintenance page, an empty body or a redirect would otherwise read as
+    // "no country has a registry"; say the catalog could not be read instead.
+    throw new DiditError({
+      code: "server_error",
+      message: "The KYB registry pricing catalog could not be read (unexpected response shape).",
+      hint: "Retry in a moment; if it keeps failing, tell the user the catalog is unavailable rather than guessing tiers.",
+    });
+  }
+  const shared = { tier_names: KYB_REGISTRY_TIER_NAMES, manual_entry_price_usd: KYB_REGISTRY_MANUAL_ENTRY_PRICE_USD };
+  const wanted = requestedCountries(countries);
+  if (!wanted.length) return { ...summarizeKybRegistryCatalog(rows), ...shared };
+  const known = new Map(rows);
+  const unknown = wanted.filter((code) => !known.has(code));
+  return {
+    countries: Object.fromEntries(wanted.filter((code) => known.has(code)).map((code) => [code, known.get(code)])),
+    ...(unknown.length ? { unknown_countries: unknown, unknown_hint: "Not an ISO 3166-1 alpha-2 code in the catalog (Spain is ES, Germany is DE)." } : {}),
+    ...shared,
+    filtered: true,
+  };
 }
 
 /** Fields available at a specific branch point given a candidate graph (incl. dynamically-derived
- *  Document-AI / questionnaire fields from earlier nodes). */
+ *  Document-AI / questionnaire fields from earlier nodes). Both inputs are checked here, before
+ *  any network call: the backend reads `branch_node_id` (the old `node_id` wire key was silently
+ *  dropped, so every call answered "Both 'graph' and 'branch_node_id' are required"). */
 export async function getWorkflowBranchFields(
   workflowId: string,
   graph: any,
-  nodeId?: string,
+  branchNodeId?: string,
   scope: Scope = {},
 ): Promise<any> {
+  requireBranchFieldsArgs(graph, branchNodeId);
+  normalizeFeatureConfigs(graph);
   return inScope(workflowId, scope, (wf) =>
     apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/workflow-graph/branch-fields/`), {
       method: "POST",
-      json: { graph, node_id: nodeId },
+      json: { graph, branch_node_id: branchNodeId },
     }),
   );
 }
 
+function requireBranchFieldsArgs(graph: any, branchNodeId: string | undefined): void {
+  const field = !graph?.nodes ? "graph" : !branchNodeId ? "branch_node_id" : "";
+  if (!field) return;
+  throw new DiditError({
+    code: "bad_request",
+    field,
+    message: "Both 'graph' and 'branch_node_id' are required.",
+    hint: "graph is the object returned by didit_workflow_get_graph / ui_workflow_get_graph; branch_node_id is the id of a branch node inside that graph's nodes.",
+  });
+}
+
 /** Dry-run validate a graph without saving. Call this BEFORE set_graph and fix any per-node errors. */
-export async function validateWorkflowGraph(workflowId: string, graph: any, scope: Scope = {}): Promise<any> {
+export async function validateWorkflowGraph(
+  workflowId: string | undefined,
+  graph: any,
+  scope: Scope = {},
+  includeConfig = false,
+): Promise<any> {
+  normalizeFeatureConfigs(graph);
   normalizeBranchElse(graph);
-  return inScope(workflowId, scope, (wf) =>
-    apiRequest(orgAppPath(`/workflow-graph/validate/`), {
+  resolveBranchRuleNodeIds(graph);
+  assertKycKybSegregation(graph);
+  // The backend endpoint is application-scoped: workflow_uuid only feeds the
+  // KYC/KYB segregation check for EXISTING workflows. A graph for a workflow
+  // that does not exist yet (an unsaved editor canvas) is validated without it.
+  const workflowType = (scope as Record<string, unknown>).workflow_type;
+  const validate = async (identity: Record<string, unknown>) => {
+    const result = await apiRequest(orgAppPath(`/workflow-graph/validate/`), {
       method: "POST",
-      json: { graph, workflow_uuid: wf.uuid },
-    }),
-  );
+      json: { graph, ...identity },
+    });
+    if (includeConfig || !result?.graph) return result;
+    return {
+      ...result,
+      graph: summarizeGraph(result.graph),
+      config_summarized: true,
+      hint: "Large feature config values are summarized. Pass include_config:true to return them verbatim.",
+    };
+  };
+  if (!workflowId) return validate(workflowType ? { workflow_type: workflowType } : {});
+  return inScope(workflowId, scope, (wf) => validate({ workflow_uuid: wf.uuid }));
 }
 
 /** Create an editable DRAFT version from a (published) workflow. */
@@ -524,7 +695,10 @@ export async function setWorkflowGraph(
   publish = false,
   scope: Scope = {},
 ): Promise<any> {
+  normalizeFeatureConfigs(graph);
   normalizeBranchElse(graph);
+  resolveBranchRuleNodeIds(graph);
+  assertKycKybSegregation(graph);
   const { organizationId, applicationId, workflow } = await resolveWorkflowScope(
     workflowId,
     scope.organization_id,
@@ -548,6 +722,7 @@ export async function setWorkflowGraph(
     });
     const stored = await persistedGraph(targetUuid);
     const published = publish ? (await publishVersion(targetUuid)).status === "published" : false;
+
     return {
       workflow_id: workflowId,
       version_uuid: targetUuid,
@@ -588,7 +763,10 @@ export async function editWorkflowGraph(
     const baseGraph = current?.graph ?? current;
     // 2. Apply the small ops in memory, then normalize branch catch-alls to explicit else branches.
     const { graph: merged, changes } = applyGraphOps(baseGraph, operations);
+    normalizeFeatureConfigs(merged);
     normalizeBranchElse(merged);
+    resolveBranchRuleNodeIds(merged);
+    assertKycKybSegregation(merged);
     // 3. Dry-run validate server-side. Return cleanly on failure — never save a broken graph.
     let validation: any;
     try {
@@ -625,6 +803,7 @@ export async function editWorkflowGraph(
     const stored = await persistedGraph(targetUuid);
     const unconfirmed = stored ? unconfirmedConfigKeys(stored, operations) : [];
     const published = publish ? (await publishVersion(targetUuid)).status === "published" : false;
+
     return {
       applied: true,
       changes,

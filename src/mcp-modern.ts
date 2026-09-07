@@ -11,7 +11,8 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { IncomingHttpHeaders } from "node:http";
 
-import { createServer, SERVER_VERSION } from "./index";
+import { createServer } from "./index";
+import { SERVER_VERSION } from "./config";
 
 export const MODERN_VERSION = "2026-07-28";
 /** Advertised in server/discover and in -32022 error data: modern era + every SDK-negotiable legacy version. */
@@ -149,7 +150,7 @@ export async function handleModernRpc(
   }
 
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  const server = createServer();
+  const server = createServer({ hosted: true });
 
   await server.connect(serverSide);
   try {

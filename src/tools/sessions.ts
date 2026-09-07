@@ -37,7 +37,22 @@ export async function updateSessionPoaData(sessionId: string, data: Record<strin
   return apiRequest(`/session/${sid(sessionId)}/update-poa-data/`, { method: "PATCH", json: data });
 }
 
-export async function deleteSession(sessionId: string): Promise<any> {
+// Session deletion is irreversible, so both delete tools demand an explicit confirm:true
+// (the schema marks it required, but schema validation is client-side - enforce it here).
+function assertDeleteConfirmed(confirm: unknown, what: string): void {
+  assertBoolean(confirm, "confirm");
+  if (confirm !== true) {
+    throw new DiditError({
+      code: "unsafe_operation",
+      message: `${what} This permanently and irreversibly erases the session data.`,
+      field: "confirm",
+      hint: "Re-call with confirm:true once the user has explicitly confirmed this exact deletion.",
+    });
+  }
+}
+
+export async function deleteSession(sessionId: string, confirm?: unknown): Promise<any> {
+  assertDeleteConfirmed(confirm, "Deleting a session requires confirm:true.");
   return apiRequest(`/session/${sid(sessionId)}/delete/`, { method: "DELETE" });
 }
 
@@ -47,29 +62,28 @@ export async function batchDeleteSessions(
   confirm?: unknown,
 ): Promise<any> {
   assertBoolean(deleteAll, "delete_all");
-  assertBoolean(confirm, "confirm");
   const wildcard = deleteAll === true;
-  if (wildcard) {
-    if (confirm !== true) {
+  assertDeleteConfirmed(
+    confirm,
+    wildcard
+      ? "delete_all permanently removes EVERY KYC session in this application."
+      : "Batch-deleting sessions requires confirm:true.",
+  );
+  if (!wildcard) {
+    if (!Array.isArray(sessionNumbers) || sessionNumbers.length === 0) {
       throw new DiditError({
-        code: "unsafe_operation",
-        message: "delete_all permanently removes EVERY session in this application.",
-        field: "confirm",
-        hint: "Re-call with confirm:true to proceed, or pass an explicit session_numbers array instead.",
+        code: "bad_request",
+        message: "Provide a non-empty session_numbers array, or set delete_all with confirm:true.",
+        field: "session_numbers",
       });
     }
-  } else if (!Array.isArray(sessionNumbers) || sessionNumbers.length === 0) {
-    throw new DiditError({
-      code: "bad_request",
-      message: "Provide a non-empty session_numbers array, or set delete_all with confirm:true.",
-      field: "session_numbers",
-    });
-  } else if (sessionNumbers.length > MAX_BATCH_IDS) {
-    throw new DiditError({
-      code: "bad_request",
-      message: `Too many session_numbers (max ${MAX_BATCH_IDS} per batch).`,
-      field: "session_numbers",
-    });
+    if (sessionNumbers.length > MAX_BATCH_IDS) {
+      throw new DiditError({
+        code: "bad_request",
+        message: `Too many session_numbers (max ${MAX_BATCH_IDS} per batch).`,
+        field: "session_numbers",
+      });
+    }
   }
   return apiRequest(orgAppPath("/sessions/delete/"), {
     method: "DELETE",

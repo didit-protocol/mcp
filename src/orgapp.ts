@@ -21,6 +21,8 @@ export interface OrgRef {
   orgId: string;
   orgName: string;
   apps: AppRef[];
+  /** listApplications failed for this org — its apps are UNKNOWN, not empty. */
+  appsError?: boolean;
 }
 
 interface CacheEntry {
@@ -54,6 +56,7 @@ async function buildOrgAppMap(): Promise<OrgRef[]> {
       const orgId = idOf(o);
       if (!orgId) return null;
       let apps: AppRef[] = [];
+      let appsError = false;
       try {
         apps = extractResults(await listApplications(orgId))
           .map((a): AppRef | null => {
@@ -62,9 +65,9 @@ async function buildOrgAppMap(): Promise<OrgRef[]> {
           })
           .filter((a): a is AppRef => a !== null);
       } catch {
-        apps = []; // org whose apps the caller can't list — leave it appless
+        appsError = true; // org whose apps the caller can't list — leave it appless but flagged
       }
-      return { orgId, orgName: nameOf(o), apps };
+      return { orgId, orgName: nameOf(o), apps, ...(appsError ? { appsError } : {}) };
     }),
   );
   return refs.filter((r): r is OrgRef => r !== null);
