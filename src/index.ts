@@ -14,8 +14,6 @@ import * as billing from "./tools/billing";
 import * as users from "./tools/users";
 import * as businesses from "./tools/businesses";
 import * as transactions from "./tools/transactions";
-import * as travelRule from "./tools/travelRule";
-import * as marketplace from "./tools/marketplace";
 import * as customization from "./tools/customization";
 import * as webhooks from "./tools/webhooks";
 import * as questionnaires from "./tools/questionnaires";
@@ -36,6 +34,7 @@ import * as members from "./tools/members";
 import * as context from "./tools/context";
 import * as search from "./tools/search";
 import * as workflowGraph from "./tools/workflow-graph";
+import * as compliance from "./tools/compliance";
 import {
   FEATURE_CONFIG_CHECKSUM,
   WORKFLOW_FEATURES,
@@ -46,10 +45,7 @@ import {
   FEATURE_CONFIG_SCHEMA,
 } from "./feature-config-schema";
 import * as analytics from "./tools/analytics";
-import * as compliance from "./tools/compliance";
-import * as networks from "./tools/networks";
-import { requestContext, stripRoutingIds, SERVER_VERSION, permissionMode, MCP_TOOL_PROFILE } from "./config";
-import { applyCatalogProfile, catalogProfileRefusal, resolveCatalogProfile, type CatalogProfile } from "./catalog-profiles";
+import { requestContext, stripRoutingIds, SERVER_VERSION, permissionMode } from "./config";
 import { getOrgAppMap } from "./orgapp";
 import { toSafeErrorShape, DiditError } from "./security";
 import { auditToolCall } from "./audit-log";
@@ -425,16 +421,12 @@ const TOOL_GROUP_BY_PREFIX: [string, string][] = [
   ["allowlist_", "Lists & Blocklist"],
   ["vendor_", "Vendor Users & Businesses"],
   ["transaction_", "Transactions (AML)"],
-  ["travel_rule_", "Travel Rule"],
-  ["marketplace_", "Marketplace"],
   ["case_", "Cases"],
   ["webhook_", "Webhooks & Alerts"],
   ["alert_", "Webhooks & Alerts"],
   ["report_", "Reports & Audit"],
   ["audit_", "Reports & Audit"],
   ["analytics", "Reports & Audit"],
-  ["network_", "Networks"],
-  ["compliance_", "Compliance"],
   ["branding_", "Branding"],
   ["verify_", "Verification APIs"],
 ];
@@ -495,7 +487,7 @@ async function ensureScopeDefaults(name: string): Promise<void> {
       // is pinned - every application the caller owns. ONE candidate is unambiguous even when
       // it is spread over several organizations: an org that holds no application cannot make
       // the choice ambiguous, and didit_context_get already advertises exactly that app as
-      // `default_application_id`. Requiring a single ORG here (the pre-DID-2113 rule) is what
+      // `default_application_id`. Requiring a single ORG here (the old single-org rule) is what
       // made didit_lists_list / didit_webhook_list answer "application_id is required" to a
       // caller whose context call had just named the default application.
       const scoped = store.organizationId
@@ -576,7 +568,6 @@ const EXPLICIT_OPEN_WORLD_TOOLS = new Set([
   "didit_org_top_up",
   "didit_session_share",
   "didit_session_update_status",
-  "didit_travel_rule_transfer_action",
   "didit_verify_email_send",
   "didit_verify_phone_send",
   "didit_webhook_create",
@@ -591,15 +582,9 @@ const EXPLICIT_WRITE_TOOLS = new Set([
 ]);
 
 // The inverse: tools whose names carry no read-like token but whose handlers never
-// change server state (requirements/workflow-check are deterministic reads over the
-// stored profile + knowledge base; interview/next is pure computation; generate_workflow
-// computes and returns a graph WITHOUT persisting anything — the backend view only
-// requires read:workflows, and applying the graph goes through the didit_workflow_* writes).
+// change server state (the backend view only requires read:workflows, and applying the
+// graph goes through the didit_workflow_* writes).
 const EXPLICIT_READ_TOOLS = new Set([
-  "didit_compliance_requirements",
-  "didit_compliance_check_workflow",
-  "didit_compliance_interview_next",
-  "didit_compliance_generate_workflow",
   // build_graph computes a graph from a plain feature spec, persisting nothing.
   "didit_workflow_build_graph",
 ]);
@@ -642,12 +627,9 @@ function annotationsFor(name: string): {
  * var would grant the staff surface to every remote caller; only per-token introspection
  * can mark a hosted caller privileged). The stdio server keeps both conveniences.
  *
- * `profile` selects the catalog served (see catalog-profiles.ts): `full` (default) or `chatgpt`,
- * the reduced allow-list the hosted server exposes at /mcp/chatgpt for the ChatGPT app store.
  */
-export function createServer(options: { hosted?: boolean; profile?: CatalogProfile } = {}): Server {
+export function createServer(options: { hosted?: boolean } = {}): Server {
   const hosted = options.hosted === true;
-  const profile: CatalogProfile = options.profile ?? "full";
   const server = new Server(
     { name: "didit", version: SERVER_VERSION },
     { capabilities: { tools: {} } }
@@ -867,68 +849,6 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
           include_timeseries: { type: "boolean", description: "Also return per-day time series (heavier). Default false." },
           ...ORG_APP_PROPS,
         },
-      },
-    },
-    {
-      name: "didit_network_list",
-      description:
-        "List fraud Networks for one application, with the same filters and KPI aggregate block as the console Networks page. Requires the user's role to have list:networks; pass organization_id/application_id from didit_context_get unless your token/defaults are already scoped.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          status: { type: "string", enum: NETWORK_STATUSES, description: "Network lifecycle status" },
-          signal_type: { type: "string", enum: NETWORK_SIGNAL_TYPES, description: "Filter by one shared signal type" },
-          pattern_type: { type: "string", enum: NETWORK_PATTERN_TYPES, description: "Filter by one network pattern type" },
-          risk_band: { type: "string", enum: NETWORK_RISK_BANDS, description: "Filter by risk band" },
-          min_size: { type: "number", description: "Minimum total members" },
-          max_size: { type: "number", description: "Maximum total members" },
-          date_from: { type: "string", description: "ISO date/datetime lower bound for last activity" },
-          date_to: { type: "string", description: "ISO date/datetime upper bound for first activity" },
-          q: { type: "string", description: "Search by network id/name, member name, or pattern" },
-          ordering: {
-            type: "string",
-            enum: ["risk_score", "-risk_score", "last_activity_at", "-last_activity_at", "first_activity_at", "-first_activity_at", "network_number", "-network_number"],
-            description: "Ordering used by the console endpoint",
-          },
-          limit: { type: "number", description: "Page size (default backend limit, max enforced by backend)" },
-          offset: { type: "number", description: "Pagination offset" },
-          ...ORG_APP_PROPS,
-        },
-      },
-    },
-    {
-      name: "didit_network_get",
-      description:
-        "Read one fraud Network from the console API. Returns the detail row plus included sections; include defaults to members and signals. Graph/map/timeline are optional. Cross-organization insights are deliberately not exposed.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          network_id: { type: "string", description: "Network UUID" },
-          include: {
-            type: "array",
-            items: { type: "string", enum: NETWORK_DETAIL_INCLUDES },
-            description: "Optional sections to include: graph, members, signals, timeline, map. Defaults to [members, signals]. Pass [] for detail only.",
-          },
-          depth: { type: "string", enum: ["1", "2", "3", "all"], description: "Graph depth when include contains graph" },
-          focus_kind: { type: "string", enum: ["user", "business"], description: "Graph focus subject kind; supply with focus_id" },
-          focus_id: { type: "string", description: "Graph focus subject UUID; supply with focus_kind" },
-          ...ORG_APP_PROPS,
-        },
-        required: ["network_id"],
-      },
-    },
-    {
-      name: "didit_network_membership_get",
-      description:
-        "Read fraud-network memberships for one subject from the console API. The subject can be a verification session, business session, vendor user, vendor business, or transaction. Requires read:networks.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          subject_kind: { type: "string", enum: NETWORK_SUBJECT_KINDS, description: "Subject route to resolve" },
-          subject_id: { type: "string", description: "Subject UUID for the selected kind" },
-          ...ORG_APP_PROPS,
-        },
-        required: ["subject_kind", "subject_id"],
       },
     },
 
@@ -1837,21 +1757,6 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       },
     },
     {
-      name: "didit_transaction_sdk_token",
-      description:
-        "Mint a short-lived scoped token for client-side transaction submission (the Didit SDKs' submitTransaction). The token binds every submission to one end user (vendor_data) server-side.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          vendor_data: { type: "string", description: "REQUIRED. Your internal identifier for the end user the token is scoped to" },
-          ttl_seconds: { type: "number", description: "Token lifetime in seconds. Default 900 (15 min), max 86400 (24 h)" },
-          max_uses: { type: "number", description: "Maximum successful submissions allowed. Omit for unlimited within the TTL" },
-        },
-        required: ["vendor_data"],
-      },
-    },
-    {
       name: "didit_transaction_rule_list",
       description:
         "List transaction-monitoring rules for one app. Filter by source (PRESET or CUSTOM), category, mode " +
@@ -2039,215 +1944,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       },
     },
 
-    // ── Travel Rule (FATF / EU TFR managed exchange) ─────────────────────
-    {
-      name: "didit_travel_rule_get_settings",
-      description:
-        "Get the application's Travel Rule settings: VASP profile, negotiation policy, proof-method toggles, disabled_networks, per-network modes (own/didit/off/unavailable), and your travel address.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
-    },
-    {
-      name: "didit_travel_rule_update_settings",
-      description:
-        "Update Travel Rule settings (partial update - send only fields to change). Enabling (is_enabled: true) requires a non-blank legal_name.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          is_enabled: { type: "boolean", description: "Turn the managed exchange on/off for outbound travelRule transactions" },
-          legal_name: { type: "string", description: "Your VASP's legal name (required to enable)" },
-          lei: { type: "string", description: "Legal Entity Identifier" },
-          jurisdiction: { type: "string", description: "Operating jurisdiction code, up to 8 chars (default EU)" },
-          compliance_email: { type: "string" },
-          is_discoverable: { type: "boolean", description: "Whether other Didit customers can find you in the VASP directory / reach you on the INTERNAL rail" },
-          name_matching_strictness: { type: "string", enum: ["NONE", "STRICT", "DEFAULT", "FUZZY"] },
-          confirmation_timeout_hours: { type: "number", description: "Hours before an AWAITING_COUNTERPARTY transfer auto-expires (min 1, default 48)" },
-          timeout_outcome: { type: "string", enum: ["HOLD", "REJECT", "PROCEED"], description: "What happens to the transaction when a transfer expires" },
-          threshold_amount: { type: "string", description: "Minimum amount that triggers an exchange (decimal string; default 0.00 = every transfer, per EU TFR)" },
-          inbound_auto_accept: { type: "boolean" },
-          allow_self_declaration: { type: "boolean", description: "Offer self-declaration as a wallet-ownership proof method" },
-          allow_screenshot_proof: { type: "boolean", description: "Offer screenshot upload as a wallet-ownership proof method" },
-          auto_wallet_verification: { type: "boolean", description: "Auto-mint a wallet-ownership widget when a transfer needs end-user proof (default true)" },
-          vasp_attribution_enabled: { type: "boolean", description: "Resolve unroutable destination wallets via blockchain analytics (default true)" },
-          disabled_networks: {
-            type: "array",
-            items: { type: "string", enum: ["GTR", "TRUST", "VERIFYVASP", "SYGNA"] },
-            description: "Network rails to opt out of Didit's platform membership (your own connected memberships are unaffected)",
-          },
-        },
-      },
-    },
-    {
-      name: "didit_travel_rule_search_vasps",
-      description:
-        "Search the VASP directory (discoverable Didit customers + catalogued counterparty VASPs) with due-diligence scores and reachable rails.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          search: { type: "string", description: "Name fragment to match" },
-          limit: { type: "number", description: "Page size (default 50)" },
-          offset: { type: "number" },
-        },
-      },
-    },
-    {
-      name: "didit_travel_rule_list_wallet_addresses",
-      description:
-        "List the Travel Rule wallet address book - the wallets you control that inbound INTERNAL-rail transfers resolve against, with ownership-verification state.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          limit: { type: "number" },
-          offset: { type: "number" },
-        },
-      },
-    },
-    {
-      name: "didit_travel_rule_add_wallet_address",
-      description:
-        "Register a wallet address in the Travel Rule address book. self_declared: true creates it already ownership-verified (SELF_DECLARATION proof), so inbound transfers skip UNCONFIRMED_OWNERSHIP.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          address: { type: "string", description: "REQUIRED. The wallet address (unique per application among non-deleted entries)" },
-          chain: { type: "string", description: "Chain identifier, e.g. ethereum, bitcoin" },
-          holder_name: { type: "string", description: "Wallet holder name, used for the beneficiary name match" },
-          holder_vendor_data: { type: "string", description: "Your internal identifier for the holder" },
-          entity_type: { type: "string", description: "Defaults to 'individual'" },
-          travel_address: { type: "string", description: "Counterparty VASP travel address for this wallet - routes its transfers over TRP" },
-          self_declared: { type: "boolean", description: "Create the entry already ownership-verified via self-declaration" },
-        },
-        required: ["address"],
-      },
-    },
-    {
-      name: "didit_travel_rule_update_wallet_address",
-      description: "Update holder metadata (holder_name, holder_vendor_data, entity_type, travel_address) on a wallet address book entry.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          entry_uuid: { type: "string", description: "REQUIRED. The address book entry UUID" },
-          holder_name: { type: "string" },
-          holder_vendor_data: { type: "string" },
-          entity_type: { type: "string" },
-          travel_address: { type: "string" },
-        },
-        required: ["entry_uuid"],
-      },
-    },
-    {
-      name: "didit_travel_rule_delete_wallet_address",
-      description:
-        "Delete a wallet address book entry. It stops matching new transfers immediately and the address is freed for re-registration.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          entry_uuid: { type: "string", description: "REQUIRED. The address book entry UUID" },
-        },
-        required: ["entry_uuid"],
-      },
-    },
-    {
-      name: "didit_travel_rule_transfer_action",
-      description:
-        "Act on a Travel Rule transfer: finish a COMPLETED outbound transfer by reporting the on-chain hash (payment_txn_id), cancel any non-terminal transfer (action: cancel), or re-run counterparty routing (action: resend - only from COUNTERPARTY_VASP_NOT_FOUND / NOT_REACHABLE / NOT_ENOUGH_COUNTERPARTY_DATA). Pass exactly one of payment_txn_id or action.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          transaction_id: { type: "string", description: "REQUIRED. The Didit transaction UUID that carries the transfer" },
-          payment_txn_id: { type: "string", description: "On-chain transaction hash - finishes a COMPLETED outbound transfer" },
-          action: { type: "string", enum: ["cancel", "resend"] },
-        },
-        required: ["transaction_id"],
-      },
-    },
-    {
-      name: "didit_travel_rule_confirm_ownership",
-      description:
-        "Confirm or deny wallet ownership on a transfer in UNCONFIRMED_OWNERSHIP (e.g. after reviewing a screenshot proof). confirmed: true verifies the address book entry and runs the name match; false declines both sides.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          transaction_id: { type: "string", description: "REQUIRED. The Didit transaction UUID that carries the transfer" },
-          confirmed: { type: "boolean", description: "REQUIRED. true to confirm ownership, false to deny" },
-        },
-        required: ["transaction_id", "confirmed"],
-      },
-    },
-    {
-      name: "didit_travel_rule_register_inbound",
-      description:
-        "Register Travel Rule data for a crypto deposit that already settled on-chain (sunrise flow). Dedupes on txid + wallet_address; resolves against the wallet address book.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          chain: { type: "string", description: "Chain the deposit settled on" },
-          txid: { type: "string", description: "REQUIRED. On-chain transaction hash" },
-          wallet_address: { type: "string", description: "REQUIRED. The destination wallet the deposit arrived on" },
-          amount: { type: "string", description: "Deposit amount (decimal string)" },
-          currency: { type: "string", description: "Deposit asset" },
-          originator_data: { type: "object", description: "IVMS-101 originator payload from the sending VASP, if known" },
-          beneficiary_data: { type: "object", description: "IVMS-101 beneficiary payload (your customer)" },
-          originating_vasp: { type: "object", description: "Optional { name, lei, travel_address } describing the sender - catalogued in the VASP directory" },
-        },
-        required: ["txid", "wallet_address"],
-      },
-    },
-    {
-      name: "didit_travel_rule_create_widget_session",
-      description:
-        "Mint a hosted wallet-ownership widget session (proof of wallet control by message signing, Satoshi test, screenshot, or self-declaration). Returns the url to send the customer to - it must open in a real browser, never an embedded mobile webview.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          wallet_address: { type: "string", description: "REQUIRED. The wallet to verify" },
-          chain: { type: "string", description: "Chain identifier (ethereum, bitcoin, solana, tron, ...)" },
-          holder_name: { type: "string", description: "Wallet holder name for the beneficiary name match" },
-          vendor_data: { type: "string", description: "Your internal identifier for the holder" },
-          transaction_id: { type: "string", description: "Optional Didit transaction UUID of a transfer to advance when the proof verifies" },
-          satoshi_deposit_address: { type: "string", description: "A deposit address you control - supplying it enables the SATOSHI_TEST method" },
-          callback_url: { type: "string", description: "Where the widget returns the customer after completion" },
-          expires_in_minutes: { type: "number", description: "Link lifetime; auto-extended to cover the Satoshi test window" },
-        },
-        required: ["wallet_address"],
-      },
-    },
 
-    // ── Marketplace (provider catalog & connections) ─────────────────────
-    {
-      name: "didit_marketplace_list_catalog",
-      description:
-        "List the provider marketplace catalog: crypto monitoring, AML screening, phone verification, and Travel Rule network memberships (GTR, TRUST, VerifyVASP, Sygna + on-request networks), with BYOK credential schemas and availability.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
-    },
-    {
-      name: "didit_marketplace_list_connections",
-      description: "List the application's marketplace provider connections (BYOK credentials, network memberships) with status and last-used info. Secrets are never returned.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
-    },
-    {
-      name: "didit_marketplace_request_integration",
-      description: "Request an integration that is not self-serve yet (on_request catalog entries like the CODE, TRISA, Notabene, or Veriscope Travel Rule networks, or any provider you want added). The Didit team follows up.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          provider_name: { type: "string", description: "REQUIRED. The provider or network you want connected" },
-          category: { type: "string", description: "Catalog category, e.g. travel_rule_networks, crypto_monitoring" },
-          note: { type: "string", description: "Anything else about your use case" },
-        },
-        required: ["provider_name"],
-      },
-    },
 
     // ── Billing ─────────────────────────────────────────────────────────
     {
@@ -2885,86 +2582,12 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
 
-    // ── Compliance ──────────────────────────────────────────────────────
-    {
-      name: "didit_compliance_requirements",
-      description: "Get the organization's applicable regulatory obligations with citations, derived from its stored compliance profile. Each obligation carries its source URLs and the kb_version it was evaluated against.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          as_of: { type: "string", description: "Evaluate obligations as of this ISO date (defaults to today)" },
-          ...ORG_APP_PROPS,
-        },
-      },
-    },
-    {
-      name: "didit_compliance_check_workflow",
-      description: "Deterministically check which regulations a workflow version satisfies or violates. Returns per-obligation status with citations.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          workflow_id: { type: "string", description: "REQUIRED. UUID of the workflow to check (from didit_workflow_search/list) — NOT a label, slug or node id. An exact label is resolved when it matches exactly one workflow; otherwise the candidates are listed for you to pick." },
-          ...ORG_APP_PROPS,
-          version: { type: "number", description: "Workflow version to check (defaults to the latest)" },
-          as_of: { type: "string", description: "Evaluate regulations as of this ISO date (defaults to today)" },
-        },
-        required: ["workflow_id"],
-      },
-    },
-    {
-      name: "didit_compliance_interview_next",
-      description: "Given the accumulated onboarding answers so far, return the next question of the adaptive compliance interview, or done:true when it is complete. Stateless — pass every answer collected so far on each call, starting with {}.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          answers: { type: "object", description: "REQUIRED. Accumulated interview answers so far (may be an empty object {} to start)" },
-          ...ORG_APP_PROPS,
-        },
-        required: ["answers"],
-      },
-    },
-    {
-      name: "didit_compliance_profile_get",
-      description:
-        "Read the organization's stored compliance profile: the raw interview answers ({answers}, keyed by profileAttr — subjectType, userCountries, industries, …) plus the attributes derived from them ({derived}). Returns the no_profile error when the application has never completed the compliance onboarding.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-        },
-      },
-    },
-    {
-      name: "didit_compliance_profile_set",
-      description: "Persist the organization's compliance profile from the completed interview answers. Subsequent requirements and workflow checks evaluate against this profile.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          answers: { type: "object", description: "REQUIRED. Complete interview answers to store as the compliance profile" },
-          ...ORG_APP_PROPS,
-        },
-        required: ["answers"],
-      },
-    },
-    {
-      name: "didit_compliance_generate_workflow",
-      description: "Deterministically generate a multi-country verification workflow graph from the org's stored compliance profile: a common trunk plus per-country branches carrying the checks each country requires. Returns {kb_version, graph, branches_summary:[{countries, extra_features, because}], manual_obligations, kyb_obligations, rationale}. `rationale.nodes` maps every feature node id of the graph to {feature, because:[{obligation_id, regulation_id, regulation_name, citation, source_url, countries}]} — the obligations that require that node, with the citation and the official source to link. It is the ONLY sanctioned source for explaining WHY a node exists: never state a regulation, article or URL that is not in it. A node may also carry promoted_for_branching:true, meaning it sits in the trunk for a structural reason (the document-country branch cannot be decided before a document scan), not because every country's regulation demands it — say so rather than attributing it to a regulation. The graph is validated against Didit's workflow schema. Read-only preview — does NOT persist; use didit_workflow_create/set_graph or the ui_* editor tools to apply it. Can also take partial interview answers to preview the graph mid-onboarding, before the profile is stored.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          ...ORG_APP_PROPS,
-          as_of: { type: "string", description: "Optional ISO date (YYYY-MM-DD) to evaluate against a specific point in time" },
-          answers: { type: "object", description: "Optional partial interview answers (compliance profile) to generate from, instead of the org's stored profile. Used during live onboarding to preview the graph as the user answers." },
-          subject: { type: "string", enum: ["kyc", "kyb"], description: "Which graph to build: kyc verifies a person, kyb verifies a company. Defaults to what the profile's subjectType implies (persons→kyc, businesses→kyb, both→kyc). The checks the other subject requires are reported in the corresponding *_obligations bucket instead of the graph." },
-        },
-      },
-    },
 
     {
       name: "didit_workflow_build_graph",
       description:
         "Build a complete workflow graph from a PLAIN FEATURE SPEC in one deterministic call - regulations are " +
-        "never consulted (use didit_compliance_generate_workflow for regulation-driven graphs). Gate-then-commit: " +
+        "never consulted (regulation-driven graphs come from the console's compliance advisor). Gate-then-commit: " +
         "the result is either an accepted build (graph_summary + spec: materialize with ui_workflow_apply_graph " +
         "{spec} on an open editor, or include_graph:true + didit_workflow_set_graph headless), or 'unsupported'/'questions' naming " +
         "exactly what cannot be built or what to ask the user FIRST - in that case build NOTHING and relay them. " +
@@ -3081,9 +2704,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
   const query = { scopes: extra?.authInfo?.scopes, mode: permissionMode(), tokenOrg, targetOrg: tokenOrg };
   catalog = catalog.filter((t) => decidePermission({ ...query, tool: t.name }) !== "deny");
   const visible = isPrivileged ? catalog : catalog.filter((t) => !isPrivilegedToolName(t.name));
-  // Endpoint catalog profile (catalog-profiles.ts): the ChatGPT endpoint offers only the
-  // allow-listed tools, with restricted input properties removed from their schemas.
-  const offered = applyCatalogProfile(visible, profile);
+  const offered = visible;
   // Annotate each tool so the connector UI splits them into Read-only / Write / Destructive
   // groups (driven by readOnlyHint + destructiveHint) instead of one flat "Other tools"
   // bucket; also tag the logical domain group via _meta for future UI use.
@@ -3151,9 +2772,9 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
   // declaring them on a tool safe: the handlers that forward their args
   // verbatim (lists, webhooks, sessions, transactions, vendors…) would
   // otherwise put them in a query string or a POST body the console API never
-  // asked for. Behaviour-preserving for the handlers that DO read them —
-  // marketplace/travelRule pass them to resolveOrganizationId /
-  // resolveApplicationId, which fall back to the very context set above.
+  // asked for. Behaviour-preserving for the handlers that DO read them: they pass
+  // them to resolveOrganizationId / resolveApplicationId, which fall back to the
+  // very context set above.
   const args = stripRoutingIds(request.params.arguments);
 
   // ...but a handful of handlers take the routing ids as EXPLICIT PARAMETERS rather than
@@ -3181,13 +2802,6 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       content: [{ type: "text", text: `Tool '${name}' is not available on the hosted connector - authentication is handled by OAuth. Use the local stdio server (npx @didit-protocol/mcp-server) for account setup.` }],
       isError: true,
     };
-  }
-
-  // Mirror of the tools/list catalog profile: a tool (or an input property) the endpoint does
-  // not offer is refused even if the client memorised it from the full catalog.
-  const profileRefusal = catalogProfileRefusal(profile, name, callArgs);
-  if (profileRefusal) {
-    return { content: [{ type: "text", text: profileRefusal }], isError: true };
   }
 
   // Single-org/single-app callers: fill the default scope so they needn't pass/discover ids.
@@ -3262,15 +2876,6 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         break;
       case "didit_analytics":
         result = await analytics.analytics((args ?? {}) as Record<string, any>);
-        break;
-      case "didit_network_list":
-        result = await networks.listNetworks((args ?? {}) as Record<string, any>);
-        break;
-      case "didit_network_get":
-        result = await networks.getNetwork((args ?? {}) as Record<string, any>);
-        break;
-      case "didit_network_membership_get":
-        result = await networks.getNetworkMembership((args ?? {}) as Record<string, any>);
         break;
 
       // Sessions
@@ -3517,9 +3122,6 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       case "didit_transaction_screen_wallet":
         result = await transactions.screenWallet(args as Record<string, any>);
         break;
-      case "didit_transaction_sdk_token":
-        result = await travelRule.mintSdkToken(args as Record<string, any>);
-        break;
       case "didit_transaction_rule_list":
         result = await transactions.listTransactionRules(args as Record<string, any>);
         break;
@@ -3551,50 +3153,8 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         break;
 
       // Travel Rule
-      case "didit_travel_rule_get_settings":
-        result = await travelRule.getSettings(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_update_settings":
-        result = await travelRule.updateSettings(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_search_vasps":
-        result = await travelRule.searchVasps(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_list_wallet_addresses":
-        result = await travelRule.listWalletAddresses(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_add_wallet_address":
-        result = await travelRule.createWalletAddress(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_update_wallet_address":
-        result = await travelRule.updateWalletAddress(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_delete_wallet_address":
-        result = await travelRule.deleteWalletAddress(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_transfer_action":
-        result = await travelRule.transferAction(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_confirm_ownership":
-        result = await travelRule.confirmOwnership(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_register_inbound":
-        result = await travelRule.registerInbound(args as Record<string, any>);
-        break;
-      case "didit_travel_rule_create_widget_session":
-        result = await travelRule.createWidgetSession(args as Record<string, any>);
-        break;
 
       // Marketplace
-      case "didit_marketplace_list_catalog":
-        result = await marketplace.listCatalog(args as Record<string, any>);
-        break;
-      case "didit_marketplace_list_connections":
-        result = await marketplace.listConnections(args as Record<string, any>);
-        break;
-      case "didit_marketplace_request_integration":
-        result = await marketplace.requestIntegration(args as Record<string, any>);
-        break;
 
       // Billing
       case "didit_org_get_balance":
@@ -3829,24 +3389,6 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         break;
 
       // Compliance
-      case "didit_compliance_requirements":
-        result = await compliance.getRequirements(args as Record<string, string>);
-        break;
-      case "didit_compliance_check_workflow":
-        result = await compliance.checkWorkflow(args as Record<string, any>);
-        break;
-      case "didit_compliance_interview_next":
-        result = await compliance.interviewNext(args as Record<string, any>);
-        break;
-      case "didit_compliance_profile_get":
-        result = await compliance.getProfile();
-        break;
-      case "didit_compliance_profile_set":
-        result = await compliance.setProfile(args as Record<string, any>);
-        break;
-      case "didit_compliance_generate_workflow":
-        result = await compliance.generateWorkflow(args as Record<string, any>);
-        break;
       case "didit_workflow_build_graph":
         result = await compliance.buildWorkflow(args as Record<string, any>);
         break;
@@ -3887,7 +3429,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
 
 async function main() {
   const transport = new StdioServerTransport();
-  const server = createServer({ profile: resolveCatalogProfile(MCP_TOOL_PROFILE) });
+  const server = createServer();
   await server.connect(transport);
   console.error(`Didit MCP Server v${SERVER_VERSION} running on stdio`);
 }

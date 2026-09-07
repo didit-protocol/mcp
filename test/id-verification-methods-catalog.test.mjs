@@ -1,4 +1,4 @@
-// The ID Verification methods catalog tool (DID-57 / DID-2356).
+// The ID Verification methods catalog tool.
 //
 // The OCR node's `methods` key is validated by the backend against a capability
 // catalog: a lookup or wallet that is not `available` for the country is rejected

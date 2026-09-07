@@ -10,7 +10,6 @@ import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 import { createServer } from "./index";
 import { modernGate, isModernRequest, handleModernRpc } from "./mcp-modern";
-import { CHATGPT_MCP_PATH, type CatalogProfile } from "./catalog-profiles";
 import { DiditTokenVerifier } from "./auth/verifier";
 import { IntrospectionTokenVerifier } from "./auth/introspection-verifier";
 import {MCP_PORT,
@@ -87,16 +86,6 @@ export async function createHttpApp(): Promise<express.Express> {
     next();
   });
 
-  // OpenAI Apps domain verification: OpenAI probes the origin-root well-known URL on the
-  // MCP hostname and expects the challenge token back. Public (no auth) and registered
-  // before the OAuth metadata router and bearerAuth so it is never intercepted or 401'd.
-  // Overridable via env so a future re-verification needs no code change.
-  const OPENAI_APPS_CHALLENGE_TOKEN =
-    process.env.OPENAI_APPS_CHALLENGE_TOKEN || "esnQzNgBSkYOqG3Xxihd7Y92FsMalD1UCRfZF5Ql3Ac";
-  app.get("/.well-known/openai-apps-challenge", (_req, res) => {
-    res.type("text/plain").send(OPENAI_APPS_CHALLENGE_TOKEN);
-  });
-
   const resourceServerUrl = new URL(MCP_RESOURCE_URI);
   const oauthMetadata = await resolveAuthorizationServerMetadata();
   const protectedResourceMetadata = {
@@ -124,19 +113,6 @@ export async function createHttpApp(): Promise<express.Express> {
     }),
   );
 
-  // The ChatGPT catalog profile is a second protected resource on the same server
-  // (`/mcp/chatgpt`, see catalog-profiles.ts) with its own RFC 9728 metadata document at
-  // `/.well-known/oauth-protected-resource/mcp/chatgpt`; same authorization server, same scopes.
-  const chatgptResourceUrl = new URL(CHATGPT_MCP_PATH, resourceServerUrl);
-  app.use(
-    mcpAuthMetadataRouter({
-      oauthMetadata,
-      resourceServerUrl: chatgptResourceUrl,
-      scopesSupported: MCP_SCOPES_SUPPORTED,
-      resourceName: "Didit MCP (ChatGPT)",
-    }),
-  );
-
   app.get("/healthz", (_req, res) => {
     res.json({ status: "ok", service: "didit-mcp-server", version: SERVER_VERSION });
   });
@@ -148,13 +124,7 @@ export async function createHttpApp(): Promise<express.Express> {
   const verifier =
     MCP_TOKEN_VERIFY_MODE === "jwks" ? new DiditTokenVerifier() : new IntrospectionTokenVerifier();
   console.error(`[didit-mcp] token verification mode: ${MCP_TOKEN_VERIFY_MODE}`);
-  // One endpoint per catalog profile. Each is its own OAuth protected resource, so its 401
-  // challenge points at its own metadata URL and the client requests a token for the right
-  // resource indicator. The dispatch is identical apart from the profile handed to the server.
-  const endpoints: Array<{ path: string; profile: CatalogProfile; resourceUrl: URL }> = [
-    { path: "/mcp", profile: "full", resourceUrl: resourceServerUrl },
-    { path: CHATGPT_MCP_PATH, profile: "chatgpt", resourceUrl: chatgptResourceUrl },
-  ];
+  const endpoints: Array<{ path: string; resourceUrl: URL }> = [{ path: "/mcp", resourceUrl: resourceServerUrl }];
 
   // Stateless mode does not support server-initiated streams or session teardown.
   const methodNotAllowed = (path: string) => (_req: express.Request, res: express.Response) => {
@@ -188,7 +158,7 @@ export async function createHttpApp(): Promise<express.Express> {
       }
       if (isModernRequest(rpc, req.headers)) {
         try {
-          const reply = await handleModernRpc(rpc, req.auth, { profile: endpoint.profile });
+          const reply = await handleModernRpc(rpc, req.auth);
           if (reply) res.json(reply);
           else res.status(202).end();
         } catch (err) {
@@ -204,7 +174,7 @@ export async function createHttpApp(): Promise<express.Express> {
         return;
       }
 
-      const server = createServer({ hosted: true, profile: endpoint.profile });
+      const server = createServer({ hosted: true });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {
         transport.close().catch(() => {});

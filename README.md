@@ -2,7 +2,7 @@
 
 The official [Model Context Protocol](https://modelcontextprotocol.io) server for [Didit](https://didit.me) — bring KYC, KYB, AML screening, transaction monitoring, biometrics, and full workspace operations to Claude, Cursor, VS Code, Windsurf, Zed, and any MCP client.
 
-- **140+ tools** across sessions, workflows, vendor users/businesses, transactions, networks, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
+- **130+ tools** across sessions, workflows, vendor users/businesses, transactions, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
 - **Auth is "Log in with Didit" (OAuth 2.1 + PKCE)** — the MCP acts as the signed-in **user** with their role's permissions. There is **no API-key mode**: every tool calls the user-scoped console endpoints, which only accept a Bearer token.
 - Every tool calls a single Didit REST endpoint and returns the JSON verbatim.
 
@@ -38,23 +38,6 @@ claude mcp add --transport http didit https://mcp.didit.me/mcp
 
 See [per-client setup](https://docs.didit.me/integration/mcp/installation) for Claude Desktop and VS Code.
 
-**ChatGPT (Apps SDK)** uses the reduced-catalog endpoint:
-
-```
-https://mcp.didit.me/mcp/chatgpt
-```
-
-It is the same server and the same OAuth flow, but it serves a 48-tool catalog: discovery,
-sessions (hosted verification links and decisions), workflows, compliance advisor,
-questionnaires, webhooks, reports, cases and search. Tools whose inputs collect a government
-ID number, an identity-document or face image, or a one-time code (the `didit_verify_*`
-standalone checks, face-list uploads, `didit_session_update_data`, and the `portrait_image`
-argument of `didit_session_create`) are not offered there, because the ChatGPT app review
-does not allow those data types as tool inputs. Every other client keeps the full catalog at
-`/mcp`. Tool outputs are identical on both endpoints. The allow-list lives in
-`src/catalog-profiles.ts`; `MCP_TOOL_PROFILE=chatgpt` serves the same catalog from the
-stdio server for local review tooling.
-
 ## Authentication
 
 The MCP is an OAuth 2.1 **resource server**; the Didit console (`business.didit.me`) is the **authorization server**. On first connect your client opens a browser, you **Log in with Didit** and approve the scopes, and the MCP then acts as **you** — across every organization you belong to, with your role's permissions. Tokens are short-lived and refreshed automatically.
@@ -67,11 +50,10 @@ See [Authentication](https://docs.didit.me/integration/mcp/authentication).
 
 ## Tools
 
-140+ tools, grouped by area. The full catalogue with read/write/destructive markers is in [`docs/TOOLS.md`](docs/TOOLS.md) and at [docs.didit.me](https://docs.didit.me/integration/mcp/tools). Highlights:
+130+ tools, grouped by area. The full catalogue with read/write/destructive markers is in [`docs/TOOLS.md`](docs/TOOLS.md) and at [docs.didit.me](https://docs.didit.me/integration/mcp/tools). Highlights:
 
 - **Discovery & cross-app:** `didit_context_get`, `didit_session_search`, `didit_transaction_search`, `didit_vendor_user_search`, `didit_analytics` — aggregate across every org/app in one call.
 - **Sessions:** create, list, get decision, update status, reviews, bulk import.
-- **Networks:** `didit_network_list`, `didit_network_get`, `didit_network_membership_get` — read same-org fraud networks through the console API; cross-organization insights are not exposed through MCP.
 - **Verification APIs:** `didit_verify_id`, `didit_verify_aml`, `didit_verify_face_match`, `didit_verify_kyb_search`, …
 - **Workflows (incl. branching graphs):** `didit_workflow_search`, `didit_workflow_get_graph`, `didit_workflow_edit_graph` — build conditional/branching workflows (fuzzy-match conditions, Document-AI steps) by sending small ops; large feature configs are kept server-side, never resent. `didit_workflow_get_id_verification_methods_catalog` and `didit_workflow_get_kyb_registry_catalog` answer the server-driven questions a config write depends on (which countries offer non-doc lookup / wallets, which KYB data tiers and monitoring a country's registries sell).
 - **Compliance:** transaction monitoring, custom and preset rule management with backtesting, lists/blocklist/allowlist, cases, reports, audit logs, alerts.

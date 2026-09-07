@@ -64,7 +64,7 @@ test("pathSegment: rejects traversal, allows in-segment dots", () => {
   assert.equal(pathSegment("customer..prod", "x"), "customer..prod");
 });
 
-// DID-2410: a value that never arrived must not be reported as a malformed value. The old
+// A value that never arrived must not be reported as a malformed value. The old
 // wording told a caller that had sent a clean UUID that it "must be a string ... with no
 // path separators" - a hint describing a condition its input already met - so the real
 // fault (the id was dropped upstream) stayed invisible across 10 production traces.

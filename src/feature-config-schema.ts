@@ -10,7 +10,7 @@
 // to carry a hand-maintained schema note, and DATABASE_VALIDATION never made it
 // in: an agent asked for "a Database Validation workflow for Brazil" produced a
 // node with no countries selected, the API accepted the config and threw the
-// unknown keys away, and nothing anywhere went red (DID-1576). Every key an
+// unknown keys away, and nothing anywhere went red. Every key an
 // agent can set now comes from the artifact, and `test/feature-config-contract.test.mjs`
 // fails if a single one stops being advertised.
 
@@ -107,7 +107,7 @@ function renderConstraint(field: FeatureConfigField): string {
  * One feature's keys, in full but compressed.
  *
  * Every key is listed - a key an agent cannot see is a key it cannot set, which
- * is the whole of DID-1576 - but the repetition is squeezed out: shaped JSON
+ * is the whole of that incident - but the repetition is squeezed out: shaped JSON
  * blobs get their shape and an example, keys sharing a closed vocabulary are
  * grouped under it once, and plain numeric/flag keys are listed with their
  * bounds. Meaning-prose stays in the artifact and is one

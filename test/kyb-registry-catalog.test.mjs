@@ -1,4 +1,4 @@
-// The KYB registry catalog tool (DID-1571 / DID-2389 / DID-2565).
+// The KYB registry catalog tool.
 //
 // `kyb_registry_countries_config` is validated by the backend against the public
 // pricing catalog: a tier the country's registries do not offer is rejected on

@@ -43,7 +43,7 @@ export class DiditError extends Error {
 // routing/traversal metacharacters outright AND percent-encode the rest.
 export function pathSegment(value: unknown, field: string): string {
   // A value that never ARRIVED and a value of the wrong SHAPE are different bugs, and
-  // collapsing them sends the caller to the wrong place. DID-2410: the dispatcher was
+  // collapsing them sends the caller to the wrong place. The dispatcher was
   // stripping the routing ids out of a handler's args before the handler read them, so
   // `organization_id` reached here as `undefined`, and the caller was told its perfectly
   // good UUID "must be a string ... with no path separators", a hint describing a condition

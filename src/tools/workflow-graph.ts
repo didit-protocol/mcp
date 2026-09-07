@@ -473,7 +473,7 @@ function summarizeKybRegistryCatalog(rows: KybRegistryRow[]) {
   };
 }
 
-/** The KYB registry catalog (DID-1571 / DID-2389): per ISO-2 country, which data tiers the
+/** The KYB registry catalog: per ISO-2 country, which data tiers the
  *  registries offer (basic = Lite, shareholders, ubo), their retail price, and whether continuous
  *  monitoring is sold there. Public endpoint: no org/app scope, no provider identity. */
 export async function getKybRegistryCatalog(countries?: unknown): Promise<any> {

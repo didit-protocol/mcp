@@ -1,7 +1,7 @@
 // The contract test: every feature-config key the backend accepts is advertised
 // by the workflow tools, and nothing that is not in the contract is invented.
 //
-// This is the test that would have caught DID-1576. `DATABASE_VALIDATION` reached
+// This is the test that would have caught the silent-drop incident. `DATABASE_VALIDATION` reached
 // production with its config keys documented in the backend and nowhere else, so
 // an agent asked for a Brazilian database check produced a node with no countries
 // and the API dropped the keys in silence. Nothing failed. Now something does.

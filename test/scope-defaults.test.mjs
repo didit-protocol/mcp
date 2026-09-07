@@ -4,7 +4,7 @@ import { createServer } from "../dist/index.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-// DID-2113: an app-scoped tool must resolve the caller's UNAMBIGUOUS application on its
+// An app-scoped tool must resolve the caller's UNAMBIGUOUS application on its
 // own. didit_context_get advertises `default_application_id` whenever the caller owns
 // exactly ONE application across ALL their organizations, but ensureScopeDefaults only
 // resolved it when the caller also owned exactly ONE organization. A user with a second

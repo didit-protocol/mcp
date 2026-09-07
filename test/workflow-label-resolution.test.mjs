@@ -2,12 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveWorkflowScope } from "../dist/tools/search.js";
 import { getWorkflowFieldDefinitions, getWorkflowBranchFields } from "../dist/tools/workflow-graph.js";
-import { checkWorkflow } from "../dist/tools/compliance.js";
 import { requestContext } from "../dist/config.js";
 
-// DID-2420 (prod Braintrust 1-4 Sep): the model passed a label/slug ("adaptive-age-estimation")
+// Seen in production: the model passed a label/slug ("adaptive-age-estimation")
 // or a node id ("feature_ocr") as `workflow_id` to didit_workflow_get_field_definitions (30 calls)
-// and didit_compliance_check_workflow (6 calls) and got "Workflow … was not found in any of your
+// and other id-taking tools
 // applications". A non-uuid id now resolves by EXACT label/slug; anything ambiguous lists the
 // candidates instead of guessing. didit_workflow_get_branch_fields (19 calls) failed with
 // "Both 'graph' and 'branch_node_id' are required" because the MCP posted `node_id`.
@@ -54,7 +53,6 @@ const ROUTES = {
     results: [{ uuid: "v-3", workflow_id: "stable-3", workflow_label: "KYC Basic" }],
   },
   [`${API}/organization/org-1/application/app-1/workflow-graph/field-definitions/`]: { fields_by_feature: {} },
-  [`${API}/organization/org-1/application/app-1/compliance/workflow-check/`]: { obligations: [] },
 };
 
 test("label resolution: a slug that matches exactly one label resolves to that workflow", async () => {
@@ -131,23 +129,6 @@ test("field_definitions: a uuid id carries no resolution note", async () => {
   const result = await inContext("lbl-8", () => getWorkflowFieldDefinitions("v-2", { organization_id: "org-1", application_id: "app-1" }));
 
   assert.equal(result.workflow_resolved, undefined);
-});
-
-test("compliance_check_workflow: a label resolves and the backend receives the workflow id", async () => {
-  const calls = stubFetch(ROUTES);
-  const result = await inContext("lbl-9", () => checkWorkflow({ workflow_id: "Adaptive Age Estimation", as_of: "2026-09-04" }));
-
-  const check = calls.find((c) => c.path.endsWith("/compliance/workflow-check/"));
-  assert.deepEqual(check.body, { workflow_id: "stable-1", as_of: "2026-09-04" });
-  assert.equal(result.workflow_resolved.workflow_id, "stable-1");
-});
-
-test("compliance_check_workflow: a version uuid is sent as-is (an older version stays selectable)", async () => {
-  const calls = stubFetch(ROUTES);
-  await inContext("lbl-10", () => checkWorkflow({ workflow_id: "v-2", organization_id: "org-1", application_id: "app-1" }));
-
-  const check = calls.find((c) => c.path.endsWith("/compliance/workflow-check/"));
-  assert.deepEqual(check.body, { workflow_id: "v-2" });
 });
 
 const GRAPH = { start_node: "ocr", nodes: { ocr: { node_type: "feature", feature: "OCR", next: "b" }, b: { node_type: "branch", branches: [] } } };

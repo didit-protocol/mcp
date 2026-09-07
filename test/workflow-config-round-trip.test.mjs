@@ -1,7 +1,7 @@
 // Round-trip: the config an agent asks for is the config that reaches the API,
 // and the config the API stored is what comes back.
 //
-// DID-1576 was a silent rewrite. The agent sent a DATABASE_VALIDATION node, the
+// The incident was a silent rewrite. The agent sent a DATABASE_VALIDATION node, the
 // save succeeded, and the keys were gone - no error, no warning, and no test
 // anywhere compared what went in against what came out. These tests do exactly
 // that, per feature, over a fake backend that stores the PUT body and serves it
@@ -145,7 +145,7 @@ test("DATABASE_VALIDATION: a multi-country service selection is not collapsed", 
     database_validation_no_match_action: "REVIEW",
   });
   assertIdentical(result, "DATABASE_VALIDATION multi-country");
-  // The exact failure of DID-1576: an empty selection must stay empty rather
+  // The exact failure of that incident: an empty selection must stay empty rather
   // than being "helpfully" filled in, and a filled one must stay filled.
   assert.deepEqual(result.readBack.database_validation_countries, countries);
 });

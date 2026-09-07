@@ -4,10 +4,10 @@ import { createServer } from "../dist/index.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-// DID-2420: the advertised schemas must make the failing calls impossible to mis-shape.
+// The advertised schemas must make the failing calls impossible to mis-shape.
 // - didit_workflow_get_branch_fields: graph + branch_node_id required, each saying where it comes from.
-// - didit_workflow_get_field_definitions / didit_compliance_check_workflow: workflow_id is an id, not a label.
-// - didit_workflow_build_graph: document_rules[].country accepts the 'ALL' wildcard (DID-2419).
+// - didit_workflow_get_field_definitions: workflow_id is an id, not a label.
+// - didit_workflow_build_graph: document_rules[].country accepts the 'ALL' wildcard.
 
 async function listTools() {
   const server = createServer();
@@ -28,9 +28,9 @@ test("get_branch_fields requires graph and branch_node_id and says where each co
   assert.match(inputSchema.properties.branch_node_id.description, /id of a branch node in that graph/);
 });
 
-test("workflow_id on field_definitions and compliance_check is documented as an id, never a label", async () => {
+test("workflow_id on field_definitions is documented as an id, never a label", async () => {
   const tools = await listTools();
-  for (const name of ["didit_workflow_get_field_definitions", "didit_compliance_check_workflow"]) {
+  for (const name of ["didit_workflow_get_field_definitions"]) {
     const { description } = tools.get(name).inputSchema.properties.workflow_id;
     assert.match(description, /NOT a label, slug or node id/, name);
     assert.match(description, /candidates are listed/, name);

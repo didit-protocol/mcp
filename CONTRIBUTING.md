@@ -15,7 +15,7 @@ from it by `src/feature-config-schema.ts`.
 this contract exists to end: the descriptions used to be prose, `DATABASE_VALIDATION` never made
 it in, and an agent asked for "a Database Validation workflow for Brazil" produced a node with no
 countries — the API accepted the config and threw the unknown keys away, with nothing anywhere
-going red (DID-1576).
+going red.
 
 Prose in those descriptions is for what a schema cannot say: graph structure, branch semantics,
 the KYC/KYB segregation rule, and the allow-list shorthands this server normalizes on the way

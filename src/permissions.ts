@@ -62,12 +62,6 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_case_search: "list:cases", // GET /organization/{org}/cases/ → case_management.py:264
   didit_case_statistics: "list:cases", // GET …/cases/statistics/ → case_management.py:910
   // ── Compliance (POST endpoints gated by read:workflows on purpose) ──
-  didit_compliance_check_workflow: "read:workflows", // POST …/compliance/workflow-check/ → compliance.py:246
-  didit_compliance_generate_workflow: "read:workflows", // POST …/compliance/generate-workflow/ → compliance.py:165
-  didit_compliance_interview_next: "read:workflows", // POST …/compliance/interview/next/ → compliance.py:317
-  didit_compliance_profile_get: "read:workflows", // GET …/compliance/profile/ → compliance.py:70
-  didit_compliance_profile_set: "write:workflows", // PUT …/compliance/profile/ → compliance.py:77
-  didit_compliance_requirements: "read:workflows", // GET …/compliance/requirements/ → compliance.py:99
   // ── Lists ──
   didit_lists_create: "create:lists", // POST …/lists/ → lists.py:69
   didit_lists_delete: "delete:lists", // DELETE …/lists/{uuid}/ → lists.py:122
@@ -79,13 +73,7 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_lists_list: "read:lists", // GET …/lists/ → lists.py:40
   didit_lists_update: "write:lists", // PATCH …/lists/{uuid}/ → lists.py:114
   // ── Marketplace ──
-  didit_marketplace_list_catalog: "read:integrations", // GET …/marketplace/catalog/ → marketplace/views.py:28
-  didit_marketplace_list_connections: "read:integrations", // GET …/marketplace/connections/ → marketplace/views.py:39
-  didit_marketplace_request_integration: "write:integrations", // POST …/marketplace/requests/ → marketplace/views.py:166
   // ── Networks ──
-  didit_network_get: "read:networks", // GET …/networks/{id}/ → networks/views/console.py:742
-  didit_network_list: "list:networks", // GET …/networks/ → networks/views/console.py:721
-  didit_network_membership_get: "read:networks", // GET …/{entity}/{id}/networks/ → networks/views/console.py:889
   // ── Questionnaires (delete reuses write) ──
   didit_questionnaire_append_choices: "write:questionnaires", // PATCH …/questionnaires/{uuid}/ → questionnaire.py:208
   didit_questionnaire_create: "write:questionnaires", // POST …/questionnaires/ → questionnaire.py:149
@@ -131,20 +119,8 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_transaction_rule_uninstall: "write:transactions", // DELETE …/transactions/rules/install/ → transactions.py:926
   didit_transaction_rule_update: "write:transactions", // PATCH …/transactions/rules/{uuid}/ → transactions.py:790
   didit_transaction_screen_wallet: "create:transactions", // POST …/transactions/screen-wallet/ → transactions.py:371
-  didit_transaction_sdk_token: null, // POST /transactions/sdk-token/ → transactions_v3.py:130 — client-credential check only
   didit_transaction_search: "list:transactions", // GET /organization/{org}/transactions/ → transactions.py:278
   // ── Travel rule (client-credential checks only, no decorator) ──
-  didit_travel_rule_add_wallet_address: null,
-  didit_travel_rule_confirm_ownership: null,
-  didit_travel_rule_create_widget_session: null,
-  didit_travel_rule_delete_wallet_address: null,
-  didit_travel_rule_get_settings: null,
-  didit_travel_rule_list_wallet_addresses: null,
-  didit_travel_rule_register_inbound: null,
-  didit_travel_rule_search_vasps: null,
-  didit_travel_rule_transfer_action: null,
-  didit_travel_rule_update_settings: null,
-  didit_travel_rule_update_wallet_address: null,
   // ── Vendor businesses (KYB) ──
   didit_vendor_business_create: "create:businesses", // POST …/vendor-businesses/ → vendor_business.py:154
   didit_vendor_business_delete: "delete:businesses", // DELETE …/vendor-businesses/delete/ → vendor_business.py:935
