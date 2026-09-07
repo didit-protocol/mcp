@@ -66,6 +66,9 @@ export class IntrospectionTokenVerifier implements OAuthTokenVerifier {
         organization_id: organizationId,
         sub: data.sub ?? data.user_id,
         identifier: data.identifier,
+        // Optional role flag from the token; the backend permission is the authoritative gate.
+        // It only controls which tools the connected user can see / call (none in the OSS build).
+        is_privileged: data.is_staff === true,
         has_2fa_enabled: data.has_2fa_enabled === true,
       },
     };
