@@ -106,8 +106,27 @@ export async function createQuestionnaire(data: QuestionnaireWrite): Promise<any
   return apiRequest(orgAppPath("/questionnaires/"), { method: "POST", json: toGraphPayload(data) });
 }
 
-export async function getQuestionnaire(uuid: string): Promise<any> {
-  return apiRequest(orgAppPath(`/questionnaires/${uuid}/`));
+function compactTranslations(value: any): any {
+  if (Array.isArray(value)) return value.map(compactTranslations);
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(value);
+  if (entries.length > 1 && entries.every(([key]) => /^[a-z]{2}(?:-[A-Z]{2})?$/.test(key))) {
+    const [locale, text] = Object.prototype.hasOwnProperty.call(value, "en")
+      ? ["en", value.en]
+      : entries[0];
+    return { [locale]: compactTranslations(text) };
+  }
+  return Object.fromEntries(entries.map(([key, nested]) => [key, compactTranslations(nested)]));
+}
+
+export async function getQuestionnaire(uuid: string, includeTranslations = false): Promise<any> {
+  const result = await apiRequest(orgAppPath(`/questionnaires/${uuid}/`));
+  if (includeTranslations) return result;
+  return {
+    ...compactTranslations(result),
+    translations_summarized: true,
+    hint: "Translations are limited to English (or the first available locale). Pass include_translations:true for every locale.",
+  };
 }
 
 export async function updateQuestionnaire(uuid: string, data: QuestionnaireWrite): Promise<any> {
@@ -147,7 +166,10 @@ export async function appendQuestionnaireChoices(
   uuid: string,
   data: { node_id?: string; choices?: ChoiceInput[]; publish?: boolean },
 ): Promise<any> {
-  const current = await getQuestionnaire(uuid);
+  // This is a read-modify-write path. Fetch the complete locale maps so the
+  // PATCH cannot overwrite a multilingual questionnaire with the compact
+  // read-only representation returned by the public get tool.
+  const current = await getQuestionnaire(uuid, true);
   const graph = current?.graph ?? { nodes: {} };
   const languages: string[] = current?.languages?.length ? current.languages : ["en"];
   const nodeId = resolveChoiceNode(graph.nodes ?? {}, data.node_id);

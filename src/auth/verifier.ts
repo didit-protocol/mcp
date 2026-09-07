@@ -57,6 +57,7 @@ export class DiditTokenVerifier implements OAuthTokenVerifier {
         organization_id: organizationId,
         sub: payload.sub,
         identifier: payload.identifier,
+        is_privileged: payload.is_staff === true,
         has_2fa_enabled: payload.has_2fa_enabled === true,
       },
     };

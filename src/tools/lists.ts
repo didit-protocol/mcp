@@ -1,5 +1,5 @@
-import { readFileSync } from "fs";
 import { apiRequest, orgAppPath } from "../config";
+import { requireFileSource, resolveFileSource } from "../security";
 
 // Lists are org/app-scoped console resources; org/app resolve from the tool args via the
 // request context (see orgAppPath). Sub-paths match the console inventory 1:1.
@@ -38,13 +38,12 @@ export async function deleteEntry(listUuid: string, entryUuid: string): Promise<
 
 export async function uploadFaceEntry(listUuid: string, data: Record<string, any>): Promise<any> {
   // The face-upload endpoint expects a base64-encoded `image` field in a JSON body.
-  const { image_path, ...rest } = data;
-  if (!image_path) {
-    throw new Error("uploadFaceEntry requires image_path (a local face image file).");
-  }
-  const image = readFileSync(image_path).toString("base64");
+  // The image arrives as a local path (stdio/local runs) or inline base64 (hosted runs).
+  const { image_path, image_base64, ...rest } = data;
+  const source = requireFileSource({ path: image_path, base64: image_base64 }, "image");
+  const { buffer } = resolveFileSource(source, "image", { required: true })!;
   return apiRequest(orgAppPath(`/lists/${listUuid}/entries/face-upload/`), {
     method: "POST",
-    json: { image, ...rest },
+    json: { image: buffer.toString("base64"), ...rest },
   });
 }

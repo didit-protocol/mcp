@@ -4,6 +4,7 @@ import {
   parseErrorBody, sanitizeText, assertSafeWebhookUrl, pathSegment,
   redactApplication, assertBoolean, DiditError, maskSecret,
 } from "../dist/security.js";
+import { stripRoutingIds } from "../dist/config.js";
 import { topUp } from "../dist/tools/billing.js";
 import { manageCase } from "../dist/tools/cases.js";
 import { batchDeleteSessions } from "../dist/tools/sessions.js";
@@ -42,6 +43,13 @@ test("sanitizeText: redacts secrets, preserves canonical UUID", () => {
   assert.doesNotMatch(s, /sk_live_ABCDEF123456/);
 });
 
+test("sanitizeText: preserves didit_* tool names but redacts didit-shaped secrets", () => {
+  const s = sanitizeText("Call didit_context_get first; never share didit_A8f3kQ92xZ or didit-4b84a26ae44f");
+  assert.match(s, /didit_context_get/); // tool name survives (error hints reference tools)
+  assert.doesNotMatch(s, /didit_A8f3kQ92xZ/); // mixed-case/digit tail → secret-shaped → redacted
+  assert.doesNotMatch(s, /didit-4b84a26ae44f/); // hyphen separator is never a tool name → redacted
+});
+
 test("assertSafeWebhookUrl: blocks internal targets", () => {
   for (const u of ["http://localhost/x", "http://169.254.169.254/", "http://[::ffff:127.0.0.1]/", "http://10.0.0.5/", "http://127.0.0.1.nip.io/"]) {
     assert.throws(() => assertSafeWebhookUrl(u, "url"), DiditError, u);
@@ -54,6 +62,37 @@ test("pathSegment: rejects traversal, allows in-segment dots", () => {
   assert.throws(() => pathSegment("a/b", "x"), DiditError);
   assert.throws(() => pathSegment("..", "x"), DiditError);
   assert.equal(pathSegment("customer..prod", "x"), "customer..prod");
+});
+
+// DID-2410: a value that never arrived must not be reported as a malformed value. The old
+// wording told a caller that had sent a clean UUID that it "must be a string ... with no
+// path separators" - a hint describing a condition its input already met - so the real
+// fault (the id was dropped upstream) stayed invisible across 10 production traces.
+const rejection = (fn) => {
+  try {
+    fn();
+  } catch (err) {
+    assert.ok(err instanceof DiditError, `expected a DiditError, got ${err}`);
+    return err.shape;
+  }
+  assert.fail("expected pathSegment to throw");
+};
+
+test("pathSegment: a missing value reads as missing, not as a bad string", () => {
+  for (const missing of [undefined, null]) {
+    const shape = rejection(() => pathSegment(missing, "organization_id"));
+    assert.match(shape.message, /organization_id is required but no value was received/);
+    assert.equal(shape.field, "organization_id");
+    // The old, misleading wording must not resurface for a value that was never sent.
+    assert.doesNotMatch(shape.message, /must be a string/);
+    assert.doesNotMatch(shape.hint ?? "", /path separators/);
+  }
+});
+
+test("pathSegment: a wrong-typed value names the type it actually got", () => {
+  assert.match(rejection(() => pathSegment(["org-1"], "organization_id")).message, /must be a string \(received an array\)/);
+  assert.match(rejection(() => pathSegment({ id: "org-1" }, "organization_id")).message, /must be a string \(received an object\)/);
+  assert.match(rejection(() => pathSegment(42, "organization_id")).message, /must be a string \(received a number\)/);
 });
 
 test("redactApplication: drops api_key, sets flag + preview", () => {
@@ -90,4 +129,69 @@ test("batch_delete_sessions: rejects delete_all:'false' + wildcard without confi
 
 test("maskSecret: never returns the raw value", () => {
   assert.doesNotMatch(maskSecret("supersecretvalue123") || "", /supersecretvalue123/);
+});
+
+// ── Base64 uploads (hosted transport) ────────────────────────────────────────
+import { validateUploadBuffer, resolveFileSource, requireFileSource } from "../dist/security.js";
+
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+const PNG_B64 = PNG_MAGIC.toString("base64");
+
+test("validateUploadBuffer: accepts raw base64 and data URLs of a real image", () => {
+  const raw = validateUploadBuffer(PNG_B64, "image_base64");
+  assert.equal(raw.type, "png");
+  assert.ok(raw.buffer.equals(PNG_MAGIC));
+  const dataUrl = validateUploadBuffer(`data:image/png;base64,${PNG_B64}`, "image_base64");
+  assert.equal(dataUrl.type, "png");
+});
+
+test("validateUploadBuffer: rejects empty / non-base64 / unrecognised content", () => {
+  assert.throws(() => validateUploadBuffer("", "image_base64"), DiditError);
+  assert.throws(() => validateUploadBuffer("not base64!!!", "image_base64"), DiditError);
+  // Valid base64 of non-image bytes must fail the magic-bytes sniff.
+  const text = Buffer.from("SECRET=hunter2\n").toString("base64");
+  assert.throws(() => validateUploadBuffer(text, "image_base64"), DiditError);
+});
+
+test("validateUploadBuffer: rejects payloads over the upload cap before decoding", () => {
+  const oversized = "A".repeat(Math.ceil((15 * 1024 * 1024 + 1024) * (4 / 3)));
+  assert.throws(() => validateUploadBuffer(oversized, "image_base64"), DiditError);
+});
+
+test("resolveFileSource: base64 source yields buffer + synthesized filename", () => {
+  const resolved = resolveFileSource({ base64: PNG_B64 }, "user_image");
+  assert.ok(resolved.buffer.equals(PNG_MAGIC));
+  assert.equal(resolved.filename, "user_image.png");
+});
+
+test("resolveFileSource: rejects both path+base64; empty optional resolves undefined", () => {
+  assert.throws(() => resolveFileSource({ path: "/tmp/x.png", base64: PNG_B64 }, "image"), DiditError);
+  assert.equal(resolveFileSource({}, "image"), undefined);
+  assert.throws(() => resolveFileSource({}, "image", { required: true }), DiditError);
+});
+
+test("requireFileSource: throws with local-vs-hosted hint when nothing is provided", () => {
+  const err = /** @type {any} */ (
+    (() => { try { requireFileSource({}, "front_image"); return null; } catch (e) { return e; } })()
+  );
+  assert.ok(err instanceof DiditError);
+  assert.match(String(err.shape?.hint || ""), /front_image_base64/);
+  assert.doesNotThrow(() => requireFileSource({ base64: PNG_B64 }, "front_image"));
+});
+
+/**
+ * The routing ids never reach a handler as payload: the dispatcher reads them
+ * into requestContext, then strips them. Without this, advertising them on the
+ * tools that forward their args verbatim (lists.listLists → query string,
+ * webhooks.createDestination → POST body) would send the console API fields it
+ * never asked for.
+ */
+test("stripRoutingIds removes only the routing ids", () => {
+  assert.deepEqual(
+    stripRoutingIds({ organization_id: "o", application_id: "a", list_type: "blocklist", limit: "5" }),
+    { list_type: "blocklist", limit: "5" },
+  );
+  assert.deepEqual(stripRoutingIds({ limit: "5" }), { limit: "5" });
+  assert.deepEqual(stripRoutingIds({}), {});
+  assert.equal(stripRoutingIds(undefined), undefined);
 });

@@ -18,13 +18,18 @@ export async function getContext(): Promise<any> {
     })),
   }));
   const allApps = map.flatMap((o) => o.apps.map((a) => ({ orgId: o.orgId, appId: a.appId })));
+  // An org whose applications failed to list is UNKNOWN, not empty - it may hold a second
+  // application, so a lone visible app is not a default. The scope resolver applies the same
+  // rule, and the two must agree: a default advertised here that the resolver then refuses is
+  // exactly the "application_id is required" dead end this field exists to prevent.
+  const appsUnknown = map.some((o) => o.appsError);
   return {
     organizations,
     organization_count: organizations.length,
     application_count: allApps.length,
     default_organization_id:
       organizations.length === 1 ? organizations[0].organization_id : undefined,
-    default_application_id: allApps.length === 1 ? allApps[0].appId : undefined,
+    default_application_id: allApps.length === 1 && !appsUnknown ? allApps[0].appId : undefined,
     hint: "Pass organization_id/application_id to target one scope, or omit them on *_search tools to aggregate across all apps. `mode` is the application's environment: a LIVE application bills every verification session created in it, a SANDBOX one mocks every provider and never bills. Read the field — never guess the environment from application_name.",
   };
 }
