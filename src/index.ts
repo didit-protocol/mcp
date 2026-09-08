@@ -1164,7 +1164,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_workflow_update",
-      description: "Update a workflow's top-level SETTINGS only (workflow_label, is_default, retry/expiration, white-label, etc.). Omitted status preserves the current draft/published state; publication changes only when status is explicitly passed. It does NOT change which features run: to add/remove/reorder features, add a conditional branch, or add a Document-AI step, edit the graph with didit_workflow_edit_graph (small ops, preserves the big allow-lists) or didit_workflow_set_graph (full replace) — those are the only ways feature changes actually persist.",
+      description: "Update a workflow's top-level SETTINGS only (workflow_label, is_default, retry/expiration, white-label, documents_allowed, etc.). Omitted status preserves the current draft/published state; publication changes only when status is explicitly passed. It does NOT change which features run: to add/remove/reorder features, add a conditional branch, or add a Document-AI step, edit the graph with didit_workflow_edit_graph (small ops, preserves the big allow-lists) or didit_workflow_set_graph (full replace) — those are the only ways feature changes actually persist. `documents_allowed` is the one exception that is NOT a graph edit: it sets which countries and document types the ID verification accepts on a SIMPLE workflow without converting it into a graph workflow (the graph tools would).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1183,6 +1183,18 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
           max_retry_attempts: { type: "number" },
           retry_window_days: { type: "number" },
           session_expiration_time: { type: "number" },
+          documents_allowed: {
+            type: "object",
+            description:
+              "Which identity documents the ID verification accepts, per issuing country: " +
+              '{"<ISO3>": {"<DOC_CODE>": {"enabled": 0|1, "sides"?: 1|2, "subtypes"?: ["<SUBTYPE_CODE>", ...]}}}. ' +
+              "The map you send REPLACES the whole map: a country you omit is turned OFF, so \"only " +
+              'Mexico\" is {"MEX": {"ID": {"enabled": 1}, "P": {"enabled": 1}, "DL": {"enabled": 1}}}. ' +
+              "Codes are canonical (ISO3 country, document codes from " +
+              "didit_workflow_get_feature_config_schema); at least one document must stay enabled. " +
+              "Does NOT convert a simple workflow into a graph one.",
+            additionalProperties: true,
+          },
         },
         required: ["workflow_id"],
       },
