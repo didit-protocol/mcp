@@ -1,0 +1,17 @@
+{
+  "name": "didit-mcp",
+  "displayName": "Didit",
+  "version": "1.0.0",
+  "description": "Connect to your Didit workspace to manage verification sessions, workflows, cases, reports, and webhooks.",
+  "author": {
+    "name": "Didit",
+    "email": "hello@didit.me"
+  },
+  "homepage": "https://docs.didit.me/integration/mcp/overview",
+  "repository": "https://github.com/didit-protocol/mcp",
+  "license": "MIT",
+  "logo": "assets/didit-mcp-icon-400.png",
+  "keywords": ["mcp", "identity-verification", "kyc", "kyb", "aml", "fraud", "oauth"],
+  "mcpServers": ".mcp.json",
+  "rules": "rules/"
+}

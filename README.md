@@ -38,6 +38,33 @@ claude mcp add --transport http didit https://mcp.didit.me/mcp
 
 See [per-client setup](https://docs.didit.me/integration/mcp/installation) for Claude Desktop and VS Code.
 
+### Cursor plugin
+
+This repository includes a Cursor plugin manifest at `.cursor-plugin/plugin.json`.
+The plugin uses the hosted OAuth server configured in `.mcp.json`, the existing Didit rule in `rules/`, and the icon in `assets/`.
+No local server, API key, or environment variables are required.
+Sign in with your Didit account when Cursor requests authorization.
+The connection uses your existing organization roles and permissions.
+
+Example requests:
+
+- "Show my Didit organizations and applications."
+- "List my verification workflows."
+- "Create a sandbox verification link using my selected workflow."
+- "Show verification analytics for the last seven days."
+- "List the webhooks configured for my application."
+
+Tool results may contain customer and verification data from the workspace you authorize.
+Only request information you are authorized to access and share with your AI client.
+Review proposed changes before approving write or destructive actions.
+Disconnect Didit in your client's MCP settings when you no longer need the connection.
+
+See the [Privacy Policy](https://didit.me/terms/privacy-policy/) and [legal terms](https://didit.me/terms/).
+For support, contact [hello@didit.me](mailto:hello@didit.me) or open a [GitHub issue](https://github.com/didit-protocol/mcp/issues).
+
+The presence of this package does not imply marketplace approval.
+Publishers can submit the public repository through [Cursor's publishing form](https://cursor.com/marketplace/publish).
+
 ## Authentication
 
 The MCP is an OAuth 2.1 **resource server**; the Didit console (`business.didit.me`) is the **authorization server**. On first connect your client opens a browser, you **Log in with Didit** and approve the scopes, and the MCP then acts as **you** — across every organization you belong to, with your role's permissions. Tokens are short-lived and refreshed automatically.
