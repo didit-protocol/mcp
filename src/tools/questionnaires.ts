@@ -159,9 +159,10 @@ function resolveChoiceNode(nodes: Record<string, any>, nodeId?: string): string 
  * arrive here one call at a time. Dedup by value makes a retried batch safe, and the compact
  * result spares the model the full graph it would otherwise re-read after every batch.
  *
- * Draft discipline: a PATCH that omits `status` PUBLISHES a draft, and a published
- * questionnaire rejects every further edit — so intermediate batches pin `status: "draft"`
- * and only a `publish: true` batch (the last one) lets the PATCH publish. */
+ * Draft discipline: a PATCH changes the published state only when it asks for it explicitly
+ * — omitting `status` edits in place and never publishes, and a published questionnaire
+ * rejects every further edit — so intermediate batches pin `status: "draft"` and only the
+ * `publish: true` batch (the last one) sends `status: "published"` to publish. */
 export async function appendQuestionnaireChoices(
   uuid: string,
   data: { node_id?: string; choices?: ChoiceInput[]; publish?: boolean },
@@ -182,7 +183,7 @@ export async function appendQuestionnaireChoices(
 
   node.choices = [...(node.choices ?? []), ...fresh];
   if (fresh.length || data.publish) {
-    await updateQuestionnaire(uuid, data.publish ? { graph } : { graph, status: "draft" });
+    await updateQuestionnaire(uuid, { graph, status: data.publish ? "published" : "draft" });
   }
 
   return {

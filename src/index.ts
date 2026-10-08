@@ -98,7 +98,21 @@ const QUESTIONNAIRE_LANG_PROPS = {
     description: "Locales the questionnaire is offered in. Defaults to [\"en\"]; \"en\" must always be included.",
   },
   default_language: { type: "string", description: "Locale shown by default (must be in `languages`). Defaults to the first language." },
+} as const;
+
+// A create with no status publishes immediately (backend QuestionnaireCreateSerializer.create),
+// while an update with no status edits in place and never publishes — so the two tools must not
+// advertise the same `status` wording.
+const QUESTIONNAIRE_CREATE_STATUS_PROP = {
   status: { type: "string", enum: ["draft", "published"], description: "Omit to publish immediately; 'draft' saves without publishing." },
+} as const;
+
+const QUESTIONNAIRE_UPDATE_STATUS_PROP = {
+  status: {
+    type: "string",
+    enum: ["draft", "published"],
+    description: "Omit to edit in place without changing the published state; 'draft' saves without publishing; 'published' publishes (a draft goes live, a published questionnaire gets a new published version).",
+  },
 } as const;
 
 const FORM_ELEMENTS_PROP = {
@@ -1503,6 +1517,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
           description: { type: "string", description: "Description shown to the user" },
           ...FORM_ELEMENTS_PROP,
           ...QUESTIONNAIRE_LANG_PROPS,
+          ...QUESTIONNAIRE_CREATE_STATUS_PROP,
         },
         required: ["title", "form_elements"],
       },
@@ -1551,7 +1566,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_questionnaire_update",
-      description: "Overwrite a questionnaire's supplied settings. Sending form_elements REPLACES the entire question list, removing omitted questions; pass every question to keep, in order, with UPPERCASE element_type. Before calling, show the questionnaire and proposed changes and obtain explicit user confirmation, including the full replacement when form_elements is supplied.",
+      description: "Overwrite a questionnaire's supplied settings. Sending form_elements REPLACES the entire question list, removing omitted questions; pass every question to keep, in order, with UPPERCASE element_type. Omitted status preserves the current draft/published state; publication changes only when status is explicitly passed. Before calling, show the questionnaire and proposed changes and obtain explicit user confirmation, including the full replacement when form_elements is supplied.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1561,6 +1576,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
           description: { type: "string" },
           ...FORM_ELEMENTS_PROP,
           ...QUESTIONNAIRE_LANG_PROPS,
+          ...QUESTIONNAIRE_UPDATE_STATUS_PROP,
         },
         required: ["questionnaire_id"],
       },

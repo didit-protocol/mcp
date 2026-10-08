@@ -60,8 +60,8 @@ test("a batch is appended after the stored choices and PATCHed as a draft-pinned
   );
 
   assert.equal(sent.method, "PATCH");
-  // A PATCH that omits status PUBLISHES a draft, and a published questionnaire rejects
-  // every further edit — an intermediate batch must pin the draft state explicitly.
+  // A published questionnaire rejects every further edit, so an intermediate batch must
+  // pin the draft state explicitly.
   assert.equal(sent.body.status, "draft");
   assert.deepEqual(
     sent.body.graph.nodes.q1.choices.map((choice) => choice.value),
@@ -78,14 +78,15 @@ test("a batch is appended after the stored choices and PATCHed as a draft-pinned
   });
 });
 
-test("publish:true on the final batch lets the PATCH publish (no draft pin)", async () => {
+test("publish:true on the final batch publishes with an explicit status", async () => {
   const sent = stubApi(storedQuestionnaire([{ value: "A", label: { en: "A" } }]));
   const result = await requestContext.run(CTX, () =>
     appendQuestionnaireChoices("q-1", { choices: [{ value: "B" }], publish: true }),
   );
 
   assert.equal(sent.method, "PATCH");
-  assert.equal(sent.body.status, undefined);
+  // Omitting status would only edit the draft in place; the publish batch must ask for it.
+  assert.equal(sent.body.status, "published");
   assert.equal(result.status, "published");
 });
 
