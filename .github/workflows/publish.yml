@@ -1,0 +1,68 @@
+name: Publish to npm
+
+# Publishes @didit-protocol/mcp-server to npm for every release tag (vX.Y.Z) pushed here.
+#
+# Authentication is npm Trusted Publishing (GitHub OIDC): no npm token is stored anywhere.
+# One-time npm setting (package -> Settings -> Trusted publisher -> GitHub Actions):
+#   organization didit-protocol, repository mcp, workflow publish.yml, environment empty.
+#
+# Release tags arrive from the internal repository's sync workflow, which copies each
+# production release here and tags it with the same version.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, e.g. v5.1.31"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write # npm Trusted Publishing (and provenance)
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing needs npm 11.5.1 or newer; Node 22 ships npm 10.
+      - run: npm install -g npm@^11.5.1
+
+      - name: Check the tag matches package.json and is not published yet
+        id: version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::tag $TAG does not match package.json version $VERSION"
+            exit 1
+          fi
+          if npm view "@didit-protocol/mcp-server@$VERSION" version >/dev/null 2>&1; then
+            echo "@didit-protocol/mcp-server@$VERSION is already on npm - nothing to publish"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.version.outputs.published != 'true'
+        run: npm ci
+
+      # Builds (tsc) and runs the test suite: a tag never publishes a build that fails.
+      - if: steps.version.outputs.published != 'true'
+        run: npm test
+
+      - if: steps.version.outputs.published != 'true'
+        run: npm publish --access public
