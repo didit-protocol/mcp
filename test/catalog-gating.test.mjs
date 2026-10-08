@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "../dist/index.js";
+import { PRIVILEGED_TOOL_DEFS, isPrivilegedToolName } from "../dist/privileged-tools.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
@@ -20,7 +21,12 @@ const ACCOUNT_TOOLS = [
   "didit_account_verify_email",
   "didit_account_resend_otp",
   "didit_account_login",
+  "didit_account_verify_2fa",
 ];
+
+// The public open-source build swaps privileged-tools for an empty stub - staff-surface
+// assertions only apply when the internal module is present.
+const HAS_STAFF_SURFACE = PRIVILEGED_TOOL_DEFS.length > 0;
 
 // Developer-machine env would flip bearer/staff detection under the tests.
 delete process.env.DIDIT_ACCESS_TOKEN;
@@ -87,6 +93,41 @@ test("hosted connector refuses account bootstrap calls outright", async () => {
     const res = await c.callTool({ name: "didit_account_login", arguments: { email: "a@b.c", password: "x" } });
     assert.equal(res.isError, true);
     assert.match(res.content[0].text, /not available on the hosted connector/);
+  });
+});
+
+test("hosted staff token keeps the staff surface but still no account tools", { skip: !HAS_STAFF_SURFACE }, async () => {
+  const names = await listNames({
+    hosted: true,
+    authInfo: { token: "tok", clientId: "test", scopes: [], extra: { is_privileged: true } },
+  });
+  assert.ok(names.some(isPrivilegedToolName), "introspected staff token must keep the staff surface");
+  for (const name of ACCOUNT_TOOLS) assert.ok(!names.includes(name), `${name} leaked to a hosted staff catalog`);
+});
+
+test("DIDIT_IS_STAFF env override opens the staff surface on stdio only", { skip: !HAS_STAFF_SURFACE }, async () => {
+  process.env.DIDIT_IS_STAFF = "true";
+  try {
+    const hosted = await listNames({ hosted: true, authInfo: { token: "tok", clientId: "test", scopes: [] } });
+    assert.ok(
+      !hosted.some(isPrivilegedToolName),
+      "a deployment-wide env var must never expose staff tools to hosted callers",
+    );
+    const stdio = await listNames({});
+    assert.ok(stdio.some(isPrivilegedToolName), "env override should still work for the stdio owner");
+  } finally {
+    delete process.env.DIDIT_IS_STAFF;
+  }
+});
+
+test("staff tools stay hidden and uncallable for ordinary hosted callers", { skip: !HAS_STAFF_SURFACE }, async () => {
+  const authInfo = { token: "tok", clientId: "test", scopes: [] };
+  const names = await listNames({ hosted: true, authInfo });
+  assert.ok(!names.some(isPrivilegedToolName), "staff tools leaked to a non-staff hosted caller");
+  await withClient({ hosted: true, authInfo }, async (c) => {
+    const res = await c.callTool({ name: PRIVILEGED_TOOL_DEFS[0].name, arguments: {} });
+    assert.equal(res.isError, true, "calling a staff tool without a staff token must be rejected");
+    assert.match(res.content[0].text, /privileged/i);
   });
 });
 

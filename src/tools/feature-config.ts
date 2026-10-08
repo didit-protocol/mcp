@@ -258,6 +258,8 @@ const FIELD_PREFIX_TO_FEATURE: Record<string, string> = {
   age_estimation: "AGE_ESTIMATION",
   questionnaire: "QUESTIONNAIRE",
   document_ai: "DOCUMENT_AI",
+  bank: "BANK_VERIFICATION",
+  geolocation: "GEOLOCATION",
 };
 
 type GraphNodes = Record<string, Record<string, unknown>>;
@@ -371,12 +373,32 @@ export function resolveBranchRuleNodeIds(graph: unknown): unknown {
 // KYB_ONLY = features that only make sense for a business; KYB_COMPATIBLE = everything a KYB graph
 // may contain (the KYB-only features + the shared ones that work for either). Any feature outside
 // KYB_COMPATIBLE is person/KYC-only (OCR, LIVENESS, FACE_MATCH, NFC, PROOF_OF_ADDRESS, …).
+// BANK_VERIFICATION is shared: a company's account holder is checked the same way a person's is
+// (KYBFeatureChoices.BANK_VERIFICATION).
 const KYB_ONLY_FEATURES = new Set(["KYB_REGISTRY", "KYB_DOCUMENTS", "KYB_KEY_PEOPLE"]);
 const KYB_COMPATIBLE_FEATURES = new Set([
   "KYB_REGISTRY", "KYB_DOCUMENTS", "KYB_KEY_PEOPLE",
   "AML", "QUESTIONNAIRE", "PHONE_VERIFICATION", "EMAIL_VERIFICATION", "IP_ANALYSIS",
-  "DOCUMENT_AI",
+  "DOCUMENT_AI", "BANK_VERIFICATION",
 ]);
+
+/**
+ * The `workflow_type` a feature list declares: "kyb" when it runs a business-only feature,
+ * otherwise undefined (the backend's own KYC default). Sent on CREATE and nowhere else: the
+ * backend derives the type from the graph only when the graph arrives in the create payload and
+ * refuses to change it afterwards ("Workflow type cannot be changed once it has been set"), so a
+ * draft created empty and graphed by a later PUT stays untyped forever — and the console then
+ * validates a KYB canvas by KYC rules ("AML Screening requires ID Verification", prod thread
+ * 497172a8, 2026-09-11: 73 turns on a workflow the user could never publish).
+ */
+export function workflowTypeForFeatures(features: unknown): "kyb" | undefined {
+  if (!Array.isArray(features)) return undefined;
+  const hasKybFeature = features.some((item) => {
+    const feature = typeof item === "string" ? item : item?.feature;
+    return typeof feature === "string" && KYB_ONLY_FEATURES.has(feature.toUpperCase());
+  });
+  return hasKybFeature ? "kyb" : undefined;
+}
 
 /** Throw a clear error if a graph mixes KYB (business) features with person/KYC-only features.
  *  Catches both directions — a KYB feature dropped into a KYC flow AND a KYC feature dropped into a

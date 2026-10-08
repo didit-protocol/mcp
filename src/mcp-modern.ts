@@ -13,6 +13,7 @@ import type { IncomingHttpHeaders } from "node:http";
 
 import { createServer } from "./index";
 import { SERVER_VERSION } from "./config";
+import { profileServesWidgets, type CatalogProfile } from "./chatgpt-app";
 
 export const MODERN_VERSION = "2026-07-28";
 /** Advertised in server/discover and in -32022 error data: modern era + every SDK-negotiable legacy version. */
@@ -21,8 +22,12 @@ export const SUPPORTED_VERSIONS = [MODERN_VERSION, ...SUPPORTED_PROTOCOL_VERSION
 const META = "io.modelcontextprotocol/";
 /** Methods whose Mcp-Name header mirrors a body field (SEP-2243). */
 const NAMED_FIELD: Record<string, string> = { "tools/call": "name", "resources/read": "uri" };
-/** CacheableResult (SEP-2549) applies to discovery/list shapes; this server serves tools only. */
-const CACHEABLE = new Set(["server/discover", "tools/list"]);
+/**
+ * CacheableResult (SEP-2549) applies to discovery, list and resources/read shapes. The resource
+ * methods only succeed on a profile that serves MCP Apps UI (chatgpt-app.ts); elsewhere they
+ * stay "method not found" and an error envelope is never decorated.
+ */
+const CACHEABLE = new Set(["server/discover", "tools/list", "resources/list", "resources/templates/list", "resources/read"]);
 const CACHE_TTL_MS = 60_000;
 
 export interface RpcMessage {
@@ -98,8 +103,11 @@ function decodeSentinel(value: string | undefined): string | null | undefined {
   return bytes.toString("utf8");
 }
 
-function discoverResult(): Record<string, unknown> {
-  return { supportedVersions: SUPPORTED_VERSIONS, capabilities: { tools: {} } };
+/** Same capabilities the legacy `initialize` of that profile reports (index.ts createServer). */
+function discoverResult(profile: CatalogProfile): Record<string, unknown> {
+  const capabilities = profileServesWidgets(profile) ? { tools: {}, resources: {} } : { tools: {} };
+
+  return { supportedVersions: SUPPORTED_VERSIONS, capabilities };
 }
 
 /** serverInfo on every result (SHOULD) + the mandatory CacheableResult fields. */
@@ -139,6 +147,7 @@ function invalidEnvelope(rpc: RpcMessage): boolean {
 export async function handleModernRpc(
   rpc: RpcMessage,
   authInfo?: AuthInfo,
+  options: { profile?: CatalogProfile } = {},
 ): Promise<Record<string, unknown> | undefined> {
   // The SDK's Protocol silently drops envelopes that fail schema validation, which
   // would leave this dispatch (and the HTTP request) hanging forever — reject first.
@@ -146,11 +155,13 @@ export async function handleModernRpc(
     return { jsonrpc: "2.0", id: rpc.id ?? null, error: { code: -32600, message: "Invalid Request" } };
   }
   if (rpc.method === "server/discover") {
-    return { jsonrpc: "2.0", id: rpc.id ?? null, result: decorateResult(rpc.method, discoverResult()) };
+    const result = discoverResult(options.profile ?? "full");
+
+    return { jsonrpc: "2.0", id: rpc.id ?? null, result: decorateResult(rpc.method, result) };
   }
 
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  const server = createServer({ hosted: true });
+  const server = createServer({ hosted: true, profile: options.profile });
 
   await server.connect(serverSide);
   try {

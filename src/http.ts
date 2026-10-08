@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import express from "express";
+import { downloadSessionPdf, SESSION_PDF_DOWNLOAD_PATH } from "./session-pdf-download";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   mcpAuthMetadataRouter,
@@ -10,6 +11,7 @@ import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 import { createServer } from "./index";
 import { modernGate, isModernRequest, handleModernRpc } from "./mcp-modern";
+import { mountDomainChallenge, mountProfileEndpoint, type CatalogProfile } from "./chatgpt-app";
 import { DiditTokenVerifier } from "./auth/verifier";
 import { IntrospectionTokenVerifier } from "./auth/introspection-verifier";
 import {MCP_PORT,
@@ -21,7 +23,8 @@ import {MCP_PORT,
   DIDIT_OIDC_AUTHORIZE_URL,
   DIDIT_OIDC_TOKEN_URL,
   DIDIT_OIDC_REGISTRATION_URL,
-  DIDIT_JWKS_URL, SERVER_VERSION } from "./config";
+  DIDIT_JWKS_URL, SERVER_VERSION,
+  MCP_PUBLIC_DISCOVERY } from "./config";
 
 /**
  * Resolve the upstream Authorization Server (service-didit-auth) metadata that we
@@ -59,8 +62,18 @@ async function resolveAuthorizationServerMetadata(): Promise<OAuthMetadata> {
   return fallback;
 }
 
+/**
+ * The only JSON-RPC methods MCP_PUBLIC_DISCOVERY exposes without a Bearer: protocol
+ * negotiation and its acknowledgement. Deliberately NOT `tools/list` - the catalog is the
+ * thing the OAuth gate protects, and a public catalog is exactly what the 2026-09 app review
+ * work removed from this server.
+ */
+const PUBLIC_DISCOVERY_METHODS = new Set(["initialize", "notifications/initialized", "server/discover"]);
+
 export async function createHttpApp(): Promise<express.Express> {
   const app = express();
+  // This narrowly scoped capability URL authenticates itself; no MCP Bearer required.
+  app.get(SESSION_PDF_DOWNLOAD_PATH, downloadSessionPdf);
   // Base64 file inputs (*_base64 tool params, 15MB decoded cap + ~33% base64
   // overhead) must fit in the JSON-RPC body. Overridable per environment.
   app.use(express.json({ limit: process.env.MCP_JSON_BODY_LIMIT || "25mb" }));
@@ -85,6 +98,8 @@ export async function createHttpApp(): Promise<express.Express> {
     }
     next();
   });
+
+  mountDomainChallenge(app);
 
   const resourceServerUrl = new URL(MCP_RESOURCE_URI);
   const oauthMetadata = await resolveAuthorizationServerMetadata();
@@ -113,6 +128,9 @@ export async function createHttpApp(): Promise<express.Express> {
     }),
   );
 
+  // A reduced catalog profile may be a second protected resource on the same server (see chatgpt-app.ts).
+  const profileEndpoint = mountProfileEndpoint(app, { oauthMetadata, resourceServerUrl, scopesSupported: MCP_SCOPES_SUPPORTED });
+
   app.get("/healthz", (_req, res) => {
     res.json({ status: "ok", service: "didit-mcp-server", version: SERVER_VERSION });
   });
@@ -124,7 +142,13 @@ export async function createHttpApp(): Promise<express.Express> {
   const verifier =
     MCP_TOKEN_VERIFY_MODE === "jwks" ? new DiditTokenVerifier() : new IntrospectionTokenVerifier();
   console.error(`[didit-mcp] token verification mode: ${MCP_TOKEN_VERIFY_MODE}`);
-  const endpoints: Array<{ path: string; resourceUrl: URL }> = [{ path: "/mcp", resourceUrl: resourceServerUrl }];
+  // One endpoint per catalog profile. Each is its own OAuth protected resource, so its 401
+  // challenge points at its own metadata URL and the client requests a token for the right
+  // resource indicator. The dispatch is identical apart from the profile handed to the server.
+  const endpoints: Array<{ path: string; profile: CatalogProfile; resourceUrl: URL }> = [
+    { path: "/mcp", profile: "full", resourceUrl: resourceServerUrl },
+    ...(profileEndpoint ? [profileEndpoint] : []),
+  ];
 
   // Stateless mode does not support server-initiated streams or session teardown.
   const methodNotAllowed = (path: string) => (_req: express.Request, res: express.Response) => {
@@ -143,9 +167,25 @@ export async function createHttpApp(): Promise<express.Express> {
       resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(endpoint.resourceUrl),
     });
 
+    // Mixed auth (config.ts MCP_PUBLIC_DISCOVERY, off by default): let the protocol-negotiation
+    // methods through without a Bearer and require one for everything else. A client cannot know
+    // how to authenticate until it has negotiated a protocol version, so hosts that probe with
+    // `server/discover` first read an unconditional 401 as "cannot connect" rather than as an
+    // OAuth challenge. These three methods disclose only the server name, version, capabilities
+    // and supported versions; the tool catalog and every tool call stay behind `bearerAuth`.
+    // A batched (array) body has no top-level `method`, so it always takes the authenticated path.
+    const maybeBearerAuth: express.RequestHandler = (req, res, next) => {
+      if (MCP_PUBLIC_DISCOVERY) {
+        const method = (req.body as { method?: unknown } | undefined)?.method;
+        if (typeof method === "string" && PUBLIC_DISCOVERY_METHODS.has(method)) return next();
+      }
+
+      return bearerAuth(req, res, next);
+    };
+
     // Stateless Streamable HTTP: a fresh server + transport per request avoids
     // JSON-RPC id collisions across concurrent clients and needs no ALB affinity.
-    app.post(endpoint.path, bearerAuth, async (req, res) => {
+    app.post(endpoint.path, maybeBearerAuth, async (req, res) => {
       // MCP 2026-07-28 dual-era dispatch: modern requests pin their protocol
       // version on every message and skip the initialize handshake; anything
       // else takes the legacy Streamable HTTP transport below, unchanged.
@@ -158,7 +198,7 @@ export async function createHttpApp(): Promise<express.Express> {
       }
       if (isModernRequest(rpc, req.headers)) {
         try {
-          const reply = await handleModernRpc(rpc, req.auth);
+          const reply = await handleModernRpc(rpc, req.auth, { profile: endpoint.profile });
           if (reply) res.json(reply);
           else res.status(202).end();
         } catch (err) {
@@ -174,7 +214,7 @@ export async function createHttpApp(): Promise<express.Express> {
         return;
       }
 
-      const server = createServer({ hosted: true });
+      const server = createServer({ hosted: true, profile: endpoint.profile });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {
         transport.close().catch(() => {});

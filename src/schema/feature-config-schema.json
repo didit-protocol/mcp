@@ -1,5 +1,5 @@
 {
-  "checksum": "sha256:200a66d7054aaf6cdddd94d7bd9c62050912862bf6e291908b667b20436ef4cd",
+  "checksum": "sha256:a2c413a50107faf3ea47fa187089a930ac17d3d04893e24176f494a58470e982",
   "features": {
     "AGE_ESTIMATION": {
       "description": "Configuration for Age Estimation feature.",
@@ -39,6 +39,17 @@
           "nullable": true,
           "required": false,
           "type": "boolean"
+        },
+        "face_liveness_duplicated_face_document_mismatch_action": {
+          "description": "Verdict when a duplicate face is found on a user verified with a different date of birth. Another document of the same person (a passport after an identity card, a renewal, a document of a second country) is not flagged.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
         },
         "face_liveness_duplicated_face_name_mismatch_action": {
           "description": "Verdict when a duplicate face is found under a different name.",
@@ -105,6 +116,23 @@
           "required": false,
           "type": "number"
         },
+        "face_liveness_uncertain_retry_enabled": {
+          "description": "Native SDK active liveness only. On, a capture whose liveness score falls strictly between face_liveness_score_decline_threshold and face_liveness_score_review_threshold is never decided, whichever verdict the engine attached to it: the person is told the result was unclear and asked to capture again, every time, outside the face_liveness_max_attempts budget (which still applies to captures the engine could not score). Off by default; the web flow ignores it.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "face_liveness_video_anomaly_action": {
+          "description": "Verdict when the stored liveness recording contains a repeated moving sequence consistent with a looped video feed, measured server-side from the video itself, independently of the liveness score. It deliberately does NOT flag a frozen or near-motionless capture: frame statistics cannot separate an injected still from a genuine one (a subject holding still, or a flash that clips the exposure), so acting on that would decline real users. A frozen or pre-recorded injected feed is instead defeated by strict flash liveness (set face_liveness_flash_mode to \"1\" for strict), which binds the capture to a per-session colour-sequence challenge a recording cannot reproduce. Defaults to NO_ACTION (evidence is recorded, the verdict is unchanged).",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
         "face_luminance_max_action": {
           "description": "Verdict when the selfie is brighter than `face_luminance_max_threshold`.",
           "enum": [
@@ -159,6 +187,12 @@
           "nullable": true,
           "required": false,
           "type": "integer"
+        },
+        "face_search_enabled": {
+          "description": "Run the 1:N Face Search on the selfie: match it against previously verified users, the face blocklist and allowlist, and store its biometric template for later matching. On by default. Off skips the search, keeps no face template, and leaves the duplicate-face actions with nothing to act on.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
         },
         "frame_injection_action": {
           "description": "Verdict when injected video frames are detected.",
@@ -290,6 +324,40 @@
           "nullable": true,
           "required": false,
           "type": "integer"
+        },
+        "aml_entity_type": {
+          "description": "Whether this node screens a `person` or a `company`. Defaults to `person` on a person (KYC) workflow and to `company` on a business (KYB) workflow. Set it to `company` to screen the business named in an uploaded document (via `aml_field_sources`) without a KYB Registry step - the provider searches company records instead of people, and the match score is scored as a company.",
+          "enum": [
+            "person",
+            "company"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "aml_field_sources": {
+          "description": "Where this node reads the entity it screens, when the workflow has no ID Verification or KYB Registry step to supply it - a Document AI workflow over non-standardised documents (a tax certificate, an acta constitutiva). Same contract as `database_validation_field_sources`: `source` names the producer and `key` names the value inside it - a Document AI field key for `document_ai`, a questionnaire node id for `questionnaire`, and `expected_details.<field>` or `metadata.<key>` for `expected_data`. The map's KEY is one of the four AML screening inputs: `full_name`, `date_of_birth`, `nationality`, `document_number` - read for a company as legal name, incorporation date, country and registration number. A Document AI field already keyed as one of those four maps automatically and is deliberately not persisted, so renaming it never freezes a stale mapping. An explicit mapping wins over both the auto-map and the ID document, and a mapping that resolves to nothing at runtime leaves the input empty rather than falling back. With no ID Verification and no KYB Registry upstream, `full_name` must be fillable or the graph is rejected on save: there is no search without a name.",
+          "example": {
+            "full_name": {
+              "key": "razon_social",
+              "source": "document_ai"
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"full_name\"|\"date_of_birth\"|\"nationality\"|\"document_number\": {\"source\": \"document_ai\"|\"questionnaire\"|\"expected_data\", \"key\": \"<docai field key>|<questionnaire node id>|expected_details.<expected_details field>|metadata.<key>\"}}",
+          "type": "json"
+        },
+        "aml_incomplete_data_action": {
+          "description": "Verdict when the screening ran on less than a full identity (name, date of birth and country). `REVIEW` is the default and the historical behaviour; `NO_ACTION` proceeds on reduced data for a workflow that knowingly holds only a name. The screening still runs either way, and the partial-data log is still recorded - this only decides what it does to the status.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
         },
         "aml_match_score_threshold": {
           "maximum": 100,
@@ -469,6 +537,439 @@
       },
       "serializer": "AMLFeatureConfigSerializer"
     },
+    "BANK_VERIFICATION": {
+      "description": "Configuration for Bank Verification feature.",
+      "fields": {
+        "bank_account_selection": {
+          "description": "Whether the user picks which of the connected accounts is verified (`user`) or the first eligible one is taken (`auto`).",
+          "enum": [
+            "auto",
+            "user"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_allow_skip": {
+          "description": "Let the user skip the step instead of connecting a bank. A skip is then decided by `bank_skipped_action`.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "bank_attempts_exhausted_action": {
+          "description": "Verdict when the user spent `bank_max_attempts` without a successful connection.",
+          "enum": [
+            "DECLINE",
+            "REVIEW"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_business_account_action": {
+          "description": "Verdict when the institution types the holder as a business rather than a person.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_connection_timeout_minutes": {
+          "description": "How long a started connection stays open before the attempt is abandoned, 5 to 60 minutes.",
+          "maximum": 60,
+          "minimum": 5,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "bank_consent_expired_action": {
+          "description": "Verdict when the bank consent lapses after the step was already decided. Only meaningful with `bank_refresh_enabled`.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_countries": {
+          "description": "Which countries a user may connect a bank in - a WHITELIST, so an empty map means the node offers nothing and runs nothing. `institutions` narrows the picker to specific provider institution ids; `\"all\"` offers every identity-capable bank in the country. Coverage belongs to the route the node selected in `provider_key`: a country the native route or the connected marketplace provider cannot establish account ownership in is REFUSED on save rather than dropped, because connecting to a bank that returns no holder identity spends an attempt and a charge to end at `not_verifiable`.",
+          "example": {
+            "ESP": {
+              "enabled": true,
+              "institutions": "all"
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO3>\": {\"enabled\": true|false, \"institutions\": [\"<institution_id>\", ...] | \"all\"}}",
+          "type": "json"
+        },
+        "bank_country_mismatch_action": {
+          "description": "Verdict when the institution's country differs from the expected/document country.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_currency_mismatch_action": {
+          "description": "Verdict when the account currency is not in `bank_expected_currencies`.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_eligible_account_types": {
+          "description": "Which account types the user may pick. Credit cards, loans and investment accounts are never eligible - they do not establish ownership of a payment account. Defaults to current/checking.",
+          "example": [
+            "checking",
+            "current"
+          ],
+          "items": {
+            "enum": [
+              "checking",
+              "current",
+              "savings",
+              "business",
+              "other"
+            ],
+            "nullable": false,
+            "required": true,
+            "type": "string"
+          },
+          "nullable": true,
+          "required": false,
+          "type": "array"
+        },
+        "bank_expected_currencies": {
+          "description": "ISO 4217 currencies the account is expected to be in. Empty means any; a mismatch is reported through `bank_currency_mismatch_action`.",
+          "example": [
+            "EUR"
+          ],
+          "items": {
+            "max_length": 3,
+            "nullable": false,
+            "required": true,
+            "type": "string"
+          },
+          "nullable": true,
+          "required": false,
+          "type": "array"
+        },
+        "bank_field_sources": {
+          "description": "Where to read a reference-identity field when no earlier step in the graph can fill it. The map's KEY is one of `full_name`, `first_name`, `last_name`, `address`; `source` names the producer and `key` names the value inside it - a Document AI field key for `document_ai`, a questionnaire node id for `questionnaire`, and `expected_details.<field>` or `metadata.<key>` for `expected_data`. An `expected_details.<field>` VALUE may only name a field the session-create payload actually carries - `address`, `country`, `date_of_birth`, `first_name`, `gender`, `id_country`, `identification_number`, `ip_address`, `last_name`, `nationality` or `poa_country`. A malformed entry is refused on save, not dropped.",
+          "example": {
+            "full_name": {
+              "key": "expected_details.first_name",
+              "source": "expected_data"
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"full_name\"|\"first_name\"|\"last_name\"|\"address\": {\"source\": \"document_ai\"|\"questionnaire\"|\"expected_data\", \"key\": \"<docai field key>|<questionnaire node id>|expected_details.<expected_details field>|metadata.<key>\"}}",
+          "type": "json"
+        },
+        "bank_joint_account_action": {
+          "description": "Verdict when the account has more than one holder.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_low_balance_action": {
+          "description": "Verdict when the available balance is below `bank_min_balance`. Needs the `balances` scope.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_max_attempts": {
+          "description": "How many connection attempts the user gets, 1 to 5. Spending them all without a successful connection is `bank_attempts_exhausted_action`.",
+          "maximum": 5,
+          "minimum": 1,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "bank_min_balance": {
+          "description": "Minimum available balance, in the account's own currency. Below it `bank_low_balance_action` fires. Needs the `balances` scope and the save is refused without it. 0 is a real cutoff - it triggers the action for an overdrawn account - but the action defaults to `NO_ACTION`, so the verdict is unchanged unless another action is configured. This is not the same as leaving the key out.",
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "number"
+        },
+        "bank_name_match_threshold": {
+          "description": "At or above this score the holder name is a match. 50 to 100, defaults to 85.",
+          "maximum": 100,
+          "minimum": 50,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "bank_no_match_action": {
+          "description": "Verdict when the account holder is demonstrably not the verified person (best name score below `bank_partial_match_floor`).",
+          "enum": [
+            "DECLINE",
+            "REVIEW"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_not_verifiable_action": {
+          "description": "Verdict when the institution connected but returned no holder identity to compare.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_partial_match_action": {
+          "description": "Verdict when the holder name lands between `bank_partial_match_floor` and `bank_name_match_threshold`. Never approves by default.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_partial_match_floor": {
+          "description": "Below this score the holder name is a no-match. 0 to 99, defaults to 70. The band between the floor and the threshold is the partial match, so the floor must be strictly below `bank_name_match_threshold` or the save is refused. An explicit null means \"use the default\" here too, which is why a threshold of 50 with no floor is refused: it is checked against the default floor of 70.",
+          "maximum": 99,
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "bank_reference_identity": {
+          "description": "Which earlier step supplies the identity the account holder is compared against: `kyc` (ID Verification), `database_validation`, `expected_details` (the session-create payload), `questionnaire`, or `auto` to use whichever one the workflow produced. The step that actually supplied it is recorded on the result as `reference_identity_source`.",
+          "enum": [
+            "auto",
+            "kyc",
+            "database_validation",
+            "expected_details",
+            "questionnaire"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_reference_identity_missing_action": {
+          "description": "Verdict when no earlier step produced an identity to compare the holder against, so ownership can only be `unknown`.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_refresh_enabled": {
+          "description": "Re-fetch the account's financial data after the step has already been decided, for as long as the bank consent lasts. Needs at least one of the `balances`, `transactions` or `income` scopes and the save is refused without one. A consent that lapses afterwards is `bank_consent_expired_action`.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "bank_require_address_match": {
+          "description": "Also require the holder's address to match. A name that reached the threshold but whose address scores below it drops to a partial match. An institution that returns no address waives the requirement; a session with no address of its own to compare against does not, and lands on a partial match. Off by default.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "bank_require_oauth_only": {
+          "description": "Offer only institutions reachable over OAuth / app-to-app, never a provider's legacy credential-capture surface. Where open banking already makes OAuth the only route, this changes nothing.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "bank_scopes": {
+          "description": "What the user is asked to consent to sharing. `ownership` is what the product verifies and cannot be turned off. `identifiers` unmasks the IBAN / account number; `balances`, `transactions` and `income` read real financial data, are each billed separately, and are refused on save unless the application carries the `bank_financial_data` entitlement. A scope that is off is never requested from the provider, so the bank never shows it on its consent screen.",
+          "example": {
+            "ownership": true
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"ownership\": true, \"identifiers\": true|false, \"balances\": true|false, \"transactions\": true|false, \"income\": true|false}",
+          "type": "json"
+        },
+        "bank_show_match_result_to_user": {
+          "description": "Show the ownership result to the user inside the verification flow. Off means it is recorded on the session but never shown to them.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "bank_skipped_action": {
+          "description": "Verdict when the user skipped the step. Only reachable with `bank_allow_skip`.",
+          "enum": [
+            "DECLINE",
+            "REVIEW"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_store_full_identifiers": {
+          "description": "Store the account identifiers unmasked rather than masked. Needs the `identifiers` scope and the save is refused without it. Even then the unmasked form is only served to a caller holding the bank-verification read permission.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "bank_store_raw_owner_data": {
+          "description": "Keep the holder details the institution returned next to the ownership evidence. Off means only the comparison itself is retained: scores, match method and reason codes.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "bank_transactions_history_days": {
+          "description": "How far back transaction history is read, 30 to 365 days, defaulting to 90. Needs the `transactions` scope and the save is refused without it.",
+          "maximum": 365,
+          "minimum": 30,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "bank_unknown_action": {
+          "description": "Verdict when the evidence could not be fetched after retries - a transient failure.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_unsupported_action": {
+          "description": "Verdict when the user's bank is not supported and the node does not allow skipping.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "bank_use_provider_score": {
+          "description": "Also read the institution's own holder-name score, and let it decide when it is higher than Didit's or when Didit had no holder name to score at all. A result decided that way reports `provider_only` as its match method, and a connection that returned no such score records a `provider_score_unavailable` warning. On by default.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "fallback_to_native": {
+          "description": "Whether a marketplace connection that cannot be established falls back to Didit's native route. Off by default: a silent fallback would spend your Didit balance on a session you expected to run on your own provider contract. A fallback connection is recorded as `credential_source = native` and billed at the native price.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "provider_key": {
+          "description": "Which route runs the step. Empty (the default) is Didit's native Bank Verification, a provider-independent product Didit routes to the regional open-banking vendor that serves the user's country and institution, on Didit's contracts and billing. A value names a MARKETPLACE provider whose own credentials this application has connected - the session then runs, is billed and is revoked on your provider account, and Didit charges only the marketplace platform fee. A provider that is not connected is refused on save.",
+          "example": "plaid",
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "notes": "Bank Verification confirms who owns a bank account against an identity ANOTHER step established - it is not identity proof on its own. Put ID Verification, Database Validation or a questionnaire before it; first in a graph it has nothing to compare against and can only return `unknown`. The node is opt-in and runs nothing while `bank_countries` is empty.",
+      "serializer": "BankVerificationFeatureConfigSerializer"
+    },
     "DATABASE_VALIDATION": {
       "description": "Configuration for Database Validation feature.",
       "fields": {
@@ -487,16 +988,16 @@
           "type": "json"
         },
         "database_validation_field_sources": {
-          "description": "Where to read a database input that no earlier step in the graph can fill. `source` names the producer and `key` names the value inside it: a Document AI field key for `document_ai`, a questionnaire node id for `questionnaire`, and `expected_details.<field>` or `metadata.<key>` for `expected_data`. Exact-key matches against an upstream step resolve automatically and are deliberately not persisted, so renaming a Document AI field never freezes a stale mapping into the config. A malformed entry is dropped on save rather than rejected, which un-satisfies its service and drops it from the selection.",
+          "description": "Where to read a database input that no earlier step in the graph can fill. `source` names the producer and `key` names the value inside it: a Document AI field key for `document_ai`, a questionnaire node id for `questionnaire`, and `expected_details.<field>` or `metadata.<key>` for `expected_data`. The two halves speak different vocabularies: the map's KEY is a Database Validation input field (`tax_id`, `document_number`, ...), while an `expected_details.<field>` VALUE may only name a field the session-create payload actually carries - `address`, `country`, `date_of_birth`, `first_name`, `gender`, `id_country`, `identification_number`, `ip_address`, `last_name`, `nationality` or `poa_country`. Anything else under `expected_details.` is rejected on save; `metadata.<key>` takes any non-empty whitespace-free customer key. Exact-key matches against an upstream step resolve automatically and are deliberately not persisted, so renaming a Document AI field never freezes a stale mapping into the config. A malformed entry is dropped on save rather than rejected, which un-satisfies its service and drops it from the selection.",
           "example": {
             "tax_id": {
-              "key": "expected_details.document_number",
+              "key": "expected_details.identification_number",
               "source": "expected_data"
             }
           },
           "nullable": true,
           "required": false,
-          "shape": "{\"<db_validation_input_field>\": {\"source\": \"document_ai\"|\"questionnaire\"|\"expected_data\", \"key\": \"<docai field key>|<questionnaire node id>|expected_details.<field>|metadata.<key>\"}}",
+          "shape": "{\"<db_validation_input_field>\": {\"source\": \"document_ai\"|\"questionnaire\"|\"expected_data\", \"key\": \"<docai field key>|<questionnaire node id>|expected_details.<expected_details field>|metadata.<key>\"}}",
           "type": "json"
         },
         "database_validation_no_match_action": {
@@ -951,6 +1452,22 @@
           "required": false,
           "type": "integer"
         },
+        "email_no_social_presence_action": {
+          "description": "Verdict when the social footprint check (`email_social_enabled`) finds the address registered on none of the platforms it covers.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "email_social_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
         "frequent_email_breach_action": {
           "description": "Verdict when the address appears in many breaches.",
           "enum": [
@@ -1196,6 +1713,312 @@
       },
       "serializer": "FaceMatchFeatureConfigSerializer"
     },
+    "GEOLOCATION": {
+      "description": "Configuration for the Precise Location (GEOLOCATION) feature. Every threshold is bounded here rather than in the client: the browser and the native SDKs are told what to collect by the step data this config produces, and a value the server would refuse must never reach a user as a request their device cannot satisfy. The action keys all default to Review rather than Decline. A denied permission, a wide radius or a stale fix is not evidence of fraud, and a default that declined them would make the step a conversion trap.",
+      "fields": {
+        "geolocation_accuracy_mode": {
+          "enum": [
+            "precise",
+            "approximate_allowed"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_allow_qr_handoff": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "geolocation_allow_skip": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "geolocation_approximate_action": {
+          "description": "Verdict when the user granted an approximate location while `geolocation_accuracy_mode` asks for a precise one.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_deep_link_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "geolocation_document_distance_action": {
+          "description": "Verdict when the device position is further from the document address than `geolocation_document_distance_km`. The address is geocoded coarsely, so this is a weak signal.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_document_distance_km": {
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "geolocation_document_distance_unit": {
+          "description": "The unit the console shows `geolocation_document_distance_km` in. Display only: the stored value is always kilometres and no rule depends on it.",
+          "enum": [
+            "metric",
+            "imperial"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_geofence_undetermined_action": {
+          "description": "Verdict when the position cannot be placed inside or outside the fence because its accuracy circle reaches the boundary. Uncertainty is never reported as being outside.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_geofencing_action": {
+          "description": "Verdict when the device position, and its whole uncertainty circle, falls outside `geolocation_geofencing_by_country`.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_geofencing_by_country": {
+          "description": "Country and region allow/deny rules for the device's own position, applied only while `is_geolocation_geofencing_enabled` is true. Same shape as IP Analysis's `ip_geofencing_by_country`, except that `states` keys are ISO 3166-2 codes (`US-NJ`), not state names, because the position is resolved to a subdivision rather than to a provider's city label. A country that is not listed is allowed. Saving a region rule for a country with no published ISO 3166-2 boundaries is rejected rather than silently ignored.",
+          "example": {
+            "USA": {
+              "allowed": true,
+              "states": {
+                "US-NJ": {
+                  "allowed": false
+                }
+              }
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"<ISO3>\": {\"allowed\": true|false, \"states\"?: {\"<ISO 3166-2 code>\": {\"allowed\": true|false}} | null}}",
+          "type": "json"
+        },
+        "geolocation_integrity_missing_action": {
+          "description": "Verdict when a native client submitted a position with no device-attestation token. Defaults to No action; web clients are recorded as unsupported rather than missing, because no browser can attest.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_ip_distance_action": {
+          "description": "Verdict when the device position and the session's IP location are further apart than `geolocation_ip_distance_km`, after both uncertainty radii are subtracted.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_ip_distance_km": {
+          "minimum": 0,
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "geolocation_ip_distance_unit": {
+          "description": "The unit the console shows `geolocation_ip_distance_km` in. Display only: the stored value is always kilometres and no rule depends on it.",
+          "enum": [
+            "metric",
+            "imperial"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_low_accuracy_action": {
+          "description": "Verdict when no attempt established the required precision: the best position has an uncertainty radius wider than `geolocation_max_accuracy_radius_m`, or it reported no radius at all. A position without a radius is never counted as meeting the limit.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_max_accuracy_radius_m": {
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "geolocation_max_accuracy_radius_unit": {
+          "description": "The unit the console shows `geolocation_max_accuracy_radius_m` in. Display only: the stored value is always metres, no rule depends on it, and the step data only forwards it so a client can show the same unit.",
+          "enum": [
+            "metric",
+            "imperial"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_max_age_seconds": {
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "geolocation_max_attempts": {
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "geolocation_mock_location_action": {
+          "description": "Verdict when the operating system reported the position as simulated rather than measured (Android mock provider, iOS simulated-by-software).",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_permission_denied_action": {
+          "description": "Verdict when the user declined or dismissed the location prompt on every allowed attempt. Defaults to Review: a refusal is a choice, not a fraud signal.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_stale_fix_action": {
+          "description": "Verdict when the position was measured more than `geolocation_max_age_seconds` before the server received it.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "geolocation_timeout_seconds": {
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        "geolocation_unavailable_action": {
+          "description": "Verdict when no position could be obtained - location services off or restricted, the positioning system returned nothing, the attempt timed out, the user skipped the step, or the client is too old to support it.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "is_geolocation_geofencing_enabled": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "status_rules": {
+          "items": {
+            "fields": {
+              "field": {
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater_than",
+                  "greater_than_or_equals",
+                  "less_than",
+                  "less_than_or_equals",
+                  "contains",
+                  "not_contains",
+                  "in",
+                  "not_in",
+                  "is_empty",
+                  "is_not_empty",
+                  "regex",
+                  "fuzzy_match"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "score": {
+                "maximum": 100,
+                "minimum": 0,
+                "nullable": false,
+                "required": false,
+                "type": "number"
+              },
+              "status": {
+                "enum": [
+                  "Approved",
+                  "Declined",
+                  "In Review",
+                  "No Action"
+                ],
+                "nullable": false,
+                "required": true,
+                "type": "string"
+              },
+              "value": {
+                "nullable": true,
+                "required": false,
+                "type": "json"
+              },
+              "value_type": {
+                "default": "literal",
+                "enum": [
+                  "literal",
+                  "field",
+                  "list",
+                  "relative_date"
+                ],
+                "nullable": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "nullable": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "serializer": "GeolocationFeatureConfigSerializer"
+    },
     "IP_ANALYSIS": {
       "description": "Configuration for Device & IP Analysis feature.",
       "fields": {
@@ -1365,6 +2188,17 @@
           "required": false,
           "shape": "{\"<ISO3>\": {\"allowed\": true|false, \"states\"?: {\"<state_code>\": {\"allowed\": true|false}} | null}}",
           "type": "json"
+        },
+        "ip_location_not_determined_action": {
+          "description": "Verdict when no IP address identifying the end user was recorded, so the session has no IP location at all: country, city, ISP, coordinates and time zone are unavailable, and `ip_geofencing_by_country`, the document-country comparison and the VPN/data-centre checks cannot run. Defaults to `No Action`, which keeps the `IP_LOCATION_NOT_DETERMINED` warning visible on the session without changing its verdict; set `Review` or `Decline` if an unlocated session must not pass.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
         },
         "ip_mismatch_action": {
           "description": "Verdict when the IP country disagrees with the document's issuing country.",
@@ -2060,6 +2894,17 @@
           "required": false,
           "type": "boolean"
         },
+        "face_liveness_duplicated_face_document_mismatch_action": {
+          "description": "Verdict when a duplicate face is found on a user verified with a different date of birth. Another document of the same person (a passport after an identity card, a renewal, a document of a second country) is not flagged.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
         "face_liveness_duplicated_face_name_mismatch_action": {
           "description": "Verdict when a duplicate face is found under a different name.",
           "enum": [
@@ -2134,6 +2979,23 @@
           "required": false,
           "type": "integer"
         },
+        "face_liveness_uncertain_retry_enabled": {
+          "description": "Native SDK active liveness only. On, a capture whose liveness score falls strictly between face_liveness_score_decline_threshold and face_liveness_score_review_threshold is never decided, whichever verdict the engine attached to it: the person is told the result was unclear and asked to capture again, every time, outside the face_liveness_max_attempts budget (which still applies to captures the engine could not score). Off by default; the web flow ignores it.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "face_liveness_video_anomaly_action": {
+          "description": "Verdict when the stored liveness recording contains a repeated moving sequence consistent with a looped video feed, measured server-side from the video itself, independently of the liveness score. It deliberately does NOT flag a frozen or near-motionless capture: frame statistics cannot separate an injected still from a genuine one (a subject holding still, or a flash that clips the exposure), so acting on that would decline real users. A frozen or pre-recorded injected feed is instead defeated by strict flash liveness (set face_liveness_flash_mode to \"1\" for strict), which binds the capture to a per-session colour-sequence challenge a recording cannot reproduce. Defaults to NO_ACTION (evidence is recorded, the verdict is unchanged).",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
         "face_luminance_max_action": {
           "description": "Verdict when the selfie is brighter than `face_luminance_max_threshold`.",
           "enum": [
@@ -2188,6 +3050,12 @@
           "nullable": true,
           "required": false,
           "type": "integer"
+        },
+        "face_search_enabled": {
+          "description": "Run the 1:N Face Search on the selfie: match it against previously verified users, the face blocklist and allowlist, and store its biometric template for later matching. On by default. Off skips the search, keeps no face template, and leaves the duplicate-face actions with nothing to act on.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
         },
         "frame_injection_action": {
           "description": "Verdict when injected video frames are detected.",
@@ -2441,6 +3309,17 @@
           "shape": "{\"<ISO3>\": {\"minimum_age\": 1-120, \"maximum_age\": 1-120|null, \"states\"?: {\"<STATE_CODE>\": {\"minimum_age\": 1-120, \"maximum_age\": 1-120|null}}}}",
           "type": "json"
         },
+        "critical_field_occlusion_action": {
+          "description": "Verdict when a critical printed field - an identity number, a name, the date of birth or the expiry date - was physically covered on the captured document. Defaults to REVIEW.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
         "cross_org_fraud_document_action": {
           "description": "Verdict when this document was flagged as fraudulent by another organization in the network.",
           "enum": [
@@ -2462,7 +3341,7 @@
           "description": "Fields to blur out of the stored document image, per country. Only fields the country's document layout supports are accepted.",
           "example": {
             "ESP": [
-              "document_number"
+              "Document Number"
             ]
           },
           "nullable": true,
@@ -2522,6 +3401,45 @@
           "nullable": true,
           "required": false,
           "type": "string"
+        },
+        "document_selfie_duplicated_face_action": {
+          "description": "Verdict when the document-capture selfie matches, or possibly matches, the face of a user already verified in this application.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_selfie_duplicated_face_document_mismatch_action": {
+          "description": "Verdict when the document-capture selfie matches a user already verified with a different date of birth. Another document of the same person (a passport after an identity card, a renewal, a document of a second country) is not flagged. Can only escalate document_selfie_duplicated_face_action.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_selfie_duplicated_face_name_mismatch_action": {
+          "description": "Verdict when the document-capture selfie matches a user already verified under a different name. Can only escalate document_selfie_duplicated_face_action.",
+          "enum": [
+            "DECLINE",
+            "REVIEW",
+            "NO_ACTION"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        "document_selfie_face_search_enabled": {
+          "description": "Run the 1:N Face Search on the selfie taken during document capture (needs is_document_selfie_portrait_match_enabled): match it against the face blocklist and previously verified users. The selfie is a probe only, its template is never stored. On by default. Off skips the search and leaves the document-selfie duplicate-face actions with nothing to act on; face_search_enabled off on the LIVENESS step skips it too, since that opt-out covers every selfie of the session.",
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
         },
         "document_selfie_portrait_match_decline_threshold": {
           "maximum": 100,
@@ -2760,8 +3678,14 @@
           "type": "string"
         },
         "methods": {
-          "description": "Which ID verification methods each country may use: document capture (today's behaviour), non-doc lookup against a government or other authoritative source, and digital identity wallets. Omit the key, or a country, or a method, and that country is document only. Every method must be available for the country in the capability catalog (GET workflow-graph/id-verification-methods-catalog/); wallets are an accept-list with no ordering. Each fallback is `fallback_to_document` or `decline`; `max_attempts` (1-5, default 1) counts only lookups the registry answered.",
+          "description": "Which ID verification methods each country may use: document capture (today's behaviour), non-doc lookup against a government or other authoritative source, and digital identity wallets. Omit the key, or a country, or a method, and that country is document only. Every method must be available for the country in the capability catalog (GET workflow-graph/id-verification-methods-catalog/); wallets are an accept-list with no ordering. Each fallback is `fallback_to_document` or `decline`; `max_attempts` (1-5, default 1) counts only lookups the registry answered. Where the catalog lists several lookup `sources` for a country, `source` picks exactly one by id; omitted means the country's default (the first listed).",
           "example": {
+            "BRA": {
+              "id_lookup": {
+                "enabled": true,
+                "source": "bra_cpf"
+              }
+            },
             "DNK": {
               "document": {
                 "enabled": true
@@ -2786,7 +3710,7 @@
           },
           "nullable": true,
           "required": false,
-          "shape": "{\"<ISO3>\": {\"document\": {\"enabled\": bool}, \"id_lookup\": {\"enabled\": bool, \"max_attempts\": 1-5, \"skip_liveness_and_face_match\": bool, \"on_partial_match\": \"fallback_to_document\"|\"decline\", \"on_no_match\": \"fallback_to_document\"|\"decline\", \"on_provider_error\": \"fallback_to_document\"|\"decline\", \"response_fields\"?: [\"<field_key>\", ...]}, \"wallet\": {\"enabled\": bool, \"providers\": [\"<wallet_id>\", ...], \"on_failure\": \"fallback_to_document\"|\"decline\"}}}",
+          "shape": "{\"<ISO3>\": {\"document\": {\"enabled\": bool}, \"id_lookup\": {\"enabled\": bool, \"source\"?: \"<source_id>\"|null, \"max_attempts\": 1-5, \"skip_liveness_and_face_match\": bool, \"on_partial_match\": \"fallback_to_document\"|\"decline\", \"on_no_match\": \"fallback_to_document\"|\"decline\", \"on_provider_error\": \"fallback_to_document\"|\"decline\", \"response_fields\"?: [\"<field_key>\", ...]}, \"wallet\": {\"enabled\": bool, \"providers\": [\"<wallet_id>\", ...], \"on_failure\": \"fallback_to_document\"|\"decline\"}}}",
           "type": "json"
         },
         "minimum_age": {
@@ -3048,7 +3972,23 @@
           "required": false,
           "type": "integer"
         },
+        "phone_no_social_presence_action": {
+          "description": "Verdict when the social footprint check (`phone_social_enabled`) finds the number registered on none of the platforms it covers.",
+          "enum": [
+            "NO_ACTION",
+            "REVIEW",
+            "DECLINE"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
         "phone_shared_device_mode": {
+          "nullable": true,
+          "required": false,
+          "type": "boolean"
+        },
+        "phone_social_enabled": {
           "nullable": true,
           "required": false,
           "type": "boolean"

@@ -2,11 +2,33 @@
 
 The official [Model Context Protocol](https://modelcontextprotocol.io) server for [Didit](https://didit.me) — bring KYC, KYB, AML screening, transaction monitoring, biometrics, and full workspace operations to Claude, Cursor, VS Code, Windsurf, Zed, and any MCP client.
 
-- **130+ tools** across sessions, workflows, vendor users/businesses, transactions, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
+- **140+ tools** across sessions, workflows, vendor users/businesses, transactions, networks, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
 - **Auth is "Log in with Didit" (OAuth 2.1 + PKCE)** — the MCP acts as the signed-in **user** with their role's permissions. There is **no API-key mode**: every tool calls the user-scoped console endpoints, which only accept a Bearer token.
-- Every tool calls a single Didit REST endpoint and returns the JSON verbatim.
+- Tools call Didit REST endpoints. Session PDF generation returns a temporary download URL for the original PDF.
 
 > Full documentation: **https://docs.didit.me/integration/mcp/overview**
+
+## Session PDF downloads
+
+`didit_session_generate_pdf` returns `download_url`, `expires_at` (UTC), and
+`expires_in` (300 seconds). Fetch the URL without an Authorization header to save
+the original Didit PDF. The server checks PDF access before issuing the link and
+fetches the original report again at download time using the same user and organization.
+It does not reconstruct the report from session data. If the session changes between
+issuance and download, the download reflects the current report. Revoked or expired
+user access can invalidate a link before its five-minute expiry.
+
+Deployments must set `MCP_PDF_DOWNLOAD_KEY` to 32 cryptographically random bytes
+encoded as 64 hexadecimal characters, shared across all replicas, and set
+`MCP_RESOURCE_URI` to the public HTTPS MCP endpoint. Route
+`/downloads/session-report.pdf` to this HTTP server. The authenticated-encryption
+key protects the credentials embedded in the session-scoped link; rotating it
+invalidates outstanding links. Treat links as secrets and redact the `token` query
+parameter in proxy/access logs. Responses use `Cache-Control: no-store`.
+
+Stdio deployments need a reachable HTTP deployment with the same key, API base URL,
+and `MCP_RESOURCE_URI`; stdio alone cannot serve download links. Missing key
+configuration produces an actionable tool error instead of inline PDF data.
 
 ## Quick start
 
@@ -38,38 +60,11 @@ claude mcp add --transport http didit https://mcp.didit.me/mcp
 
 See [per-client setup](https://docs.didit.me/integration/mcp/installation) for Claude Desktop and VS Code.
 
-### Cursor plugin
-
-This repository includes a Cursor plugin manifest at `.cursor-plugin/plugin.json`.
-The plugin uses the hosted OAuth server configured in `.mcp.json`, the existing Didit rule in `rules/`, and the icon in `assets/`.
-No local server, API key, or environment variables are required.
-Sign in with your Didit account when Cursor requests authorization.
-The connection uses your existing organization roles and permissions.
-
-Example requests:
-
-- "Show my Didit organizations and applications."
-- "List my verification workflows."
-- "Create a sandbox verification link using my selected workflow."
-- "Show verification analytics for the last seven days."
-- "List the webhooks configured for my application."
-
-Tool results may contain customer and verification data from the workspace you authorize.
-Only request information you are authorized to access and share with your AI client.
-Review proposed changes before approving write or destructive actions.
-Disconnect Didit in your client's MCP settings when you no longer need the connection.
-
-See the [Privacy Policy](https://didit.me/terms/privacy-policy/) and [legal terms](https://didit.me/terms/).
-For support, contact [hello@didit.me](mailto:hello@didit.me) or open a [GitHub issue](https://github.com/didit-protocol/mcp/issues).
-
-The presence of this package does not imply marketplace approval.
-Publishers can submit the public repository through [Cursor's publishing form](https://cursor.com/marketplace/publish).
-
 ## Authentication
 
 The MCP is an OAuth 2.1 **resource server**; the Didit console (`business.didit.me`) is the **authorization server**. On first connect your client opens a browser, you **Log in with Didit** and approve the scopes, and the MCP then acts as **you** — across every organization you belong to, with your role's permissions. Tokens are short-lived and refreshed automatically.
 
-Scopes: `didit:management` (workspace operations) and `didit:verification` (running checks). Your console **role** is enforced server-side on every call.
+Scopes: `didit:management` (workspace operations), `didit:verification` (running checks) and `didit:staff` (Didit staff accounts only; the authorization server never issues it to anyone else). Your console **role** is enforced server-side on every call.
 
 > **There is no API-key mode.** Every tool targets the user-scoped console endpoints (`/organization/{org}/application/{app}/…`), which authorize a Bearer token with per-role privileges and reject `x-api-key`. (For raw REST access with an application API key — e.g. creating sessions from your backend — use the [REST API](https://docs.didit.me) directly, not this server.)
 
@@ -77,10 +72,10 @@ See [Authentication](https://docs.didit.me/integration/mcp/authentication).
 
 ## Tools
 
-130+ tools, grouped by area. The full catalogue with read/write/destructive markers is in [`docs/TOOLS.md`](docs/TOOLS.md) and at [docs.didit.me](https://docs.didit.me/integration/mcp/tools). Highlights:
+140+ tools, grouped by area. The full catalogue with read/write/destructive markers is in [`docs/TOOLS.md`](docs/TOOLS.md) and at [docs.didit.me](https://docs.didit.me/integration/mcp/tools). Highlights:
 
 - **Discovery & cross-app:** `didit_context_get`, `didit_session_search`, `didit_transaction_search`, `didit_vendor_user_search`, `didit_analytics` — aggregate across every org/app in one call.
-- **Sessions:** create, list, get decision, update status, reviews, bulk import.
+- **Sessions:** create, list, get decision, update status, reviews, bulk import, webhook delivery log + resend (`didit_session_webhooks` waits for a sandbox session's webhook so an integration can be verified end to end).
 - **Verification APIs:** `didit_verify_id`, `didit_verify_aml`, `didit_verify_face_match`, `didit_verify_kyb_search`, …
 - **Workflows (incl. branching graphs):** `didit_workflow_search`, `didit_workflow_get_graph`, `didit_workflow_edit_graph` — build conditional/branching workflows (fuzzy-match conditions, Document-AI steps) by sending small ops; large feature configs are kept server-side, never resent. `didit_workflow_get_id_verification_methods_catalog` and `didit_workflow_get_kyb_registry_catalog` answer the server-driven questions a config write depends on (which countries offer non-doc lookup / wallets, which KYB data tiers and monitoring a country's registries sell).
 - **Compliance:** transaction monitoring, custom and preset rule management with backtesting, lists/blocklist/allowlist, cases, reports, audit logs, alerts.
@@ -124,7 +119,7 @@ A key that is not listed here is not part of the contract and is dropped silentl
 
 <!-- BEGIN GENERATED FEATURE CONFIG REFERENCE -->
 
-_Generated from `schema/feature-config-schema.json` (contract `sha256:200a66d7054aaf6cdddd94d7bd9c62050912862bf6e291908b667b20436ef4cd`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
+_Generated from `schema/feature-config-schema.json` (contract `sha256:a2c413a50107faf3ea47fa187089a930ac17d3d04893e24176f494a58470e982`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
 
 ### AGE_ESTIMATION
 
@@ -137,6 +132,7 @@ Configuration for Age Estimation feature.
 | `enable_id_verification_fallback` | boolean \| null | boolean |  |
 | `external_capture_device_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when an external capture device is detected. |
 | `face_audio_recording_enabled` | boolean \| null | boolean | Record the microphone during the selfie capture, so a reviewer can hear the session. Off by default. |
+| `face_liveness_duplicated_face_document_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when a duplicate face is found on a user verified with a different date of birth. Another document of the same person (a passport after an identity card, a renewal, a document of a second country) is not flagged. |
 | `face_liveness_duplicated_face_name_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when a duplicate face is found under a different name. |
 | `face_liveness_flash_mode` | string \| null | string |  |
 | `face_liveness_max_attempts` | integer \| null | integer >=1 <=3 |  |
@@ -145,6 +141,8 @@ Configuration for Age Estimation feature.
 | `face_liveness_possible_duplicated_face_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when this face matches a previously seen user. |
 | `face_liveness_score_decline_threshold` | number \| null | number |  |
 | `face_liveness_score_review_threshold` | number \| null | number |  |
+| `face_liveness_uncertain_retry_enabled` | boolean \| null | boolean | Native SDK active liveness only. On, a capture whose liveness score falls strictly between face_liveness_score_decline_threshold and face_liveness_score_review_threshold is never decided, whichever verdict the engine attached to it: the person is told the result was unclear and asked to capture again, every time, outside the face_liveness_max_attempts budget (which still applies to captures the engine could not score). Off by default; the web flow ignores it. |
+| `face_liveness_video_anomaly_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the stored liveness recording contains a repeated moving sequence consistent with a looped video feed, measured server-side from the video itself, independently of the liveness score. It deliberately does NOT flag a frozen or near-motionless capture: frame statistics cannot separate an injected still from a genuine one (a subject holding still, or a flash that clips the exposure), so acting on that would decline real users. A frozen or pre-recorded injected feed is instead defeated by strict flash liveness (set face_liveness_flash_mode to "1" for strict), which binds the capture to a per-session colour-sequence challenge a recording cannot reproduce. Defaults to NO_ACTION (evidence is recorded, the verdict is unchanged). |
 | `face_luminance_max_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the selfie is brighter than `face_luminance_max_threshold`. |
 | `face_luminance_max_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_luminance_min_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the selfie is darker than `face_luminance_min_threshold`. |
@@ -152,6 +150,7 @@ Configuration for Age Estimation feature.
 | `face_privacy_mode_enabled` | boolean \| null | boolean |  |
 | `face_quality_decline_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_quality_review_threshold` | integer \| null | integer >=0 <=100 |  |
+| `face_search_enabled` | boolean \| null | boolean | Run the 1:N Face Search on the selfie: match it against previously verified users, the face blocklist and allowlist, and store its biometric template for later matching. On by default. Off skips the search, keeps no face template, and leaves the duplicate-face actions with nothing to act on. |
 | `frame_injection_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when injected video frames are detected. |
 | `minimum_age_threshold` | integer \| null | integer >=1 <=100 |  |
 | `screen_capture_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the selfie is a photo of a screen. |
@@ -166,6 +165,9 @@ Configuration for AML feature (used for both KYC AML and KYB Company AML).
 | --- | --- | --- | --- |
 | `aml_country_weight` | integer \| null | integer >=0 <=100 |  |
 | `aml_dob_weight` | integer \| null | integer >=0 <=100 |  |
+| `aml_entity_type` | string \| null | 'company'\|'person' | Whether this node screens a `person` or a `company`. Defaults to `person` on a person (KYC) workflow and to `company` on a business (KYB) workflow. Set it to `company` to screen the business named in an uploaded document (via `aml_field_sources`) without a KYB Registry step - the provider searches company records instead of people, and the match score is scored as a company. |
+| `aml_field_sources` | json \| null | {"full_name"\|"date_of_birth"\|"nationality"\|"document_number": {"source": "document_ai"\|"questionnaire"\|"expected_data", "key": "<docai field key>\|<questionnaire node id>\|expected_details.<expected_details field>\|metadata.<key>"}} | Where this node reads the entity it screens, when the workflow has no ID Verification or KYB Registry step to supply it - a Document AI workflow over non-standardised documents (a tax certificate, an acta constitutiva). Same contract as `database_validation_field_sources`: `source` names the producer and `key` names the value inside it - a Document AI field key for `document_ai`, a questionnaire node id for `questionnaire`, and `expected_details.<field>` or `metadata.<key>` for `expected_data`. The map's KEY is one of the four AML screening inputs: `full_name`, `date_of_birth`, `nationality`, `document_number` - read for a company as legal name, incorporation date, country and registration number. A Document AI field already keyed as one of those four maps automatically and is deliberately not persisted, so renaming it never freezes a stale mapping. An explicit mapping wins over both the auto-map and the ID document, and a mapping that resolves to nothing at runtime leaves the input empty rather than falling back. With no ID Verification and no KYB Registry upstream, `full_name` must be fillable or the graph is rejected on save: there is no search without a name. |
+| `aml_incomplete_data_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the screening ran on less than a full identity (name, date of birth and country). `REVIEW` is the default and the historical behaviour; `NO_ACTION` proceeds on reduced data for a workflow that knowingly holds only a name. The screening still runs either way, and the partial-data log is still recorded - this only decides what it does to the status. |
 | `aml_match_score_threshold` | integer \| null | integer >=0 <=100 |  |
 | `aml_name_weight` | integer \| null | integer >=0 <=100 |  |
 | `aml_score_approve_threshold` | integer \| null | integer >=0 <=100 |  |
@@ -184,6 +186,52 @@ Configuration for AML feature (used for both KYC AML and KYB Company AML).
 | `provider_key` | string \| null | string |  |
 | `status_rules` | array | array |  |
 
+### BANK_VERIFICATION
+
+Configuration for Bank Verification feature.
+> Bank Verification confirms who owns a bank account against an identity ANOTHER step established - it is not identity proof on its own. Put ID Verification, Database Validation or a questionnaire before it; first in a graph it has nothing to compare against and can only return `unknown`. The node is opt-in and runs nothing while `bank_countries` is empty.
+
+| Key | Type | Accepts | Meaning |
+| --- | --- | --- | --- |
+| `bank_account_selection` | string \| null | 'auto'\|'user' | Whether the user picks which of the connected accounts is verified (`user`) or the first eligible one is taken (`auto`). |
+| `bank_allow_skip` | boolean \| null | boolean | Let the user skip the step instead of connecting a bank. A skip is then decided by `bank_skipped_action`. |
+| `bank_attempts_exhausted_action` | string \| null | 'REVIEW'\|'DECLINE' | Verdict when the user spent `bank_max_attempts` without a successful connection. |
+| `bank_business_account_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the institution types the holder as a business rather than a person. |
+| `bank_connection_timeout_minutes` | integer \| null | integer >=5 <=60 | How long a started connection stays open before the attempt is abandoned, 5 to 60 minutes. |
+| `bank_consent_expired_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the bank consent lapses after the step was already decided. Only meaningful with `bank_refresh_enabled`. |
+| `bank_countries` | json \| null | {"<ISO3>": {"enabled": true\|false, "institutions": ["<institution_id>", ...] \| "all"}} | Which countries a user may connect a bank in - a WHITELIST, so an empty map means the node offers nothing and runs nothing. `institutions` narrows the picker to specific provider institution ids; `"all"` offers every identity-capable bank in the country. Coverage belongs to the route the node selected in `provider_key`: a country the native route or the connected marketplace provider cannot establish account ownership in is REFUSED on save rather than dropped, because connecting to a bank that returns no holder identity spends an attempt and a charge to end at `not_verifiable`. |
+| `bank_country_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the institution's country differs from the expected/document country. |
+| `bank_currency_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the account currency is not in `bank_expected_currencies`. |
+| `bank_eligible_account_types` | array \| null | array | Which account types the user may pick. Credit cards, loans and investment accounts are never eligible - they do not establish ownership of a payment account. Defaults to current/checking. |
+| `bank_expected_currencies` | array \| null | array | ISO 4217 currencies the account is expected to be in. Empty means any; a mismatch is reported through `bank_currency_mismatch_action`. |
+| `bank_field_sources` | json \| null | {"full_name"\|"first_name"\|"last_name"\|"address": {"source": "document_ai"\|"questionnaire"\|"expected_data", "key": "<docai field key>\|<questionnaire node id>\|expected_details.<expected_details field>\|metadata.<key>"}} | Where to read a reference-identity field when no earlier step in the graph can fill it. The map's KEY is one of `full_name`, `first_name`, `last_name`, `address`; `source` names the producer and `key` names the value inside it - a Document AI field key for `document_ai`, a questionnaire node id for `questionnaire`, and `expected_details.<field>` or `metadata.<key>` for `expected_data`. An `expected_details.<field>` VALUE may only name a field the session-create payload actually carries - `address`, `country`, `date_of_birth`, `first_name`, `gender`, `id_country`, `identification_number`, `ip_address`, `last_name`, `nationality` or `poa_country`. A malformed entry is refused on save, not dropped. |
+| `bank_joint_account_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the account has more than one holder. |
+| `bank_low_balance_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the available balance is below `bank_min_balance`. Needs the `balances` scope. |
+| `bank_max_attempts` | integer \| null | integer >=1 <=5 | How many connection attempts the user gets, 1 to 5. Spending them all without a successful connection is `bank_attempts_exhausted_action`. |
+| `bank_min_balance` | number \| null | number >=0 | Minimum available balance, in the account's own currency. Below it `bank_low_balance_action` fires. Needs the `balances` scope and the save is refused without it. 0 is a real cutoff - it triggers the action for an overdrawn account - but the action defaults to `NO_ACTION`, so the verdict is unchanged unless another action is configured. This is not the same as leaving the key out. |
+| `bank_name_match_threshold` | integer \| null | integer >=50 <=100 | At or above this score the holder name is a match. 50 to 100, defaults to 85. |
+| `bank_no_match_action` | string \| null | 'REVIEW'\|'DECLINE' | Verdict when the account holder is demonstrably not the verified person (best name score below `bank_partial_match_floor`). |
+| `bank_not_verifiable_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the institution connected but returned no holder identity to compare. |
+| `bank_partial_match_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the holder name lands between `bank_partial_match_floor` and `bank_name_match_threshold`. Never approves by default. |
+| `bank_partial_match_floor` | integer \| null | integer >=0 <=99 | Below this score the holder name is a no-match. 0 to 99, defaults to 70. The band between the floor and the threshold is the partial match, so the floor must be strictly below `bank_name_match_threshold` or the save is refused. An explicit null means "use the default" here too, which is why a threshold of 50 with no floor is refused: it is checked against the default floor of 70. |
+| `bank_reference_identity` | string \| null | 'auto'\|'database_validation'\|'expected_details'\|'kyc'\|'questionnaire' | Which earlier step supplies the identity the account holder is compared against: `kyc` (ID Verification), `database_validation`, `expected_details` (the session-create payload), `questionnaire`, or `auto` to use whichever one the workflow produced. The step that actually supplied it is recorded on the result as `reference_identity_source`. |
+| `bank_reference_identity_missing_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when no earlier step produced an identity to compare the holder against, so ownership can only be `unknown`. |
+| `bank_refresh_enabled` | boolean \| null | boolean | Re-fetch the account's financial data after the step has already been decided, for as long as the bank consent lasts. Needs at least one of the `balances`, `transactions` or `income` scopes and the save is refused without one. A consent that lapses afterwards is `bank_consent_expired_action`. |
+| `bank_require_address_match` | boolean \| null | boolean | Also require the holder's address to match. A name that reached the threshold but whose address scores below it drops to a partial match. An institution that returns no address waives the requirement; a session with no address of its own to compare against does not, and lands on a partial match. Off by default. |
+| `bank_require_oauth_only` | boolean \| null | boolean | Offer only institutions reachable over OAuth / app-to-app, never a provider's legacy credential-capture surface. Where open banking already makes OAuth the only route, this changes nothing. |
+| `bank_scopes` | json \| null | {"ownership": true, "identifiers": true\|false, "balances": true\|false, "transactions": true\|false, "income": true\|false} | What the user is asked to consent to sharing. `ownership` is what the product verifies and cannot be turned off. `identifiers` unmasks the IBAN / account number; `balances`, `transactions` and `income` read real financial data, are each billed separately, and are refused on save unless the application carries the `bank_financial_data` entitlement. A scope that is off is never requested from the provider, so the bank never shows it on its consent screen. |
+| `bank_show_match_result_to_user` | boolean \| null | boolean | Show the ownership result to the user inside the verification flow. Off means it is recorded on the session but never shown to them. |
+| `bank_skipped_action` | string \| null | 'REVIEW'\|'DECLINE' | Verdict when the user skipped the step. Only reachable with `bank_allow_skip`. |
+| `bank_store_full_identifiers` | boolean \| null | boolean | Store the account identifiers unmasked rather than masked. Needs the `identifiers` scope and the save is refused without it. Even then the unmasked form is only served to a caller holding the bank-verification read permission. |
+| `bank_store_raw_owner_data` | boolean \| null | boolean | Keep the holder details the institution returned next to the ownership evidence. Off means only the comparison itself is retained: scores, match method and reason codes. |
+| `bank_transactions_history_days` | integer \| null | integer >=30 <=365 | How far back transaction history is read, 30 to 365 days, defaulting to 90. Needs the `transactions` scope and the save is refused without it. |
+| `bank_unknown_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the evidence could not be fetched after retries - a transient failure. |
+| `bank_unsupported_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the user's bank is not supported and the node does not allow skipping. |
+| `bank_use_provider_score` | boolean \| null | boolean | Also read the institution's own holder-name score, and let it decide when it is higher than Didit's or when Didit had no holder name to score at all. A result decided that way reports `provider_only` as its match method, and a connection that returned no such score records a `provider_score_unavailable` warning. On by default. |
+| `fallback_to_native` | boolean \| null | boolean | Whether a marketplace connection that cannot be established falls back to Didit's native route. Off by default: a silent fallback would spend your Didit balance on a session you expected to run on your own provider contract. A fallback connection is recorded as `credential_source = native` and billed at the native price. |
+| `provider_key` | string \| null | string | Which route runs the step. Empty (the default) is Didit's native Bank Verification, a provider-independent product Didit routes to the regional open-banking vendor that serves the user's country and institution, on Didit's contracts and billing. A value names a MARKETPLACE provider whose own credentials this application has connected - the session then runs, is billed and is revoked on your provider account, and Didit charges only the marketplace platform fee. A provider that is not connected is refused on save. |
+| `status_rules` | array | array |  |
+
 ### DATABASE_VALIDATION
 
 Configuration for Database Validation feature.
@@ -192,7 +240,7 @@ Configuration for Database Validation feature.
 | Key | Type | Accepts | Meaning |
 | --- | --- | --- | --- |
 | `database_validation_countries` | json \| null | {"<ISO3>": {"services": ["<service_id>", ...]}} | The databases to check, per country - this node runs NOTHING until at least one country carries at least one service id. Service ids come from the country's live catalog (e.g. `bra_cpf` for BRA); ids that do not belong to the named country, and countries with no live service, are dropped on save. The legacy `{"<ISO3>": "one_by_one"\|"two_by_two"\|"not_enabled"}` shape is still accepted and auto-expanded to that country's live services. |
-| `database_validation_field_sources` | json \| null | {"<db_validation_input_field>": {"source": "document_ai"\|"questionnaire"\|"expected_data", "key": "<docai field key>\|<questionnaire node id>\|expected_details.<field>\|metadata.<key>"}} | Where to read a database input that no earlier step in the graph can fill. `source` names the producer and `key` names the value inside it: a Document AI field key for `document_ai`, a questionnaire node id for `questionnaire`, and `expected_details.<field>` or `metadata.<key>` for `expected_data`. Exact-key matches against an upstream step resolve automatically and are deliberately not persisted, so renaming a Document AI field never freezes a stale mapping into the config. A malformed entry is dropped on save rather than rejected, which un-satisfies its service and drops it from the selection. |
+| `database_validation_field_sources` | json \| null | {"<db_validation_input_field>": {"source": "document_ai"\|"questionnaire"\|"expected_data", "key": "<docai field key>\|<questionnaire node id>\|expected_details.<expected_details field>\|metadata.<key>"}} | Where to read a database input that no earlier step in the graph can fill. `source` names the producer and `key` names the value inside it: a Document AI field key for `document_ai`, a questionnaire node id for `questionnaire`, and `expected_details.<field>` or `metadata.<key>` for `expected_data`. The two halves speak different vocabularies: the map's KEY is a Database Validation input field (`tax_id`, `document_number`, ...), while an `expected_details.<field>` VALUE may only name a field the session-create payload actually carries - `address`, `country`, `date_of_birth`, `first_name`, `gender`, `id_country`, `identification_number`, `ip_address`, `last_name`, `nationality` or `poa_country`. Anything else under `expected_details.` is rejected on save; `metadata.<key>` takes any non-empty whitespace-free customer key. Exact-key matches against an upstream step resolve automatically and are deliberately not persisted, so renaming a Document AI field never freezes a stale mapping into the config. A malformed entry is dropped on save rather than rejected, which un-satisfies its service and drops it from the selection. |
 | `database_validation_no_match_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the database returns no match at all. |
 | `database_validation_not_applicable_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when no selected database covers the holder's country or document. |
 | `database_validation_partial_match_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the database matches some, but not all, of the submitted fields. |
@@ -233,6 +281,8 @@ Configuration for Email Verification feature.
 | `email_intelligence_score_threshold` | integer \| null | integer >=0 <=100 |  |
 | `email_max_check_attempts` | integer \| null | integer >=1 <=5 |  |
 | `email_max_retries` | integer \| null | integer >=1 <=5 |  |
+| `email_no_social_presence_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the social footprint check (`email_social_enabled`) finds the address registered on none of the platforms it covers. |
+| `email_social_enabled` | boolean \| null | boolean |  |
 | `frequent_email_breach_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the address appears in many breaches. |
 | `only_corporate_emails_allowed` | boolean \| null | boolean |  |
 | `recent_email_breach_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the address appears in a recent breach. |
@@ -251,6 +301,40 @@ Configuration for Face Match feature.
 | `face_match_not_computed_action` | string \| null | 'REVIEW'\|'DECLINE' | Verdict when no face-match score could be produced (missing portrait or selfie). |
 | `face_match_score_decline_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_match_score_review_threshold` | integer \| null | integer >=0 <=100 |  |
+| `status_rules` | array | array |  |
+
+### GEOLOCATION
+
+Configuration for the Precise Location (GEOLOCATION) feature. Every threshold is bounded here rather than in the client: the browser and the native SDKs are told what to collect by the step data this config produces, and a value the server would refuse must never reach a user as a request their device cannot satisfy. The action keys all default to Review rather than Decline. A denied permission, a wide radius or a stale fix is not evidence of fraud, and a default that declined them would make the step a conversion trap.
+
+| Key | Type | Accepts | Meaning |
+| --- | --- | --- | --- |
+| `geolocation_accuracy_mode` | string \| null | 'approximate_allowed'\|'precise' |  |
+| `geolocation_allow_qr_handoff` | boolean \| null | boolean |  |
+| `geolocation_allow_skip` | boolean \| null | boolean |  |
+| `geolocation_approximate_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the user granted an approximate location while `geolocation_accuracy_mode` asks for a precise one. |
+| `geolocation_deep_link_enabled` | boolean \| null | boolean |  |
+| `geolocation_document_distance_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the device position is further from the document address than `geolocation_document_distance_km`. The address is geocoded coarsely, so this is a weak signal. |
+| `geolocation_document_distance_km` | integer \| null | integer >=0 |  |
+| `geolocation_document_distance_unit` | string \| null | 'imperial'\|'metric' | The unit the console shows `geolocation_document_distance_km` in. Display only: the stored value is always kilometres and no rule depends on it. |
+| `geolocation_geofence_undetermined_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the position cannot be placed inside or outside the fence because its accuracy circle reaches the boundary. Uncertainty is never reported as being outside. |
+| `geolocation_geofencing_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the device position, and its whole uncertainty circle, falls outside `geolocation_geofencing_by_country`. |
+| `geolocation_geofencing_by_country` | json \| null | {"<ISO3>": {"allowed": true\|false, "states"?: {"<ISO 3166-2 code>": {"allowed": true\|false}} \| null}} | Country and region allow/deny rules for the device's own position, applied only while `is_geolocation_geofencing_enabled` is true. Same shape as IP Analysis's `ip_geofencing_by_country`, except that `states` keys are ISO 3166-2 codes (`US-NJ`), not state names, because the position is resolved to a subdivision rather than to a provider's city label. A country that is not listed is allowed. Saving a region rule for a country with no published ISO 3166-2 boundaries is rejected rather than silently ignored. |
+| `geolocation_integrity_missing_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when a native client submitted a position with no device-attestation token. Defaults to No action; web clients are recorded as unsupported rather than missing, because no browser can attest. |
+| `geolocation_ip_distance_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the device position and the session's IP location are further apart than `geolocation_ip_distance_km`, after both uncertainty radii are subtracted. |
+| `geolocation_ip_distance_km` | integer \| null | integer >=0 |  |
+| `geolocation_ip_distance_unit` | string \| null | 'imperial'\|'metric' | The unit the console shows `geolocation_ip_distance_km` in. Display only: the stored value is always kilometres and no rule depends on it. |
+| `geolocation_low_accuracy_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when no attempt established the required precision: the best position has an uncertainty radius wider than `geolocation_max_accuracy_radius_m`, or it reported no radius at all. A position without a radius is never counted as meeting the limit. |
+| `geolocation_max_accuracy_radius_m` | integer \| null | integer |  |
+| `geolocation_max_accuracy_radius_unit` | string \| null | 'imperial'\|'metric' | The unit the console shows `geolocation_max_accuracy_radius_m` in. Display only: the stored value is always metres, no rule depends on it, and the step data only forwards it so a client can show the same unit. |
+| `geolocation_max_age_seconds` | integer \| null | integer |  |
+| `geolocation_max_attempts` | integer \| null | integer |  |
+| `geolocation_mock_location_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the operating system reported the position as simulated rather than measured (Android mock provider, iOS simulated-by-software). |
+| `geolocation_permission_denied_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the user declined or dismissed the location prompt on every allowed attempt. Defaults to Review: a refusal is a choice, not a fraud signal. |
+| `geolocation_stale_fix_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the position was measured more than `geolocation_max_age_seconds` before the server received it. |
+| `geolocation_timeout_seconds` | integer \| null | integer |  |
+| `geolocation_unavailable_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when no position could be obtained - location services off or restricted, the positioning system returned nothing, the attempt timed out, the user skipped the step, or the client is too old to support it. |
+| `is_geolocation_geofencing_enabled` | boolean \| null | boolean |  |
 | `status_rules` | array | array |  |
 
 ### IP_ANALYSIS
@@ -274,6 +358,7 @@ Configuration for Device & IP Analysis feature.
 | `expected_ip_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the IP disagrees with the expected IP sent on the session. |
 | `ip_geofencing_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the connecting IP's country is not allowed by `ip_geofencing_by_country`. |
 | `ip_geofencing_by_country` | json \| null | {"<ISO3>": {"allowed": true\|false, "states"?: {"<state_code>": {"allowed": true\|false}} \| null}} | Country allow/deny rules for the connecting IP address, applied only while `is_ip_geofencing_enabled` is true. `allowed` is required and must be a real boolean; `states` is optional and null when the country needs no per-state rule. Countries that are not valid ISO3 are dropped on save. |
+| `ip_location_not_determined_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when no IP address identifying the end user was recorded, so the session has no IP location at all: country, city, ISP, coordinates and time zone are unavailable, and `ip_geofencing_by_country`, the document-country comparison and the VPN/data-centre checks cannot run. Defaults to `No Action`, which keeps the `IP_LOCATION_NOT_DETERMINED` warning visible on the session without changing its verdict; set `Review` or `Decline` if an unlocated session must not pass. |
 | `ip_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the IP country disagrees with the document's issuing country. |
 | `is_ip_geofencing_enabled` | boolean \| null | boolean |  |
 | `multiple_devices_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the session was driven from more than one device. |
@@ -345,6 +430,7 @@ Configuration for Liveness feature.
 | `cross_org_identity_claim_pattern_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when other organizations in the network recorded identity-claim events for this same person in which the claimed identity did not match. Review or no action only - a decline set here is downgraded to review. |
 | `external_capture_device_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when an external capture device is detected. |
 | `face_audio_recording_enabled` | boolean \| null | boolean | Record the microphone during the selfie capture, so a reviewer can hear the session. Off by default. |
+| `face_liveness_duplicated_face_document_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when a duplicate face is found on a user verified with a different date of birth. Another document of the same person (a passport after an identity card, a renewal, a document of a second country) is not flagged. |
 | `face_liveness_duplicated_face_name_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when a duplicate face is found under a different name. |
 | `face_liveness_flash_mode` | string \| null | string |  |
 | `face_liveness_max_attempts` | integer \| null | integer >=1 <=3 |  |
@@ -354,6 +440,8 @@ Configuration for Liveness feature.
 | `face_liveness_possible_duplicated_face_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when this face matches a previously seen user. |
 | `face_liveness_score_decline_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_liveness_score_review_threshold` | integer \| null | integer >=0 <=100 |  |
+| `face_liveness_uncertain_retry_enabled` | boolean \| null | boolean | Native SDK active liveness only. On, a capture whose liveness score falls strictly between face_liveness_score_decline_threshold and face_liveness_score_review_threshold is never decided, whichever verdict the engine attached to it: the person is told the result was unclear and asked to capture again, every time, outside the face_liveness_max_attempts budget (which still applies to captures the engine could not score). Off by default; the web flow ignores it. |
+| `face_liveness_video_anomaly_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the stored liveness recording contains a repeated moving sequence consistent with a looped video feed, measured server-side from the video itself, independently of the liveness score. It deliberately does NOT flag a frozen or near-motionless capture: frame statistics cannot separate an injected still from a genuine one (a subject holding still, or a flash that clips the exposure), so acting on that would decline real users. A frozen or pre-recorded injected feed is instead defeated by strict flash liveness (set face_liveness_flash_mode to "1" for strict), which binds the capture to a per-session colour-sequence challenge a recording cannot reproduce. Defaults to NO_ACTION (evidence is recorded, the verdict is unchanged). |
 | `face_luminance_max_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the selfie is brighter than `face_luminance_max_threshold`. |
 | `face_luminance_max_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_luminance_min_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the selfie is darker than `face_luminance_min_threshold`. |
@@ -361,6 +449,7 @@ Configuration for Liveness feature.
 | `face_privacy_mode_enabled` | boolean \| null | boolean |  |
 | `face_quality_decline_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_quality_review_threshold` | integer \| null | integer >=0 <=100 |  |
+| `face_search_enabled` | boolean \| null | boolean | Run the 1:N Face Search on the selfie: match it against previously verified users, the face blocklist and allowlist, and store its biometric template for later matching. On by default. Off skips the search, keeps no face template, and leaves the duplicate-face actions with nothing to act on. |
 | `frame_injection_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when injected video frames are detected. |
 | `race_map_similarity_thresholds` | json | {"<race>": {"possible": 0-100, "high": 0-100}} | Per-demographic overrides of the face-similarity bands used against the allow-list and duplicate-face sets, so match rates stay even across groups. `possible` is the lower band (defaults to 62) and `high` the upper (68); a group with no entry uses those defaults. |
 | `screen_capture_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the selfie is a photo of a screen. |
@@ -387,6 +476,7 @@ Configuration for OCR/ID Verification feature.
 | Key | Type | Accepts | Meaning |
 | --- | --- | --- | --- |
 | `age_restrictions_by_country` | json \| null | {"<ISO3>": {"minimum_age": 1-120, "maximum_age": 1-120\|null, "states"?: {"<STATE_CODE>": {"minimum_age": 1-120, "maximum_age": 1-120\|null}}}} | Per-country (and optionally per-state) age gate. `minimum_age` is required for every country listed; `maximum_age` may be null. |
+| `critical_field_occlusion_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when a critical printed field - an identity number, a name, the date of birth or the expiry date - was physically covered on the captured document. Defaults to REVIEW. |
 | `cross_org_fraud_document_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when this document was flagged as fraudulent by another organization in the network. |
 | `document_audio_recording_enabled` | boolean \| null | boolean | Record the microphone during document capture, so a reviewer can hear the session. Off by default. |
 | `document_blur_fields_by_country` | json \| null | {"<ISO3>": ["<blur_field_name>", ...]} | Fields to blur out of the stored document image, per country. Only fields the country's document layout supports are accepted. |
@@ -397,6 +487,10 @@ Configuration for OCR/ID Verification feature.
 | `document_liveness_screen_replay_decline_threshold` | integer \| null | integer >=0 <=100 |  |
 | `document_liveness_screen_replay_review_threshold` | integer \| null | integer >=0 <=100 |  |
 | `document_or_personal_number_format_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the document or personal number does not match the country's expected format. |
+| `document_selfie_duplicated_face_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the document-capture selfie matches, or possibly matches, the face of a user already verified in this application. |
+| `document_selfie_duplicated_face_document_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the document-capture selfie matches a user already verified with a different date of birth. Another document of the same person (a passport after an identity card, a renewal, a document of a second country) is not flagged. Can only escalate document_selfie_duplicated_face_action. |
+| `document_selfie_duplicated_face_name_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the document-capture selfie matches a user already verified under a different name. Can only escalate document_selfie_duplicated_face_action. |
+| `document_selfie_face_search_enabled` | boolean \| null | boolean | Run the 1:N Face Search on the selfie taken during document capture (needs is_document_selfie_portrait_match_enabled): match it against the face blocklist and previously verified users. The selfie is a probe only, its template is never stored. On by default. Off skips the search and leaves the document-selfie duplicate-face actions with nothing to act on; face_search_enabled off on the LIVENESS step skips it too, since that opt-out covers every selfie of the session. |
 | `document_selfie_portrait_match_decline_threshold` | integer \| null | integer >=0 <=100 |  |
 | `document_selfie_portrait_match_review_threshold` | integer \| null | integer >=0 <=100 |  |
 | `document_without_portrait_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the scanned document family carries no portrait on any side. Node-config only - there is no account-level setting; the runtime default is REVIEW. |
@@ -422,7 +516,7 @@ Configuration for OCR/ID Verification feature.
 | `is_ocr_id_verification_data_review_enabled` | boolean \| null | boolean | Let the user review and correct the extracted identity data before the step completes. Off by default. A correction is scored against `ocr_id_verification_data_review_critical_fields`, and a disagreement takes the critical or the minor action accordingly. The review still runs when the workflow includes NFC - a later chip read simply supersedes it. |
 | `maximum_age` | integer \| null | integer >=1 <=120 |  |
 | `maximum_age_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the holder is older than `maximum_age`. |
-| `methods` | json \| null | {"<ISO3>": {"document": {"enabled": bool}, "id_lookup": {"enabled": bool, "max_attempts": 1-5, "skip_liveness_and_face_match": bool, "on_partial_match": "fallback_to_document"\|"decline", "on_no_match": "fallback_to_document"\|"decline", "on_provider_error": "fallback_to_document"\|"decline", "response_fields"?: ["<field_key>", ...]}, "wallet": {"enabled": bool, "providers": ["<wallet_id>", ...], "on_failure": "fallback_to_document"\|"decline"}}} | Which ID verification methods each country may use: document capture (today's behaviour), non-doc lookup against a government or other authoritative source, and digital identity wallets. Omit the key, or a country, or a method, and that country is document only. Every method must be available for the country in the capability catalog (GET workflow-graph/id-verification-methods-catalog/); wallets are an accept-list with no ordering. Each fallback is `fallback_to_document` or `decline`; `max_attempts` (1-5, default 1) counts only lookups the registry answered. |
+| `methods` | json \| null | {"<ISO3>": {"document": {"enabled": bool}, "id_lookup": {"enabled": bool, "source"?: "<source_id>"\|null, "max_attempts": 1-5, "skip_liveness_and_face_match": bool, "on_partial_match": "fallback_to_document"\|"decline", "on_no_match": "fallback_to_document"\|"decline", "on_provider_error": "fallback_to_document"\|"decline", "response_fields"?: ["<field_key>", ...]}, "wallet": {"enabled": bool, "providers": ["<wallet_id>", ...], "on_failure": "fallback_to_document"\|"decline"}}} | Which ID verification methods each country may use: document capture (today's behaviour), non-doc lookup against a government or other authoritative source, and digital identity wallets. Omit the key, or a country, or a method, and that country is document only. Every method must be available for the country in the capability catalog (GET workflow-graph/id-verification-methods-catalog/); wallets are an accept-list with no ordering. Each fallback is `fallback_to_document` or `decline`; `max_attempts` (1-5, default 1) counts only lookups the registry answered. Where the catalog lists several lookup `sources` for a country, `source` picks exactly one by id; omitted means the country's default (the first listed). |
 | `minimum_age` | integer \| null | integer >=1 <=120 |  |
 | `minimum_age_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the holder is younger than `minimum_age`. |
 | `ocr_id_verification_data_review_critical_fields` | array \| null | ["first_name" \| "last_name" \| "date_of_birth" \| ...] | Which extracted identity fields count as critical when the user edits the OCR result, so a mismatch takes the critical action rather than the minor one. |
@@ -449,7 +543,9 @@ Configuration for Phone Verification feature.
 | `phone_intelligence_score_threshold` | integer \| null | integer >=0 <=100 |  |
 | `phone_max_check_attempts` | integer \| null | integer >=1 <=5 |  |
 | `phone_max_retries` | integer \| null | integer >=1 <=5 |  |
+| `phone_no_social_presence_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the social footprint check (`phone_social_enabled`) finds the number registered on none of the platforms it covers. |
 | `phone_shared_device_mode` | boolean \| null | boolean |  |
+| `phone_social_enabled` | boolean \| null | boolean |  |
 | `phone_trust_index_threshold` | integer \| null | integer >=0 <=100 |  |
 | `phone_type_risk_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the line type itself is considered risky. |
 | `phone_verification_countries` | json \| null | {"<ISO2>": {"<channel: sms\|whatsapp\|telegram\|rcs\|viber\|zalo>": {"enabled": true\|false, "max_retries": <int>} \| true\|false}} | Which countries and delivery channels the one-time code may be sent through. It is a WHITELIST: a country absent from the map is not offered at all, and a channel absent from a listed country is skipped. `max_retries` overrides the node-level retry cap for that one channel. A bare boolean is the legacy form and still means enabled/disabled with the node-level cap. |

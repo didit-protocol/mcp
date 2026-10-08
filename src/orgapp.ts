@@ -116,3 +116,18 @@ export async function mapWithConcurrency<T, R>(
   );
   return results;
 }
+
+// Org/app selectors shared by the console (management) tools, which target
+// /organization/{org}/application/{app}/... endpoints. Spread into each such tool's
+// `properties`. Resolved (arg → token context → env default) by orgAppPath in config.ts;
+// discover ids via didit_org_list / didit_org_list_applications.
+export const ORG_APP_PROPS = {
+  organization_id: {
+    type: "string",
+    description: "Organization UUID (from didit_org_list). Optional if your token has a single/default org.",
+  },
+  application_id: {
+    type: "string",
+    description: "Application UUID (from didit_context_get). Optional when you own exactly one application - it is resolved automatically, even if you belong to several organizations.",
+  },
+} as const;

@@ -4,9 +4,9 @@ import { resolveWorkflowScope } from "../dist/tools/search.js";
 import { getWorkflowFieldDefinitions, getWorkflowBranchFields } from "../dist/tools/workflow-graph.js";
 import { requestContext } from "../dist/config.js";
 
-// Seen in production: the model passed a label/slug ("adaptive-age-estimation")
+// an internal issue (production tool calls, 1-4 Sep): the model passed a label/slug ("adaptive-age-estimation")
 // or a node id ("feature_ocr") as `workflow_id` to didit_workflow_get_field_definitions (30 calls)
-// and other id-taking tools
+// and the workflow-check tool (6 calls) and got "Workflow … was not found in any of your
 // applications". A non-uuid id now resolves by EXACT label/slug; anything ambiguous lists the
 // candidates instead of guessing. didit_workflow_get_branch_fields (19 calls) failed with
 // "Both 'graph' and 'branch_node_id' are required" because the MCP posted `node_id`.

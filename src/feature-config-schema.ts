@@ -107,7 +107,7 @@ function renderConstraint(field: FeatureConfigField): string {
  * One feature's keys, in full but compressed.
  *
  * Every key is listed - a key an agent cannot see is a key it cannot set, which
- * is the whole of that incident - but the repetition is squeezed out: shaped JSON
+ * is the whole of an internal issue - but the repetition is squeezed out: shaped JSON
  * blobs get their shape and an example, keys sharing a closed vocabulary are
  * grouped under it once, and plain numeric/flag keys are listed with their
  * bounds. Meaning-prose stays in the artifact and is one

@@ -4,9 +4,10 @@ import { createServer } from "../dist/index.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-// The advertised schemas must make the failing calls impossible to mis-shape.
+// the advertised schemas must make the failing calls impossible to mis-shape.
 // - didit_workflow_get_branch_fields: graph + branch_node_id required, each saying where it comes from.
-// - didit_workflow_get_field_definitions: workflow_id is an id, not a label.
+// - didit_workflow_get_field_definitions: workflow_id is an id, not a label (the internal workflow-check
+//   twin is asserted in internal-tools-schemas.test.mjs).
 // - didit_workflow_build_graph: document_rules[].country accepts the 'ALL' wildcard.
 
 async function listTools() {
@@ -30,11 +31,10 @@ test("get_branch_fields requires graph and branch_node_id and says where each co
 
 test("workflow_id on field_definitions is documented as an id, never a label", async () => {
   const tools = await listTools();
-  for (const name of ["didit_workflow_get_field_definitions"]) {
-    const { description } = tools.get(name).inputSchema.properties.workflow_id;
-    assert.match(description, /NOT a label, slug or node id/, name);
-    assert.match(description, /candidates are listed/, name);
-  }
+  const name = "didit_workflow_get_field_definitions";
+  const { description } = tools.get(name).inputSchema.properties.workflow_id;
+  assert.match(description, /NOT a label, slug or node id/, name);
+  assert.match(description, /candidates are listed/, name);
 });
 
 test("build_graph documents the document_rules country wildcard 'ALL'", async () => {

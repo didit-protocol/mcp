@@ -1,6 +1,6 @@
 # Tools
 
-Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **135 tools**, grouped by domain.
+Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **138 tools**, grouped by domain.
 For the categorized reference with read/write/destructive markers, see
 https://docs.didit.me/integration/mcp/tools.
 
@@ -102,6 +102,7 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_session_create`
 - `didit_session_create_import`
 - `didit_session_delete`
+- `didit_session_explain_decision`
 - `didit_session_generate_pdf`
 - `didit_session_get_decision`
 - `didit_session_get_import`
@@ -115,6 +116,8 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_session_update_data`
 - `didit_session_update_poa_data`
 - `didit_session_update_status`
+- `didit_session_webhook_resend`
+- `didit_session_webhooks`
 
 ## transaction
 
@@ -195,4 +198,3 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_workflow_set_graph`
 - `didit_workflow_update`
 - `didit_workflow_validate_graph`
-

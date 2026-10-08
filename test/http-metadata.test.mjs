@@ -20,7 +20,7 @@ globalThis.fetch = async (url) => {
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
-      scopes_supported: ["didit:management", "didit:verification"],
+      scopes_supported: ["didit:management", "didit:verification", "didit:staff"],
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
@@ -75,7 +75,7 @@ test("protected-resource metadata advertises the actual /mcp transport resource"
     assert.equal(res.status, 200);
     assert.equal(res.body.resource, "https://mcp.didit.me/mcp");
     assert.deepEqual(res.body.authorization_servers, ["https://business.didit.me"]);
-    assert.deepEqual(res.body.scopes_supported, ["didit:management", "didit:verification"]);
+    assert.deepEqual(res.body.scopes_supported, ["didit:management", "didit:verification", "didit:staff"]);
   }
 });
 

@@ -181,6 +181,55 @@ test("resolveBranchRuleNodeIds: maps each prefix to the right feature node", () 
   assert.equal(rules[1].node_id, "aml");
 });
 
+test("resolveBranchRuleNodeIds: a bank.* rule resolves to the BANK_VERIFICATION node", () => {
+  // `bank.status` is the verdict, `bank.ownership_result` the evidence: both
+  // are produced by the same node, which must be the one the rule reads.
+  const graph = {
+    start_node: "ocr",
+    nodes: {
+      ocr: { node_type: "feature", feature: "OCR", next: "bank" },
+      bank: { node_type: "feature", feature: "BANK_VERIFICATION", next: "br" },
+      br: { node_type: "branch", branches: [
+        { id: "a", goto: "s", rules: [
+          { field: "bank.status", operator: "equals", value: "Approved" },
+          { field: "bank.ownership_result", operator: "equals", value: "match" },
+        ] },
+        { id: "else", goto: "s", rules: [] },
+      ] },
+      s: { node_type: "status", session_status: "Determine" },
+    },
+  };
+  resolveBranchRuleNodeIds(graph);
+  const rules = graph.nodes.br.branches[0].rules;
+  assert.equal(rules[0].node_id, "bank");
+  assert.equal(rules[1].node_id, "bank");
+});
+
+test("resolveBranchRuleNodeIds: a geolocation.* rule resolves to the GEOLOCATION node", () => {
+  // `geolocation.status` is the verdict, `geolocation.inside_geofence` the evidence: both are
+  // produced by the GEOLOCATION node. Without the prefix mapping the rule silently kept no
+  // node_id and the backend rejected the branch.
+  const graph = {
+    start_node: "ocr",
+    nodes: {
+      ocr: { node_type: "feature", feature: "OCR", next: "geo" },
+      geo: { node_type: "feature", feature: "GEOLOCATION", next: "br" },
+      br: { node_type: "branch", branches: [
+        { id: "a", goto: "s", rules: [
+          { field: "geolocation.status", operator: "equals", value: "Approved" },
+          { field: "geolocation.inside_geofence", operator: "equals", value: true },
+        ] },
+        { id: "else", goto: "s", rules: [] },
+      ] },
+      s: { node_type: "status", session_status: "Determine" },
+    },
+  };
+  resolveBranchRuleNodeIds(graph);
+  const rules = graph.nodes.br.branches[0].rules;
+  assert.equal(rules[0].node_id, "geo");
+  assert.equal(rules[1].node_id, "geo");
+});
+
 test("resolveBranchRuleNodeIds: multiple nodes of a feature -> the upstream one nearest the branch", () => {
   const graph = {
     start_node: "ocr_1",
@@ -304,6 +353,16 @@ test("segregation: KYB combined with shared features (AML, QUESTIONNAIRE, PHONE)
 
 test("segregation: KYC combined with shared AML (no KYB feature) is not flagged", () => {
   assert.doesNotThrow(() => assertKycKybSegregation(featureGraph("OCR", "AML")));
+});
+
+// BANK_VERIFICATION is in the backend's KYBFeatureChoices (a company's account holder is checked
+// the same way a person's is), so it is legal on either graph - the same false-rejection class
+// as the DOCUMENT_AI regression below.
+test("segregation: BANK_VERIFICATION is shared - allowed on a KYB graph and on a KYC graph", () => {
+  assert.doesNotThrow(() =>
+    assertKycKybSegregation(featureGraph("KYB_REGISTRY", "KYB_DOCUMENTS", "BANK_VERIFICATION")),
+  );
+  assert.doesNotThrow(() => assertKycKybSegregation(featureGraph("OCR", "LIVENESS", "BANK_VERIFICATION")));
 });
 
 // Regression (prod 2026-07-24, Copilot): a user asked for a company flow whose steps were

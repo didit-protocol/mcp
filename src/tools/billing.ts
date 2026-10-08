@@ -7,8 +7,8 @@ import { assertBoolean, DiditError } from "../security";
 const TOP_UP_MINIMUM = 50;
 const TOP_UP_MAXIMUM = 1_000_000;
 
-export async function getBalance(): Promise<any> {
-  return apiRequest(orgPath("/top-up/"));
+export async function getBalance(organizationId?: string): Promise<any> {
+  return apiRequest(orgPath("/top-up/", { organizationId }));
 }
 
 export async function topUp(

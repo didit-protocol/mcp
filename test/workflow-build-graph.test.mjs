@@ -36,6 +36,88 @@ test("build_graph is a read-only workflow tool with the spec surface", async () 
   assert.match(build.description, /regulations are never consulted/i);
 });
 
+test("the spec root is CLOSED — the level that let `branch_rules` through", async () => {
+  // every nested object of this schema was already closed; the root
+  // was not, so a model could add a key nobody had declared and the backend's
+  // 400 was the first thing that noticed.
+  const byName = await listTools();
+  const build = byName.get("didit_workflow_build_graph");
+
+  assert.equal(build.inputSchema.additionalProperties, false);
+});
+
+test("build_graph refuses an invented spec key before any request, naming the real one", async () => {
+  // The console copilot sent `branch_rules` for `branches` and three users of
+  // one paying organization lost their workflow to the round trip. The schema
+  // tells the model; this is what enforces it.
+  const { buildWorkflow } = await import("../dist/tools/compliance.js");
+  const { requestContext } = await import("../dist/config.js");
+  let requested = 0;
+  globalThis.fetch = async () => {
+    requested += 1;
+    return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  await assert.rejects(
+    requestContext.run({ accessToken: "tok-build", organizationId: "org-1", applicationId: "app-1" }, () =>
+      buildWorkflow({ features: ["OCR"], branch_rules: [{ countries: ["MEX"], features: ["AML"] }] }),
+    ),
+    (error) => {
+      assert.match(error.message, /Unknown spec key\(s\) branch_rules \(the key is "branches"\)/);
+      assert.equal(error.shape.field, "branch_rules");
+      assert.deepEqual(error.shape.allowed, [
+        "branches",
+        "countries",
+        "document_rules",
+        "features",
+        "per_feature_config",
+        "subject",
+      ]);
+      return true;
+    },
+  );
+  assert.equal(requested, 0, "the invalid spec reached the API");
+});
+
+test("build_graph still passes the whole accepted vocabulary, routing args stripped", async () => {
+  // The guard is a closed set, so it is also what would silently break the
+  // builder's contract if it fell behind it. include_graph and the org/app
+  // routing args are not spec keys and must survive.
+  const { buildWorkflow } = await import("../dist/tools/compliance.js");
+  const { requestContext } = await import("../dist/config.js");
+  let body;
+  globalThis.fetch = async (_url, init) => {
+    body = JSON.parse(init.body);
+    return new Response(JSON.stringify({ graph: null, questions: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  await requestContext.run({ accessToken: "tok-build-ok", organizationId: "org-1", applicationId: "app-1" }, () =>
+    buildWorkflow({
+      organization_id: "org-1",
+      application_id: "app-1",
+      include_graph: true,
+      subject: "kyc",
+      features: ["OCR"],
+      countries: { mode: "only", list: ["MEX"] },
+      document_rules: [{ country: "USA", document: "DL", state: "NV" }],
+      per_feature_config: { OCR: { id_document_quality_threshold: 50 } },
+      branches: [{ countries: ["MEX"], features: ["AML"] }],
+    }),
+  );
+
+  assert.deepEqual(Object.keys(body).sort(), [
+    "branches",
+    "countries",
+    "document_rules",
+    "features",
+    "per_feature_config",
+    "subject",
+  ]);
+});
+
 test("validate_graph no longer demands a workflow id for an unsaved canvas", async () => {
   const byName = await listTools();
   const validate = byName.get("didit_workflow_validate_graph");

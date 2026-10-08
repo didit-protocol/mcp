@@ -14,6 +14,24 @@ export async function getAnalytics(params: Record<string, any>): Promise<any> {
   return apiRequest(orgAppPath("/analytics/"), { params });
 }
 
+const DAY_MS = 86_400_000;
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+
+/**
+ * The window as the analytics endpoint reads it: `start_date` and `end_date` (YYYY-MM-DD, both or
+ * neither; without them it answers for the last 30 days). The tool's own `date_from`/`date_to`
+ * (and `last_n_days`, already turned into them) were sent verbatim before, so the backend ignored
+ * every window and always answered for the last 30 days.
+ */
+export function analyticsWindow(params: Record<string, any>): { start_date?: string; end_date?: string } {
+  const from = typeof params.date_from === "string" && params.date_from ? params.date_from.slice(0, 10) : undefined;
+  const to = typeof params.date_to === "string" && params.date_to ? params.date_to.slice(0, 10) : undefined;
+  if (!from && !to) return {};
+  const end = to ?? isoDay(new Date());
+  const start = from ?? isoDay(new Date(new Date(end + "T00:00:00Z").getTime() - 29 * DAY_MS));
+  return { start_date: start, end_date: end };
+}
+
 function addNumeric(target: Record<string, number>, src: any): void {
   if (!src || typeof src !== "object") return;
   for (const [k, v] of Object.entries(src)) {
@@ -26,14 +44,33 @@ interface FeatureAgg {
   workflows: number;
 }
 
+type RiskCounts = Record<string, number>;
+type WarningStats = Record<string, { total: number; risks: Record<string, RiskCounts> }>;
+
+/** warning_stats is nested ({FEATURE: {total, risks: {CODE: {error, warning, information}}}}). */
+function addWarnings(target: WarningStats, src: any): void {
+  if (!src || typeof src !== "object") return;
+  for (const [feature, stats] of Object.entries<any>(src)) {
+    if (!stats || typeof stats !== "object") continue;
+    const into = (target[feature] ??= { total: 0, risks: {} });
+    if (typeof stats.total === "number") into.total += stats.total;
+    for (const [code, counts] of Object.entries<any>(stats.risks ?? {})) addNumeric((into.risks[code] ??= {}), counts);
+  }
+}
+
 export async function analytics(args: Record<string, any>): Promise<any> {
   const { organization_id, application_id, include_timeseries, ...rest } = args;
   const params = applyRelativeWindow(rest); // → { date_from, date_to, ... }
+  const query = analyticsWindow(params);
 
   const request_breakdown: Record<string, number> = {};
+  const previous_request_breakdown: Record<string, number> = {};
   const original_status_stats: Record<string, number> = {};
-  const warning_stats: Record<string, number> = {};
+  const warning_stats: WarningStats = {};
   const resubmission_stats: Record<string, number> = {};
+  const workflow_sessions: Record<string, number> = {};
+  let verificationSeconds = 0;
+  let verificationCount = 0;
   const featureAgg: Record<string, FeatureAgg> = {};
   const timeseries: Record<string, Record<string, number>> = {};
   const perApp: any[] = [];
@@ -44,10 +81,17 @@ export async function analytics(args: Record<string, any>): Promise<any> {
   function merge(a: any, orgId: string, orgName: string, appId: string, appName: string): void {
     if (!a || typeof a !== "object") return;
     addNumeric(request_breakdown, a.request_breakdown);
+    addNumeric(previous_request_breakdown, a.previous_request_breakdown);
     addNumeric(original_status_stats, a.original_status_stats);
-    addNumeric(warning_stats, a.warning_stats);
+    addWarnings(warning_stats, a.warning_stats);
     addNumeric(resubmission_stats, a.resubmission_stats);
-    for (const wf of Object.values<any>(a.workflow_funnel_stats ?? {})) {
+    const vt = a.verification_time_stats;
+    if (vt && typeof vt.overall_avg_seconds === "number" && typeof vt.overall_count === "number" && vt.overall_count > 0) {
+      verificationSeconds += vt.overall_avg_seconds * vt.overall_count;
+      verificationCount += vt.overall_count;
+    }
+    for (const [workflowId, wf] of Object.entries<any>(a.workflow_funnel_stats ?? {})) {
+      workflow_sessions[workflowId] = (workflow_sessions[workflowId] ?? 0) + Number(wf?.total ?? 0);
       sessionsStarted += Number(wf?.total ?? 0);
       for (const [feature, step] of Object.entries<any>(wf?.steps ?? {})) {
         const f = (featureAgg[feature] ??= { reached: 0, workflows: 0 });
@@ -73,7 +117,7 @@ export async function analytics(args: Record<string, any>): Promise<any> {
 
   if (organization_id && application_id) {
     scanned = 1;
-    const a = await runForScope(organization_id, application_id, () => getAnalytics(params));
+    const a = await runForScope(organization_id, application_id, () => getAnalytics(query));
     merge(a, organization_id, "", application_id, "");
   } else {
     const map = await getOrgAppMap();
@@ -83,7 +127,7 @@ export async function analytics(args: Record<string, any>): Promise<any> {
     scanned = pairs.length;
     await mapWithConcurrency(pairs, FANOUT_CONCURRENCY, async ({ o, ap }) => {
       try {
-        const a = await runForScope(o.orgId, ap.appId, () => getAnalytics(params));
+        const a = await runForScope(o.orgId, ap.appId, () => getAnalytics(query));
         merge(a, o.orgId, o.orgName, ap.appId, ap.appName);
       } catch {
         skipped++; // app the caller can't read analytics for — skip
@@ -109,19 +153,22 @@ export async function analytics(args: Record<string, any>): Promise<any> {
   }
 
   return {
-    date_window: { date_from: params.date_from, date_to: params.date_to },
+    date_window: { date_from: query.start_date ?? params.date_from, date_to: query.end_date ?? params.date_to },
     aggregated: !(organization_id && application_id),
     scanned_apps: scanned,
     skipped_apps: skipped,
     sessions_started: sessionsStarted,
     request_breakdown,
+    previous_request_breakdown,
     original_status_stats,
     conversion_rate,
     feature_funnel,
     warning_stats,
     resubmission_stats,
+    workflow_sessions,
+    avg_verification_seconds: verificationCount > 0 ? Math.round((verificationSeconds / verificationCount) * 10) / 10 : null,
     ...(include_timeseries ? { timeseries } : {}),
     per_app: perApp,
-    note: "Counts are summed across apps (exact). feature_funnel.reached = sessions that REACHED that step (not per-step pass/fail), so 'tried phone verification' = feature_funnel.PHONE_VERIFICATION.reached and 'dropped off' is inferred from reached vs finished/approved. conversion_rate recomputed = approved/(approved+declined+in_review).",
+    note: "Counts are summed across apps (exact). feature_funnel.reached = sessions that REACHED that step (not per-step pass/fail), so 'tried phone verification' = feature_funnel.PHONE.reached (step keys: OCR, LIVENESS, FACE_MATCH, AML, POA, PHONE, EMAIL, NFC, DATABASE_VALIDATION, QUESTIONNAIRE, IP_ANALYSIS, AGE_ESTIMATION, KYB_*) and 'dropped off' is inferred from reached vs finished/approved. conversion_rate recomputed = approved/(approved+declined+in_review).",
   };
 }

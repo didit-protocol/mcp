@@ -48,6 +48,18 @@ export const MCP_OAUTH_INTROSPECT_URL =
   process.env.MCP_OAUTH_INTROSPECT_URL || "https://apx.didit.me/auth/v2/introspect/";
 // Optional: for single-org MCP deployments, the org to scope introspection to.
 export const MCP_DEFAULT_ORG = process.env.MCP_DEFAULT_ORG || "";
+// "Mixed auth" (MCP 2026-07-28 + RFC 9728): serve the PROTOCOL-NEGOTIATION surface without a
+// Bearer, and keep every tool behind OAuth exactly as before. `initialize`, its notification,
+// and `server/discover` return only the server name, version, capabilities and supported
+// protocol versions - none of which is private, and all of which a client must read BEFORE it
+// can know how to authenticate. Several hosts (managed MCP hosting platforms, MCP directory crawlers)
+// probe with `server/discover` before any OAuth dance and treat the 401 as a hard connection
+// failure, so an all-or-nothing 401 makes the server undiscoverable to them.
+//
+// OFF by default: mcp.didit.me keeps answering 401 to every request, unchanged. Turn it on per
+// deployment (a gateway-hosted copy, a directory listing) with MCP_PUBLIC_DISCOVERY=true.
+// tools/list and tools/call are NEVER public under this flag - the catalog stays authenticated.
+export const MCP_PUBLIC_DISCOVERY = process.env.MCP_PUBLIC_DISCOVERY === "true";
 // Optional: default application for single-app deployments (used when a tool call
 // omits application_id and the user has no unambiguous default).
 export const MCP_DEFAULT_APP = process.env.MCP_DEFAULT_APP || "";
@@ -70,10 +82,13 @@ export const DIDIT_OIDC_REGISTRATION_URL =
 // authorization server (business console) advertises and renders plain-language consent
 // for — otherwise the consent screen shows "a permission Didit can't explain". The MCP
 // acts as the user with management + verification access, so it requests those two scopes
-// (NOT granular read:sessions/etc., which the console doesn't recognize).
+// (NOT granular read:sessions/etc., which the console doesn't recognize). `didit:staff` is
+// identity-only: the auth service issues it to staff users alone, and only a token carrying it
+// introspects with `is_staff: true` — which is what opens the staff tools (see
+// isPrivilegedCaller). Non-staff users simply never receive it.
 export const MCP_SCOPES_SUPPORTED = (
   process.env.MCP_SCOPES_SUPPORTED ||
-  "didit:management didit:verification"
+  "didit:management didit:verification didit:staff"
 )
   .split(/\s+/)
   .filter(Boolean);
@@ -196,6 +211,8 @@ export function getAuthHeaders(accessToken: string): Record<string, string> {
 }
 
 export interface ApiRequestOptions {
+  /** Preserve the original PDF bytes instead of decoding them as text. */
+  responseType?: "pdf";
   method?: string;
   /** JSON request body. */
   json?: any;
@@ -227,6 +244,10 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
 
   const resolvedHeaders = headers ?? (form ? getMultipartHeaders() : getHeaders());
   const init: RequestInit = { method, headers: { "User-Agent": userAgent(), ...resolvedHeaders } };
+  if (opts.responseType === "pdf") {
+    init.redirect = "error";
+    init.signal = AbortSignal.timeout(60000);
+  }
   if (form) {
     init.body = form;
   } else if (json !== undefined) {
@@ -234,6 +255,17 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
   }
 
   const res = await fetch(url.toString(), init);
+
+  if (res.ok && opts.responseType === "pdf") {
+    if (res.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/pdf") {
+      throw new Error("Didit did not return a PDF report.");
+    }
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
+      throw new Error("Didit returned an invalid PDF report.");
+    }
+    return bytes;
+  }
 
   if (res.status === 204) return { success: true };
 

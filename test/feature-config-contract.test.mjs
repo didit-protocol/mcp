@@ -1,7 +1,7 @@
 // The contract test: every feature-config key the backend accepts is advertised
 // by the workflow tools, and nothing that is not in the contract is invented.
 //
-// This is the test that would have caught the silent-drop incident. `DATABASE_VALIDATION` reached
+// This is the test that would have caught an internal issue. `DATABASE_VALIDATION` reached
 // production with its config keys documented in the backend and nowhere else, so
 // an agent asked for a Brazilian database check produced a node with no countries
 // and the API dropped the keys in silence. Nothing failed. Now something does.
@@ -36,7 +36,6 @@ const REFRESH =
 /** The tools whose schemas describe a feature `config` object. */
 const CONFIG_CARRYING_TOOLS = [
   "didit_workflow_create",
-  "didit_workflow_update",
   "didit_workflow_validate_graph",
   "didit_workflow_set_graph",
   "didit_workflow_preview_graph",
@@ -82,6 +81,13 @@ test("every feature in the contract is offered by the workflow tools", async () 
       assert.ok(text.includes(feature), `${name} never mentions the feature ${feature}. ${REFRESH}`);
     }
   }
+});
+
+test("settings-only workflow update does not advertise feature replacement", async () => {
+  const tool = (await listAdvertisedTools()).find(t => t.name === "didit_workflow_update");
+  assert.equal(tool.inputSchema.properties.features, undefined);
+  assert.match(tool.description, /SETTINGS only/);
+  assert.match(tool.description, /didit_workflow_edit_graph/);
 });
 
 test("every config key in the contract is advertised by the graph tools", async () => {

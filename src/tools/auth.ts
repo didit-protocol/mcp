@@ -23,12 +23,47 @@ export async function verifyEmail(email: string, code: string): Promise<any> {
 
 export async function login(email: string, password: string): Promise<any> {
   // Redact any echoed api_key/client_secret; keep access_token/refresh_token (the caller needs them).
-  return redactApplication(
+  const res = redactApplication(
     await apiRequest("/programmatic/login/", {
       method: "POST",
       baseUrl: DIDIT_AUTH_BASE_URL,
       headers: JSON_HEADERS,
       json: { email, password },
+    }),
+  );
+  return res?.["2fa_required"] ? twoFactorStepUp(res) : res;
+}
+
+// once an account has a second factor enrolled, the password alone no longer
+// returns tokens - the backend answers with a 5-minute temp_token for /2fa/verify/ instead.
+// That step only accepts an authenticator (TOTP) or backup code; a passkey needs a browser.
+function twoFactorStepUp(res: any): any {
+  const base = { "2fa_required": true, has_authenticator: !!res.has_authenticator, has_passkeys: !!res.has_passkeys };
+  if (!res.has_authenticator) {
+    return {
+      ...base,
+      next_step:
+        "This account signs in with a passkey, which a local MCP server cannot use. Connect the hosted Didit MCP " +
+        "connector (it signs in through the browser), or add an authenticator app to the account and log in again.",
+    };
+  }
+  return {
+    ...base,
+    temp_token: res.temp_token,
+    expires_in: 300,
+    next_step:
+      "Ask the user for the current 6-digit code from their authenticator app (or an unused backup code) and call " +
+      "didit_account_verify_2fa with this temp_token within 5 minutes.",
+  };
+}
+
+export async function verify2fa(tempToken: string, code: string): Promise<any> {
+  return redactApplication(
+    await apiRequest("/2fa/verify/", {
+      method: "POST",
+      baseUrl: DIDIT_AUTH_BASE_URL,
+      headers: JSON_HEADERS,
+      json: { temp_token: tempToken, otp_token: code },
     }),
   );
 }

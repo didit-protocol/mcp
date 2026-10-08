@@ -4,11 +4,15 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
   ListToolsRequestSchema,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
 import * as auth from "./tools/auth";
 import * as sessions from "./tools/sessions";
+import { explainSessionDecision } from "./tools/session-explain";
 import * as settings from "./tools/settings";
 import * as billing from "./tools/billing";
 import * as users from "./tools/users";
@@ -26,6 +30,16 @@ import {
   isPrivilegedCaller,
   dispatchPrivilegedTool,
 } from "./privileged-tools";
+import {
+  internalToolDefs,
+  isInternalToolName,
+  dispatchInternalTool,
+  INTERNAL_GROUP_PREFIXES,
+  INTERNAL_DESTRUCTIVE_TOOLS,
+  INTERNAL_OPEN_WORLD_TOOLS,
+  INTERNAL_READ_TOOLS,
+  REGULATION_GRAPH_HINT,
+} from "./internal-tools";
 import * as blocklist from "./tools/blocklist";
 import * as cases from "./tools/cases";
 import * as reports from "./tools/reports";
@@ -34,7 +48,6 @@ import * as members from "./tools/members";
 import * as context from "./tools/context";
 import * as search from "./tools/search";
 import * as workflowGraph from "./tools/workflow-graph";
-import * as compliance from "./tools/compliance";
 import {
   FEATURE_CONFIG_CHECKSUM,
   WORKFLOW_FEATURES,
@@ -45,8 +58,11 @@ import {
   FEATURE_CONFIG_SCHEMA,
 } from "./feature-config-schema";
 import * as analytics from "./tools/analytics";
+import * as compliance from "./tools/compliance";
 import { requestContext, stripRoutingIds, SERVER_VERSION, permissionMode } from "./config";
-import { getOrgAppMap } from "./orgapp";
+import { dropBlankOptionals, type InputSchema } from "./blank-args";
+import { applyCatalogProfile, applyCatalogResult, catalogProfileRefusal, stdioCatalogProfile, CONSOLE_OPEN_TOOL, consoleOpenResult, listWidgetResources, profileServesWidgets, readWidgetResource, widgetToolMeta, widgetTools, type CatalogProfile } from "./chatgpt-app";
+import { getOrgAppMap, ORG_APP_PROPS } from "./orgapp";
 import { toSafeErrorShape, DiditError } from "./security";
 import { auditToolCall } from "./audit-log";
 import { decidePermission, missingPermissionError } from "./permissions";
@@ -68,22 +84,6 @@ const LIST_ENTRY_TYPES = [
   "face", "document", "phone", "email", "ip_address", "device_fingerprint",
   "wallet_address", "bank_account", "user", "business", "country", "key",
 ];
-const NETWORK_STATUSES = ["active", "in_review", "resolved", "dismissed"];
-const NETWORK_SIGNAL_TYPES = ["ip_address", "device", "face", "document_number", "phone", "email", "address"];
-const NETWORK_PATTERN_TYPES = [
-  "exact_same_device",
-  "similar_device",
-  "same_ip_address",
-  "same_address",
-  "similar_selfie_backgrounds",
-  "similar_poa_documents",
-  "same_document_number",
-  "same_phone_number",
-  "same_email",
-];
-const NETWORK_RISK_BANDS = ["low", "medium", "high"];
-const NETWORK_DETAIL_INCLUDES = ["graph", "members", "signals", "timeline", "map"];
-const NETWORK_SUBJECT_KINDS = ["session", "business_session", "vendor_user", "vendor_business", "transaction"];
 
 // Real backend FormElementType (questionnaires/config/choices.py) — uppercase.
 const FORM_ELEMENT_TYPES = [
@@ -161,7 +161,7 @@ const WORKFLOW_GRAPH_SCHEMA = {
     "status (TERMINAL) = {node_type:'status', session_status:'Approved'|'Declined'|'In Review'|'Determine'}. " +
     "Branches are evaluated in order, first match wins; an empty rules:[] is the else/catch-all (kept last). " +
     "Operators include `fuzzy_match` (string fields only, needs a `score` 0-100). Reference a feature's outcome " +
-    "with e.g. kyc.status / document_ai.status, and an extracted value with kyc.extra_fields.profession. " +
+    "with e.g. kyc.status / document_ai.status / bank.status, and an extracted value with kyc.extra_fields.profession. " +
     "Each rule's `node_id` (the feature node that produces its field) is auto-filled for you — only set it " +
     "(or use the `field@node_id` form) to disambiguate when the graph has several nodes of the same feature. " +
     // Allow-list NORMALIZATION is something this server does on the way out, so it
@@ -172,7 +172,7 @@ const WORKFLOW_GRAPH_SCHEMA = {
     "country key — every form becomes the canonical {ISO3:{CODE:{enabled:1}}}. poa_languages_allowed accepts a " +
     "language array ([\"es\"]) or a map ({\"es\":1}). Omit an allow-list to accept everything. " +
     // The KYC/KYB rule is a graph-level constraint, not a per-key one.
-    "KYC vs KYB: a graph is EITHER a person (KYC) workflow OR a business (KYB) workflow — never both, and the choice follows WHO is verified (a company → KYB, a person → KYC). A graph using any KYB feature (KYB_REGISTRY/KYB_DOCUMENTS/KYB_KEY_PEOPLE) may only also use DOCUMENT_AI, AML, QUESTIONNAIRE, PHONE_VERIFICATION, EMAIL_VERIFICATION, IP_ANALYSIS; it must NOT include person/KYC-only features (OCR, LIVENESS, FACE_MATCH, NFC, PROOF_OF_ADDRESS, DATABASE_VALIDATION, AGE_ESTIMATION). Company paperwork (incorporation, ownership, source of funds, business address) belongs in KYB_DOCUMENTS or DOCUMENT_AI on the KYB graph — never rebuild it as a KYC workflow. To verify the people behind a company (UBOs, officers, shareholders), build a SEPARATE KYC workflow and reference it from the KYB_KEY_PEOPLE node config (kyb_ubo_verification_workflow / kyb_officer_verification_workflow / kyb_shareholder_verification_workflow). Mixing the two is rejected by validation. " +
+    "KYC vs KYB: a graph is EITHER a person (KYC) workflow OR a business (KYB) workflow — never both, and the choice follows WHO is verified (a company → KYB, a person → KYC). A graph using any KYB feature (KYB_REGISTRY/KYB_DOCUMENTS/KYB_KEY_PEOPLE) may only also use DOCUMENT_AI, AML, QUESTIONNAIRE, PHONE_VERIFICATION, EMAIL_VERIFICATION, IP_ANALYSIS, BANK_VERIFICATION; it must NOT include person/KYC-only features (OCR, LIVENESS, FACE_MATCH, NFC, PROOF_OF_ADDRESS, DATABASE_VALIDATION, AGE_ESTIMATION). Company paperwork (incorporation, ownership, source of funds, business address) belongs in KYB_DOCUMENTS or DOCUMENT_AI on the KYB graph — never rebuild it as a KYC workflow. To verify the people behind a company (UBOs, officers, shareholders), build a SEPARATE KYC workflow and reference it from the KYB_KEY_PEOPLE node config (kyb_ubo_verification_workflow / kyb_officer_verification_workflow / kyb_shareholder_verification_workflow). Mixing the two is rejected by validation. " +
     "Validate with didit_workflow_validate_graph before didit_workflow_set_graph. Get valid fields/operators from didit_workflow_get_field_definitions.\n\n" +
     // Everything a feature node's `config` accepts, generated from the backend
     // serializers. Never hand-written: that is how DATABASE_VALIDATION came to be
@@ -378,21 +378,6 @@ const RULE_EVALUATION_MODE_PROP = {
 } as const;
 const RULE_SCOPE_PROP = { scope: RULE_SCOPE_SCHEMA } as const;
 
-// Org/app selectors shared by the console (management) tools, which target
-// /organization/{org}/application/{app}/... endpoints. Spread into each such tool's
-// `properties`. Resolved (arg → token context → env default) by orgAppPath in config.ts;
-// discover ids via didit_org_list / didit_org_list_applications.
-const ORG_APP_PROPS = {
-  organization_id: {
-    type: "string",
-    description: "Organization UUID (from didit_org_list). Optional if your token has a single/default org.",
-  },
-  application_id: {
-    type: "string",
-    description: "Application UUID (from didit_context_get). Optional when you own exactly one application - it is resolved automatically, even if you belong to several organizations.",
-  },
-} as const;
-
 // Relative time-window shortcut for analytics + search tools — saves the model computing
 // ISO dates. `last_n_days: 15` ⇒ date_from = today−15, date_to = today (explicit dates win).
 const LAST_N_DAYS_PROP = {
@@ -428,6 +413,7 @@ const TOOL_GROUP_BY_PREFIX: [string, string][] = [
   ["audit_", "Reports & Audit"],
   ["analytics", "Reports & Audit"],
   ["branding_", "Branding"],
+  ...INTERNAL_GROUP_PREFIXES,
   ["verify_", "Verification APIs"],
 ];
 function toolGroupOf(name: string): string {
@@ -444,6 +430,7 @@ const SCOPE_AGNOSTIC_TOOLS = new Set([
   "didit_account_verify_email",
   "didit_account_resend_otp",
   "didit_account_login",
+  "didit_account_verify_2fa",
   "didit_org_list",
   "didit_context_get",
   // Public pricing catalog: no org/app scope to resolve.
@@ -459,6 +446,7 @@ const ACCOUNT_BOOTSTRAP_TOOLS = new Set([
   "didit_account_verify_email",
   "didit_account_resend_otp",
   "didit_account_login",
+  "didit_account_verify_2fa",
 ]);
 
 // These tools remain available in local/stdio contexts, but should not be part
@@ -487,7 +475,7 @@ async function ensureScopeDefaults(name: string): Promise<void> {
       // is pinned - every application the caller owns. ONE candidate is unambiguous even when
       // it is spread over several organizations: an org that holds no application cannot make
       // the choice ambiguous, and didit_context_get already advertises exactly that app as
-      // `default_application_id`. Requiring a single ORG here (the old single-org rule) is what
+      // `default_application_id`. Requiring a single ORG here (the earlier rule) is what
       // made didit_lists_list / didit_webhook_list answer "application_id is required" to a
       // caller whose context call had just named the default application.
       const scoped = store.organizationId
@@ -551,11 +539,19 @@ function toolTitle(name: string): string {
     .join(" ");
 }
 // Tools that are destructive/high-impact by SEMANTICS, not by a delete/remove verb in the
-// name: revealing a live secret, moving money, and case management (SAR/dispose).
+// name: revealing a live secret, moving money, consequential decisions, and overwrites.
 const EXPLICIT_DESTRUCTIVE_TOOLS = new Set([
   "didit_org_reveal_application_api_key",
   "didit_org_top_up",
   "didit_case_manage",
+  "didit_session_update_status",
+  "didit_questionnaire_update",
+  "didit_webhook_update",
+  "didit_workflow_update",
+  "didit_workflow_edit_graph",
+  "didit_workflow_set_graph",
+  "didit_workflow_publish",
+  ...INTERNAL_DESTRUCTIVE_TOOLS,
 ]);
 
 // Tools that can reach outside the current Didit workspace/account boundary by
@@ -568,6 +564,7 @@ const EXPLICIT_OPEN_WORLD_TOOLS = new Set([
   "didit_org_top_up",
   "didit_session_share",
   "didit_session_update_status",
+  ...INTERNAL_OPEN_WORLD_TOOLS,
   "didit_verify_email_send",
   "didit_verify_phone_send",
   "didit_webhook_create",
@@ -579,14 +576,22 @@ const EXPLICIT_OPEN_WORLD_TOOLS = new Set([
 const EXPLICIT_WRITE_TOOLS = new Set([
   "didit_report_export",
   "didit_session_generate_pdf",
+  "didit_session_webhook_resend",
 ]);
 
 // The inverse: tools whose names carry no read-like token but whose handlers never
-// change server state (the backend view only requires read:workflows, and applying the
-// graph goes through the didit_workflow_* writes).
+// change server state (requirements/workflow-check are deterministic reads over the
+// stored profile + knowledge base; interview/next is pure computation; generate_workflow
+// computes and returns a graph WITHOUT persisting anything — the backend view only
+// requires read:workflows, and applying the graph goes through the didit_workflow_* writes).
 const EXPLICIT_READ_TOOLS = new Set([
+  ...INTERNAL_READ_TOOLS,
   // build_graph computes a graph from a plain feature spec, persisting nothing.
   "didit_workflow_build_graph",
+  // The per-session webhook delivery log (its only verb-like token is "webhooks").
+  "didit_session_webhooks",
+  // Folds a session's decision payload and its workflow graph into the outcome trace.
+  "didit_session_explain_decision",
 ]);
 
 function annotationsFor(name: string): {
@@ -627,22 +632,56 @@ function annotationsFor(name: string): {
  * var would grant the staff surface to every remote caller; only per-token introspection
  * can mark a hosted caller privileged). The stdio server keeps both conveniences.
  *
+ * `profile` selects the catalog served (see chatgpt-app.ts): `full` (default) or `chatgpt`,
+ * the reduced allow-list the hosted server exposes at /mcp/chatgpt for the ChatGPT app store.
  */
-export function createServer(options: { hosted?: boolean } = {}): Server {
+export function createServer(options: { hosted?: boolean; profile?: CatalogProfile } = {}): Server {
   const hosted = options.hosted === true;
+  const profile: CatalogProfile = options.profile ?? "full";
+
+  // `access_token` on the auth-service discovery tools is a stdio full-profile convenience: it lets
+  // someone running the local server hand over the Bearer that didit_account_login returned.
+  // A hosted server authenticates with OAuth and reads the caller's Bearer from
+  // requestContext, so the property is never needed there - and advertising it would solicit
+  // an authentication secret through tool arguments, which the OpenAI Apps guidelines
+  // prohibit outright ("do not collect, solicit, or process ... access credentials and
+  // authentication secrets"; app review finding policy-review-47fabf436877, 2026-09).
+  // Hosted catalogs omit both the property and the sentence that tells the model to fill it,
+  // on EVERY profile - the full catalog at /mcp is a public directory listing too. The stdio
+  // ChatGPT profile mirrors this omission for local catalog review.
+  const stdioOnlyAccessToken = (description: string) =>
+    hosted || profile === "chatgpt" ? {} : { access_token: { type: "string" as const, description } };
+  const stdioTokenHint = hosted || profile === "chatgpt" ? "" : " In stdio mode pass access_token from login/verify_email.";
+  // Call-time mirror: hosted and ChatGPT calls never process a token handed in as
+  // an argument, even if a client crafted one from a memorised stdio schema. Ignoring (rather
+  // than refusing) keeps every existing hosted caller working - the header Bearer that already
+  // authenticated the request is the identity used either way.
+  const stdioAccessTokenArg = (a?: Record<string, unknown>): string | undefined =>
+    hosted || profile === "chatgpt" ? undefined : (a?.access_token as string | undefined);
+
+  // Only a profile that serves MCP Apps UI (chatgpt-app.ts) advertises `resources`; every
+  // other profile keeps exactly the capabilities it always had.
+  const servesWidgets = profileServesWidgets(profile);
   const server = new Server(
     { name: "didit", version: SERVER_VERSION },
-    { capabilities: { tools: {} } }
+    { capabilities: servesWidgets ? { tools: {}, resources: {} } : { tools: {} } }
   );
+
+  if (servesWidgets) {
+    // The UI templates (`ui://` resources) the tools reference. Static, identical for every
+    // caller, and behind the same Bearer gate as the rest of the endpoint (http.ts).
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: listWidgetResources() }));
+    server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => readWidgetResource(request.params.uri));
+  }
 
   // ---------------------------------------------------------------------------
   // Tool definitions
   // ---------------------------------------------------------------------------
-  server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
-  // Privileged operational tools are emitted ONLY to privileged connections; everyone else never
-  // sees them in tools/list (and a call is rejected below). In the open-source build there are none.
-  const isPrivileged = isPrivilegedCaller(extra?.authInfo, { hosted });
-  const tools = [
+  // Built per call of tools/list (the catalog is filtered per caller below) and
+  // once for the dispatcher, which reads each tool's `required` list to tell a
+  // blank optional argument from a blank required one (blank-args.ts).
+  const toolDefinitions = () => [
     // ── Auth ────────────────────────────────────────────────────────────
     {
       name: "didit_account_register",
@@ -681,7 +720,9 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_account_login",
-      description: "Login to existing Didit account. Returns access_token and refresh_token.",
+      description:
+        "Login to existing Didit account. Returns access_token and refresh_token. If the account has two-factor " +
+        "authentication it returns 2fa_required and a temp_token instead: finish with didit_account_verify_2fa.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -692,12 +733,28 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
       },
     },
     {
-      name: "didit_org_list",
-      description: "List the organizations you belong to (each has an id to pass as organization_id to other tools). In hosted OAuth mode no arguments are needed; in stdio mode pass access_token from login/verify_email.",
+      name: "didit_account_verify_2fa",
+      description:
+        "Finish logging in to an account with two-factor authentication, using the temp_token from didit_account_login " +
+        "and the current 6-digit authenticator code (or an unused backup code). Returns access_token and refresh_token.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          access_token: { type: "string", description: "Only for stdio mode — Bearer access token from login/verify_email. Omit in hosted OAuth mode." },
+          temp_token: { type: "string", description: "temp_token returned by didit_account_login (valid for 5 minutes)" },
+          code: { type: "string", description: "6-digit code from the authenticator app, or an unused backup code" },
+        },
+        required: ["temp_token", "code"],
+      },
+    },
+    {
+      name: "didit_org_list",
+      description:
+        "List the organizations you belong to (each has an id to pass as organization_id to other tools). In hosted OAuth mode no arguments are needed." +
+        stdioTokenHint,
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...stdioOnlyAccessToken("Only for stdio mode — Bearer access token from login/verify_email. Omit in hosted OAuth mode."),
         },
       },
     },
@@ -708,7 +765,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
         type: "object" as const,
         properties: {
           organization_id: { type: "string", description: "Organization UUID (from didit_org_list)" },
-          access_token: { type: "string", description: "Only for stdio mode. Omit in hosted OAuth mode." },
+          ...stdioOnlyAccessToken("Only for stdio mode. Omit in hosted OAuth mode."),
         },
         required: ["organization_id"],
       },
@@ -721,7 +778,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
         properties: {
           organization_id: { type: "string" },
           application_id: { type: "string" },
-          access_token: { type: "string", description: "Only for stdio mode. Omit in hosted OAuth mode." },
+          ...stdioOnlyAccessToken("Only for stdio mode. Omit in hosted OAuth mode."),
         },
         required: ["organization_id", "application_id"],
       },
@@ -735,7 +792,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
           organization_id: { type: "string", description: "REQUIRED. No env/context default for this raw-secret tool." },
           application_id: { type: "string", description: "REQUIRED. No env/context default for this raw-secret tool." },
           confirm: { type: "boolean", description: "REQUIRED. Must be true to expose the raw key. Only set after explicit user confirmation of this exact action." },
-          access_token: { type: "string", description: "Only for stdio mode." },
+          ...stdioOnlyAccessToken("Only for stdio mode."),
         },
         required: ["organization_id", "application_id", "confirm"],
       },
@@ -754,7 +811,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
       inputSchema: {
         type: "object" as const,
         properties: {
-          status: { type: "string", description: `Filter by session status (${SESSION_STATUSES})` },
+          status: { type: "string", description: `Filter by session status (${SESSION_STATUSES}). Several statuses separated by commas match any of them, e.g. "Not Started,In Progress".` },
           session_kind: { type: "string", enum: ["user", "business", "all"], description: "KYC (user), KYB (business), or all" },
           workflow_id: { type: "string", description: "Filter by workflow UUID" },
           search: { type: "string", description: "Free-text search" },
@@ -839,7 +896,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     {
       name: "didit_analytics",
       description:
-        "Aggregate verification analytics ACROSS ALL your apps and organizations in one call — the efficient way to answer questions like \"how many people tried phone verification but dropped off in the last 15 days?\". Returns summed status counts (request_breakdown), a feature_funnel (how many sessions REACHED each step, e.g. PHONE_VERIFICATION), and a recomputed conversion_rate, for a date window. Omit organization_id/application_id to span everything; pass them to narrow.",
+        "Aggregate verification analytics ACROSS ALL your apps and organizations in one call - the efficient way to answer questions like \"how many people tried phone verification but dropped off in the last 15 days?\". Returns summed status counts (request_breakdown), a feature_funnel (how many sessions REACHED each step: OCR, LIVENESS, FACE_MATCH, AML, POA, PHONE, EMAIL, ...), warning_stats by risk code, the previous period's request_breakdown, per-workflow session totals and a recomputed conversion_rate, for a date window. Omit organization_id/application_id to span everything; pass them to narrow.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -851,6 +908,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
         },
       },
     },
+    ...internalToolDefs("network"),
 
     // ── Sessions ────────────────────────────────────────────────────────
     {
@@ -881,7 +939,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
-          status: { type: "string", description: `Filter by session status (${SESSION_STATUSES})` },
+          status: { type: "string", description: `Filter by session status (${SESSION_STATUSES}). Several statuses separated by commas match any of them, e.g. "Not Started,In Progress".` },
           session_kind: { type: "string", enum: ["user", "business", "all"], description: "KYC (user), KYB (business), or all" },
           vendor_data: { type: "string", description: "Filter by vendor_data" },
           workflow_id: { type: "string", description: "Filter by workflow UUID" },
@@ -906,7 +964,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_session_update_status",
-      description: "Approve, decline, or request resubmission of a session. For resubmission, pass new_status='Resubmitted' and nodes_to_resubmit; already-approved steps are kept.",
+      description: "Overwrite a session's decision by approving, declining, or requesting resubmission; optionally send a notification email that cannot be recalled. Before calling, obtain explicit user confirmation of the session, new decision, and any email recipient. For resubmission, pass new_status='Resubmitted' and nodes_to_resubmit; already-approved steps are kept.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -914,8 +972,8 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
           new_status: { type: "string", enum: ["Approved", "Declined", "Resubmitted"], description: "New decision status" },
           comment: { type: "string", description: "Reviewer note stored on the audit trail" },
           nodes_to_resubmit: { type: "array", items: { type: "string" }, description: "Node IDs the user must redo (only for Resubmitted)" },
-          send_email: { type: "boolean", description: "Email the user about the status change" },
-          email_address: { type: "string", description: "Override the recipient email" },
+          send_email: { type: "boolean", description: "Send a notification email that cannot be recalled. Set true only after explicit user confirmation of the notification and recipient." },
+          email_address: { type: "string", description: "Override the notification recipient; confirm this address with the user before sending." },
           email_language: { type: "string", description: "Language for the notification email" },
         },
         required: ["session_id", "new_status"],
@@ -1001,7 +1059,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_session_generate_pdf",
-      description: "Generate a PDF verification report for a session.",
+      description: "Return download_url, expires_at and expires_in (300 seconds) for the original Didit session PDF. Fetch the URL to save the PDF; no Authorization header is needed. Treat the URL as sensitive. Requires configured MCP HTTP PDF downloads.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1051,6 +1109,41 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
           partner_client_id: { type: "string", description: "The partner application's client_id" },
         },
         required: ["session_id", "partner_client_id"],
+      },
+    },
+    {
+      name: "didit_session_explain_decision",
+      description: "WHY a verification session ended Approved / Declined / In Review, as a deterministic trace read from the record: the feature that decided it (strictest wins), each warning that had an effect with its raw value, every triggered status rule (field, operator, configured vs actual value), the human override if a reviewer changed the automatic verdict, and for each cause the workflow config key that governs it (`lever`, with its CURRENT value read from the workflow graph; only keys that exist in the feature-config contract; null means it is not a workflow setting). `workflow.graph_read:false` means the graph could not be read, so no current values. Use this for every 'why was it declined / in review / approved', 'it should have been X' and 'how do I make these go to X' question INSTEAD of reading the whole decision — it never returns images, extracted fields or PII. `informational` lists warnings that changed nothing. `unexplained:true` means a decided session (Declined / In Review) whose record shows no effective cause (e.g. minimized age-assurance logs): say so, never invent one. `lifecycle_status:true` (Expired, Abandoned, Not Started, In Progress, Resub Requested…) means nothing decided it — the status is the whole explanation.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string", description: "REQUIRED. The session uuid (from the page's session-id param, didit_session_search or the user)" },
+        },
+        required: ["session_id"],
+      },
+    },
+    {
+      name: "didit_session_webhooks",
+      description: "Delivery log of the webhooks Didit sent for ONE session (last 30 days): destination URL, HTTP response status, timing, signing headers (X-Signature/X-Timestamp) and a capped copy of the payload. The way to check an integration end to end: create a session on a SANDBOX application with sandbox_scenario 'approve' (unbilled, fires status.updated immediately), then call this with wait_seconds so the call waits for the delivery instead of you polling. A 2xx response_status means the customer's endpoint received it; 401/403 usually means their signature check (must be HMAC-SHA256 hex of the RAW body); an empty list after the wait means the endpoint never got the event (not public, or the destination is disabled).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string", description: "REQUIRED. The session whose deliveries to read" },
+          wait_seconds: { type: "integer", minimum: 0, maximum: 60, description: "Keep polling up to this many seconds until at least one delivery exists (0 = read once). Use 30-45 right after creating a sandbox session." },
+        },
+        required: ["session_id"],
+      },
+    },
+    {
+      name: "didit_session_webhook_resend",
+      description: "Resend one recorded webhook delivery of a session to the configured endpoint (the session page's own Resend). Use after the customer fixed their endpoint so they do not need a new session; returns the new delivery with its response_status.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string", description: "REQUIRED" },
+          webhook_id: { type: "string", description: "REQUIRED. The delivery's uuid from didit_session_webhooks" },
+        },
+        required: ["session_id", "webhook_id"],
       },
     },
     {
@@ -1164,18 +1257,13 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_workflow_update",
-      description: "Update a workflow's top-level SETTINGS only (workflow_label, is_default, retry/expiration, white-label, documents_allowed, etc.). Omitted status preserves the current draft/published state; publication changes only when status is explicitly passed. It does NOT change which features run: to add/remove/reorder features, add a conditional branch, or add a Document-AI step, edit the graph with didit_workflow_edit_graph (small ops, preserves the big allow-lists) or didit_workflow_set_graph (full replace) — those are the only ways feature changes actually persist. `documents_allowed` is the one exception that is NOT a graph edit: it sets which countries and document types the ID verification accepts on a SIMPLE workflow without converting it into a graph workflow (the graph tools would).",
+      description: "Update a workflow's top-level SETTINGS only (workflow_label, is_default, retry/expiration, white-label, etc.). Omitted status preserves the current draft/published state; publication changes only when status is explicitly passed. It does NOT change which features run: to add/remove/reorder features, add a conditional branch, or add a Document-AI step, edit the graph with didit_workflow_edit_graph (small ops, preserves the big allow-lists) or didit_workflow_set_graph (full replace) — those are the only ways feature changes actually persist.",
       inputSchema: {
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
           workflow_id: { type: "string", description: "Workflow UUID" },
           workflow_label: { type: "string" },
-          features: {
-            type: "array",
-            items: WORKFLOW_FEATURE_ITEM,
-            description: "Replacement feature list in execution order (same shape as create)",
-          },
           is_default: { type: "boolean" },
           status: { type: "string", enum: ["draft", "published"] },
           is_white_label_enabled: { type: "boolean" },
@@ -1183,18 +1271,6 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
           max_retry_attempts: { type: "number" },
           retry_window_days: { type: "number" },
           session_expiration_time: { type: "number" },
-          documents_allowed: {
-            type: "object",
-            description:
-              "Which identity documents the ID verification accepts, per issuing country: " +
-              '{"<ISO3>": {"<DOC_CODE>": {"enabled": 0|1, "sides"?: 1|2, "subtypes"?: ["<SUBTYPE_CODE>", ...]}}}. ' +
-              "The map you send REPLACES the whole map: a country you omit is turned OFF, so \"only " +
-              'Mexico\" is {"MEX": {"ID": {"enabled": 1}, "P": {"enabled": 1}, "DL": {"enabled": 1}}}. ' +
-              "Codes are canonical (ISO3 country, document codes from " +
-              "didit_workflow_get_feature_config_schema); at least one document must stay enabled. " +
-              "Does NOT convert a simple workflow into a graph one.",
-            additionalProperties: true,
-          },
         },
         required: ["workflow_id"],
       },
@@ -1475,7 +1551,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_questionnaire_update",
-      description: "Update a questionnaire's title, description, or form_elements (array of form-element objects with UPPERCASE element_type). Sending form_elements REPLACES the whole question list — pass every question you want to keep, in order.",
+      description: "Overwrite a questionnaire's supplied settings. Sending form_elements REPLACES the entire question list, removing omitted questions; pass every question to keep, in order, with UPPERCASE element_type. Before calling, show the questionnaire and proposed changes and obtain explicit user confirmation, including the full replacement when form_elements is supplied.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1768,6 +1844,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
         required: ["wallet_address", "blockchain"],
       },
     },
+    ...internalToolDefs("transaction_sdk_token"),
     {
       name: "didit_transaction_rule_list",
       description:
@@ -1956,7 +2033,11 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
       },
     },
 
+    // ── Travel Rule (FATF / EU TFR managed exchange) ─────────────────────
+    ...internalToolDefs("travel_rule"),
 
+    // ── Marketplace (provider catalog & connections) ─────────────────────
+    ...internalToolDefs("marketplace"),
 
     // ── Billing ─────────────────────────────────────────────────────────
     {
@@ -1971,7 +2052,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
         "common cause. This result also carries `allow_free_usage` (false = the free tier is off for " +
         "this organization) and `usage_summary.white_label_sessions`. Only a NEGATIVE balance stops " +
         "free-tier work; zero does not.",
-      inputSchema: { type: "object" as const, properties: {} },
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
     },
     {
       name: "didit_org_top_up",
@@ -2000,7 +2081,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_branding_update",
-      description: "Update verification UI branding images. Each image is a local absolute *_path (local/stdio runs) or inline *_base64 content (hosted runs).",
+      description: "Update verification UI branding images and/or the SMS sender name. Each image is a local absolute *_path (local/stdio runs) or inline *_base64 content (hosted runs).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -2011,6 +2092,12 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
           image_square_base64: { type: "string", description: "Square logo as base64 or data URL (or an attachment reference like att_1)" },
           image_rectangular_base64: { type: "string", description: "Rectangular logo as base64 or data URL (or an attachment reference like att_1)" },
           image_favicon_base64: { type: "string", description: "Favicon as base64 or data URL (or an attachment reference like att_1)" },
+          sms_sender_name: {
+            type: ["string", "null"],
+            maxLength: 30,
+            description:
+              "The name every SMS verification code of this application carries (\"123456 is your verification code for Acme Bank\"), in every workflow and through the phone verification API. Free. 1 to 30 characters: letters, digits, spaces and ' & - ! only, not only digits, single spaces between words. Empty string or null clears it. WhatsApp codes are not branded.",
+          },
         },
       },
     },
@@ -2051,7 +2138,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_webhook_update",
-      description: "Update a webhook destination's URL, version, enabled flag, or subscribed events.",
+      description: "Overwrite the supplied settings of an existing webhook destination. Changing its URL redirects future deliveries; disabling it stops deliveries, and subscribed_events replaces its event subscriptions. Before calling, show the destination UUID and each proposed field change and obtain explicit user confirmation.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -2156,6 +2243,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
           ...ORG_APP_PROPS,
           list_uuid: { type: "string", description: "UUID of the list" },
           search: { type: "string", description: "Search by value or display label" },
+          reference_session_id: { type: "string", description: "Only the entries created from this session UUID (e.g. which of its faces are already blocklisted)" },
           limit: { type: "string" },
           offset: { type: "string" },
         },
@@ -2164,7 +2252,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_lists_entry_create",
-      description: "Add an entry to a blocklist/allowlist/custom list. Pass value directly, or reference_session_id to auto-extract from a session (face, document, phone, email, IP, device). Pass both to disambiguate when a session has multiple values of the same type. For face entries without a session, use didit_lists_entry_upload_face instead.",
+      description: "Add an entry to a blocklist/allowlist/custom list. Pass value directly, or reference_session_id to auto-extract from a session (face, document, phone, email, IP, device). Pass both to disambiguate when a session has multiple values of the same type. For the face blocklist, face_image_source picks which of the session's faces to block: the liveness selfie (default) or a selfie the front camera took while the user photographed their document. For face entries without a session, use didit_lists_entry_upload_face instead.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -2173,6 +2261,12 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
           value: { type: "string", description: "Value to add (phone, email, IP, etc.). Optional if reference_session_id is provided." },
           reference_session_id: { type: "string", description: "Session UUID — backend auto-extracts the value based on the list's entry type" },
           reference_object_uuid: { type: "string", description: "UUID of the source entity (transaction, vendor user/business) for traceability" },
+          face_image_source: {
+            type: "string",
+            enum: ["liveness", "front_image_camera_front", "back_image_camera_front"],
+            description: "Face blocklist with reference_session_id only: which of the session's faces to block. liveness (default) is the liveness selfie; front_image_camera_front / back_image_camera_front are the selfies taken while the user photographed the front / back of their document. Leave value empty with a document-capture source.",
+          },
+          reference_node_id: { type: "string", description: "With a document-capture face_image_source: the ID verification node whose selfie to use, for workflows with several ID verification steps" },
           display_label: { type: "string", description: "Human-readable label" },
           comment: { type: "string", description: "Reason for adding" },
           metadata: { type: "object", description: "Additional structured data (e.g. reference_type, full_name)" },
@@ -2558,20 +2652,30 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     },
     {
       name: "didit_org_invite_member",
-      description: "Invite a member to the organization (email + role).",
+      description: "Invite up to 5 members to the organization (emails + role + the applications they may access).",
       inputSchema: {
         type: "object" as const,
-        properties: { organization_id: ORG_APP_PROPS.organization_id, email: { type: "string" }, role: { type: "string" } },
-        required: ["email"],
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          emails: { type: "array", items: { type: "string" }, description: "Email addresses to invite (1-5)." },
+          role: { type: "string", description: "Role UUID (from didit_org_list_roles)." },
+          app_ids: { type: "array", items: { type: "string" }, description: "Application UUIDs the invitee may access (from didit_org_list_applications)." },
+        },
+        required: ["emails", "role", "app_ids"],
       },
     },
     {
       name: "didit_org_update_member",
-      description: "Update a member's role.",
+      description: "Update a member's role and the applications they may access.",
       inputSchema: {
         type: "object" as const,
-        properties: { organization_id: ORG_APP_PROPS.organization_id, member_id: { type: "string" }, role: { type: "string" } },
-        required: ["member_id"],
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          member_id: { type: "string", description: "Member UUID (from didit_org_list_members)." },
+          role: { type: "string", description: "Role UUID (from didit_org_list_roles)." },
+          accessible_applications: { type: "array", items: { type: "string" }, description: "Application UUIDs the member may access (from didit_org_list_applications)." },
+        },
+        required: ["member_id", "role", "accessible_applications"],
       },
     },
     {
@@ -2594,12 +2698,14 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
 
+    // ── Compliance ──────────────────────────────────────────────────────
+    ...internalToolDefs("compliance"),
 
     {
       name: "didit_workflow_build_graph",
       description:
         "Build a complete workflow graph from a PLAIN FEATURE SPEC in one deterministic call - regulations are " +
-        "never consulted (regulation-driven graphs come from the console's compliance advisor). Gate-then-commit: " +
+        "never consulted" + REGULATION_GRAPH_HINT + ". Gate-then-commit: " +
         "the result is either an accepted build (graph_summary + spec: materialize with ui_workflow_apply_graph " +
         "{spec} on an open editor, or include_graph:true + didit_workflow_set_graph headless), or 'unsupported'/'questions' naming " +
         "exactly what cannot be built or what to ask the user FIRST - in that case build NOTHING and relay them. " +
@@ -2678,7 +2784,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
           branches: {
             type: "array",
             description:
-              "Country branches after the routing step; unmatched countries take the else path to the final decision.",
+              "Country branches after the routing step; unmatched countries take the else path to the final decision. The ONLY key that carries branching.",
             items: {
               type: "object",
               properties: {
@@ -2694,11 +2800,24 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
             },
           },
         },
+        // CLOSED, like every nested object above it. The root was the one level
+        // left open, and a model filled it: `branch_rules` for `branches`
+        // reached the backend's serializer and three console users of one
+        // organization lost their workflow to its 400. Client-side
+        // validation of this is best-effort — buildWorkflow enforces it.
+        additionalProperties: false,
       },
     },
 
     ...PRIVILEGED_TOOL_DEFS,
   ];
+  const inputSchemaByTool = new Map(toolDefinitions().map((t) => [t.name, t.inputSchema as InputSchema]));
+
+  server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
+  // Privileged operational tools are emitted ONLY to privileged connections; everyone else never
+  // sees them in tools/list (and a call is rejected below). In the open-source build there are none.
+  const isPrivileged = isPrivilegedCaller(extra?.authInfo, { hosted });
+  const tools = toolDefinitions();
   // Hosted (Bearer-authenticated) catalogs never include the account-bootstrap /
   // checkout / secret-reveal tools — the public app catalog must stay free of
   // credential-collection, checkout, and secret-reveal flows. Privileged (staff)
@@ -2716,7 +2835,9 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
   const query = { scopes: extra?.authInfo?.scopes, mode: permissionMode(), tokenOrg, targetOrg: tokenOrg };
   catalog = catalog.filter((t) => decidePermission({ ...query, tool: t.name }) !== "deny");
   const visible = isPrivileged ? catalog : catalog.filter((t) => !isPrivilegedToolName(t.name));
-  const offered = visible;
+  // Endpoint catalog profile (chatgpt-app.ts): the ChatGPT endpoint offers only the
+  // allow-listed tools, with restricted input properties removed from their schemas.
+  const offered = applyCatalogProfile(visible, profile);
   // Annotate each tool so the connector UI splits them into Read-only / Write / Destructive
   // groups (driven by readOnlyHint + destructiveHint) instead of one flat "Other tools"
   // bucket; also tag the logical domain group via _meta for future UI use.
@@ -2736,8 +2857,14 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
         ...((t as { _meta?: Record<string, unknown> })._meta ?? {}),
         "anthropic/toolGroup": toolGroupOf(t.name),
         category: toolGroupOf(t.name),
+        // MCP Apps linkage for the ChatGPT console (chatgpt-app.ts); `{}` on every other
+        // profile, so their descriptors are unchanged.
+        ...widgetToolMeta(profile, t.name),
       },
-    })),
+    })).concat(
+      // The console's entry tool (ChatGPT sidebar entrypoint), on /mcp/chatgpt only.
+      widgetTools(profile) as never[],
+    ),
   };
 });
 
@@ -2784,10 +2911,18 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
   // declaring them on a tool safe: the handlers that forward their args
   // verbatim (lists, webhooks, sessions, transactions, vendors…) would
   // otherwise put them in a query string or a POST body the console API never
-  // asked for. Behaviour-preserving for the handlers that DO read them: they pass
-  // them to resolveOrganizationId / resolveApplicationId, which fall back to the
-  // very context set above.
-  const args = stripRoutingIds(request.params.arguments);
+  // asked for. Behaviour-preserving for the handlers that DO read them —
+  // marketplace/travelRule pass them to resolveOrganizationId /
+  // resolveApplicationId, which fall back to the very context set above.
+  // A blank OPTIONAL argument (`""`, or a `null` the schema never admits) is the
+  // model filling every declared argument, not a value: dropped here so the
+  // handlers forward the call a schema-honouring model would have made. READ
+  // tools only — on an update tool a `""` can mean "clear this field", and a
+  // dropped one would PATCH nothing and report success.
+  const args = dropBlankOptionals(
+    stripRoutingIds(request.params.arguments),
+    annotationsFor(name).readOnlyHint ? inputSchemaByTool.get(name) : undefined,
+  );
 
   // ...but a handful of handlers take the routing ids as EXPLICIT PARAMETERS rather than
   // resolving them from requestContext, and the strip above hands them `undefined`:
@@ -2816,6 +2951,19 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     };
   }
 
+  // Mirror of the tools/list catalog profile: a tool (or an input property) the endpoint does
+  // not offer is refused even if the client memorised it from the full catalog.
+  const profileRefusal = catalogProfileRefusal(profile, name, callArgs);
+  if (profileRefusal) {
+    return { content: [{ type: "text", text: profileRefusal }], isError: true };
+  }
+
+  // The console's entry tool (chatgpt-app.ts): no Didit call, it names the page to open.
+  if (name === CONSOLE_OPEN_TOOL) {
+    if (!profileServesWidgets(profile)) return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+    return consoleOpenResult(callArgs);
+  }
+
   // Single-org/single-app callers: fill the default scope so they needn't pass/discover ids.
   await ensureScopeDefaults(name);
 
@@ -2831,6 +2979,8 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
     const aggregate = aggregateFallbackFor(name);
     if (isPrivilegedToolName(name)) {
       result = await dispatchPrivilegedTool(name, args);
+    } else if (isInternalToolName(name)) {
+      result = await dispatchInternalTool(name, args);
     } else if (aggregate) {
       // Scope survives the fallback: when the org resolved but the app did not, span only
       // that org's apps rather than every org the caller can reach.
@@ -2854,17 +3004,20 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
       case "didit_account_login":
         result = await auth.login(args!.email as string, args!.password as string);
         break;
+      case "didit_account_verify_2fa":
+        result = await auth.verify2fa(args!.temp_token as string, args!.code as string);
+        break;
       case "didit_org_list":
-        result = await auth.listOrganizations(args?.access_token as string | undefined);
+        result = await auth.listOrganizations(stdioAccessTokenArg(args));
         break;
       case "didit_org_list_applications":
-        result = await auth.listApplications(argOrg as string, args?.access_token as string | undefined);
+        result = await auth.listApplications(argOrg as string, stdioAccessTokenArg(args));
         break;
       case "didit_org_get_application":
-        result = await auth.getApplication(argOrg as string, argApp as string, args?.access_token as string | undefined);
+        result = await auth.getApplication(argOrg as string, argApp as string, stdioAccessTokenArg(args));
         break;
       case "didit_org_reveal_application_api_key":
-        result = await auth.revealApplicationApiKey(argOrg, argApp, args?.confirm, args?.access_token as string | undefined);
+        result = await auth.revealApplicationApiKey(argOrg, argApp, args?.confirm, stdioAccessTokenArg(args));
         break;
 
       // Context + cross-org/app aggregate search
@@ -2887,7 +3040,8 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
         result = await search.searchVendorBusinesses(withRoutingIds(args));
         break;
       case "didit_analytics":
-        result = await analytics.analytics((args ?? {}) as Record<string, any>);
+        // Like the *_search tools: the routing ids NARROW the fan-out (one org, or one app).
+        result = await analytics.analytics(withRoutingIds(args));
         break;
 
       // Sessions
@@ -2934,6 +3088,15 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
       }
       case "didit_session_share":
         result = await sessions.shareSession(args!.session_id as string, args as Record<string, any>);
+        break;
+      case "didit_session_explain_decision":
+        result = await explainSessionDecision(args!.session_id as string);
+        break;
+      case "didit_session_webhooks":
+        result = await sessions.listSessionWebhooks(args!.session_id as string, Number(args!.wait_seconds ?? 0));
+        break;
+      case "didit_session_webhook_resend":
+        result = await sessions.resendSessionWebhook(args!.session_id as string, args!.webhook_id as string);
         break;
       case "didit_session_import_shared":
         result = await sessions.importSharedSession(args as Record<string, any>);
@@ -3164,13 +3327,11 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
         result = await transactions.uninstallTransactionRuleLibrary(args as Record<string, any>);
         break;
 
-      // Travel Rule
 
-      // Marketplace
 
       // Billing
       case "didit_org_get_balance":
-        result = await billing.getBalance();
+        result = await billing.getBalance(args?.organization_id as string | undefined);
         break;
       case "didit_org_top_up":
         result = await billing.topUp(
@@ -3415,8 +3576,17 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
       result = await workflowGraph.annotateAgeAssurance(result);
     }
 
+    // Apply the endpoint's data boundary to BOTH response channels, including modern RPC.
+    result = applyCatalogResult(profile, name, result);
+
+    // `content` is the model-facing channel (a client with an outputSchema hands
+    // THIS text to the model, not structuredContent), so it is COMPACT: the
+    // 2-space pretty print ran ~3× the compact form — seven didit_workflow_get
+    // reads of ~50k chars reached the assistant's model as ~147k chars each and
+    // burst its 1.05M-token window (didit-ai-assistant, Sentry
+    // DIDIT-AI-ASSISTANT-2K, 429 turns 11-15 Sep 2026). Same data, same order.
     return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify(result) }],
       structuredContent: result && typeof result === "object" && !Array.isArray(result) ? result : { value: result },
     };
   } catch (error: any) {
@@ -3441,7 +3611,7 @@ export function createServer(options: { hosted?: boolean } = {}): Server {
 
 async function main() {
   const transport = new StdioServerTransport();
-  const server = createServer();
+  const server = createServer({ profile: stdioCatalogProfile() });
   await server.connect(transport);
   console.error(`Didit MCP Server v${SERVER_VERSION} running on stdio`);
 }

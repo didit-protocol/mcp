@@ -119,8 +119,23 @@ test("no tool anywhere requires a *_path or lacks its *_base64 twin", async () =
   }
 });
 
+test("didit_org_get_balance declares an optional organization_id scoping param", async () => {
+  // Same failure as the compliance/questionnaire groups above: a multi-org caller has
+  // no per-request default organization, and a schema-strict model cannot pass a
+  // parameter the schema omits — so didit_org_get_balance dead-ended every multi-org
+  // caller with "organization_id is required" and no way to supply it.
+  const tools = await listAdvertisedTools();
+  const tool = tools.find((t) => t.name === "didit_org_get_balance");
+  assert.ok(tool, "didit_org_get_balance must be advertised");
+  const properties = tool.inputSchema?.properties ?? {};
+  const required = tool.inputSchema?.required ?? [];
+  assert.ok(properties.organization_id, `${tool.name} must declare organization_id`);
+  assert.ok(!required.includes("organization_id"), `${tool.name}: organization_id must stay optional`);
+});
+
 test("questionnaire tools declare optional organization_id/application_id scoping params", async () => {
-  // The questionnaire endpoints are org/app-scoped (orgAppPath), the Copilot's MCP
+  // Same failure as the compliance group above, one tool family later: the
+  // questionnaire endpoints are org/app-scoped (orgAppPath), the Copilot's MCP
   // session carries no application context, and a schema-strict model cannot
   // pass a parameter the schema omits — so every didit_questionnaire_create
   // came back "application_id is required for this operation", even right
@@ -174,4 +189,3 @@ test("app-scoped tools advertise the ids their handler requires", async () => {
 
   assert.deepEqual(missing.map((t) => t.name), [], "these tools require an app id they never advertise");
 });
-

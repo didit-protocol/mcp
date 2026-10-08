@@ -1,7 +1,7 @@
 // Round-trip: the config an agent asks for is the config that reaches the API,
 // and the config the API stored is what comes back.
 //
-// The incident was a silent rewrite. The agent sent a DATABASE_VALIDATION node, the
+// an internal issue was a silent rewrite. The agent sent a DATABASE_VALIDATION node, the
 // save succeeded, and the keys were gone - no error, no warning, and no test
 // anywhere compared what went in against what came out. These tests do exactly
 // that, per feature, over a fake backend that stores the PUT body and serves it
@@ -145,9 +145,53 @@ test("DATABASE_VALIDATION: a multi-country service selection is not collapsed", 
     database_validation_no_match_action: "REVIEW",
   });
   assertIdentical(result, "DATABASE_VALIDATION multi-country");
-  // The exact failure of that incident: an empty selection must stay empty rather
+  // The exact failure of an empty selection must stay empty rather
   // than being "helpfully" filled in, and a filled one must stay filled.
   assert.deepEqual(result.readBack.database_validation_countries, countries);
+});
+
+// ── Bank Verification ────────────────────────────────────────────
+
+test("BANK_VERIFICATION: the country whitelist, scopes and native route survive the round trip", async () => {
+  // Native route: provider_key stays EMPTY (null), fallback_to_native is stored
+  // explicitly, and the whitelist keeps its per-country shape - an "all"
+  // institutions entry must not be expanded or dropped.
+  const config = {
+    provider_key: null,
+    fallback_to_native: false,
+    bank_countries: {
+      ESP: { enabled: true, institutions: "all" },
+      DEU: { enabled: false, institutions: ["ing_de", "dkb_de"] },
+    },
+    bank_scopes: { ownership: true, identifiers: false, balances: false, transactions: false, income: false },
+    bank_reference_identity: "auto",
+    bank_no_match_action: "DECLINE",
+    bank_name_match_threshold: 85,
+  };
+  const result = await roundTrip("BANK_VERIFICATION", config, {
+    ocr: { node_type: "feature", feature: "OCR", next: "step" },
+  });
+  assertIdentical(result, "BANK_VERIFICATION native");
+  assert.deepEqual(result.readBack.bank_countries, config.bank_countries);
+});
+
+test("BANK_VERIFICATION: a BYOK provider_key and field sources survive the round trip", async () => {
+  const config = {
+    provider_key: "plaid",
+    fallback_to_native: false,
+    bank_countries: { USA: { enabled: true, institutions: "all" } },
+    bank_scopes: { ownership: true, balances: true },
+    bank_field_sources: {
+      full_name: { source: "expected_data", key: "expected_details.first_name" },
+      address: { source: "questionnaire", key: "q_address" },
+    },
+    bank_low_balance_action: "REVIEW",
+    bank_min_balance: 0,
+  };
+  const result = await roundTrip("BANK_VERIFICATION", config);
+  assertIdentical(result, "BANK_VERIFICATION BYOK");
+  // `0` is a real threshold, not "unset": it must not be dropped as falsy.
+  assert.equal(result.readBack.bank_min_balance, 0);
 });
 
 // ── Document AI ─────────────────────────────────────────────────────────────

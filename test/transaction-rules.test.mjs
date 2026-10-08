@@ -176,3 +176,57 @@ test("all nine rule tools are advertised with safe annotations and persistence g
     ]);
   }
 });
+
+// Exercise execution through the SDK: advertised input schemas alone do not
+// validate tools/call arguments on the low-level MCP Server.
+for (const operation of ["create", "update", "backtest"]) {
+  test(`hosted rule ${operation} enforces explicit aggregation windows before HTTP`, async () => {
+    const originalFetch = globalThis.fetch;
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createServer({ hosted: true });
+    const client = new Client({ name: "aggregation-window-test", version: "1.0.0" }, { capabilities: {} });
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      await client.listTools();
+      const calls = captureRequest({});
+      const base = {
+        create: { title: "Velocity", category: "finance", mode: "TEST", actions: [] },
+        update: { rule_uuid: "rule-1", title: "Velocity" },
+        backtest: {},
+      }[operation];
+      const call = (payload) => inApp(() => client.callTool({
+        name: `didit_transaction_rule_${operation}`,
+        arguments: { organization_id: "org-1", application_id: "app-1", ...base, ...payload },
+      }));
+      const check = { metric: "count", operator: "gt", value: 5 };
+      for (const window of [undefined, null, 24, true, [], {}, "", "1", "1w", "1H", "-1d", "1.5h", " 1d", "1d ", "1d\n"]) {
+        const invalid = window === undefined ? check : { ...check, window };
+        const result = await call({ aggregation: [{ ...check, window: "1h" }, invalid] });
+        assert.equal(result.isError, true, `accepted window ${JSON.stringify(window)}`);
+        const text = result.content.map((item) => item.text).join("\n");
+        assert.match(text, /Error \[bad_request\]/);
+        assert.match(text, /Field: aggregation\[1\]\.window/);
+        assert.match(text, /30m, 24h, or 7d/);
+        assert.equal(calls.length, 0, "invalid window must not make an HTTP request");
+      }
+      for (const payload of [
+        { aggregation: ["30m", "24h", "7d", "0m", "01h"].map((window) => ({ ...check, window })) },
+        { aggregation: [] },
+        {},
+      ]) {
+        const result = await call(payload);
+        assert.notEqual(result.isError, true, JSON.stringify(result));
+        assert.equal(calls.length, 1);
+        const { rule_uuid, ...body } = { ...base, ...payload };
+        assert.deepEqual(calls[0].body, body);
+        assert.equal(calls[0].method, operation === "update" ? "PATCH" : "POST");
+        calls.length = 0;
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      await client.close();
+      await server.close();
+    }
+  });
+}

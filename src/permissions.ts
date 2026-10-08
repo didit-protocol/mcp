@@ -14,6 +14,7 @@
 // pre-check": endpoints without a decorator, membership-scoped ones (`/organizations/me/`),
 // and everything that is not org/app-scoped. Unknown tools are never checked either.
 import { DiditError } from "./security";
+import { INTERNAL_TOOL_PERMISSIONS } from "./internal-tools";
 
 export type PermissionMode = "shadow" | "enforce" | "off";
 
@@ -26,13 +27,14 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_account_login: null, // POST auth /programmatic/login/ — account bootstrap
   didit_account_register: null, // POST auth /programmatic/register/ — account bootstrap
   didit_account_resend_otp: null, // POST auth /programmatic/resend-otp/ — account bootstrap
+  didit_account_verify_2fa: null, // POST auth /2fa/verify/ — account bootstrap (login step-up)
   didit_account_verify_email: null, // POST auth /programmatic/verify-email/ — account bootstrap
   didit_context_get: null, // GET auth /organizations/me/ (+ applications) — membership-scoped
   didit_org_get_application: null, // GET auth /organizations/me/{org}/applications/{app}/ — hardcoded owner/admin check, no decorator
   didit_org_list: null, // GET auth /organizations/me/ — membership-scoped
   didit_org_list_applications: null, // GET auth /organizations/me/{org}/applications/ — hardcoded owner/admin check, no decorator
   didit_org_reveal_application_api_key: null, // same endpoint as didit_org_get_application
-  didit_org_invite_member: null, // POST auth /organizations/{org}/members/ — route is GET-only as coded; the invite route (write:members) is /members/invite/
+  didit_org_invite_member: "write:members", // POST auth /organizations/{org}/members/invite/ → member.py:394
   didit_org_list_api_keys: "read:applications", // GET auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py:24
   didit_org_list_members: "list:members", // GET auth /organizations/{org}/members/ → member.py:141
   didit_org_list_roles: "list:roles", // GET auth /organizations/{org}/roles/ → roles.py:55
@@ -61,7 +63,6 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_case_manage: "write:cases", // POST …/cases/{id}/{resolve|assign|reopen|escalate}/, PATCH …/cases/{id}/ → case_management.py
   didit_case_search: "list:cases", // GET /organization/{org}/cases/ → case_management.py:264
   didit_case_statistics: "list:cases", // GET …/cases/statistics/ → case_management.py:910
-  // ── Compliance (POST endpoints gated by read:workflows on purpose) ──
   // ── Lists ──
   didit_lists_create: "create:lists", // POST …/lists/ → lists.py:69
   didit_lists_delete: "delete:lists", // DELETE …/lists/{uuid}/ → lists.py:122
@@ -72,8 +73,6 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_lists_get: "read:lists", // GET …/lists/{uuid}/ → lists.py:110
   didit_lists_list: "read:lists", // GET …/lists/ → lists.py:40
   didit_lists_update: "write:lists", // PATCH …/lists/{uuid}/ → lists.py:114
-  // ── Marketplace ──
-  // ── Networks ──
   // ── Questionnaires (delete reuses write) ──
   didit_questionnaire_append_choices: "write:questionnaires", // PATCH …/questionnaires/{uuid}/ → questionnaire.py:208
   didit_questionnaire_create: "write:questionnaires", // POST …/questionnaires/ → questionnaire.py:149
@@ -105,6 +104,9 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_session_update_data: "write:sessions", // PATCH /session/{id}/update-data/ → session.py:1238
   didit_session_update_poa_data: "write:sessions", // PATCH /session/{id}/update-poa-data/ → session.py:1461
   didit_session_update_status: "write:sessions", // PATCH /session/{id}/update-status/ → session.py:1033
+  didit_session_explain_decision: "read:sessions", // GET /session/{id}/decision/ folded into its trace
+  didit_session_webhooks: "read:sessions", // GET /session/{id}/webhooks/ → webhooks.py:38
+  didit_session_webhook_resend: "create:sessions", // POST /session/{id}/webhook/{uuid}/resend → webhooks.py:109
   // ── Transactions (reads are gated by list:transactions) ──
   didit_transaction_create: "create:transactions", // POST …/transactions/ → transactions.py:331
   didit_transaction_get: "list:transactions", // GET …/transactions/{id}/ → transactions.py:479
@@ -120,7 +122,6 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_transaction_rule_update: "write:transactions", // PATCH …/transactions/rules/{uuid}/ → transactions.py:790
   didit_transaction_screen_wallet: "create:transactions", // POST …/transactions/screen-wallet/ → transactions.py:371
   didit_transaction_search: "list:transactions", // GET /organization/{org}/transactions/ → transactions.py:278
-  // ── Travel rule (client-credential checks only, no decorator) ──
   // ── Vendor businesses (KYB) ──
   didit_vendor_business_create: "create:businesses", // POST …/vendor-businesses/ → vendor_business.py:154
   didit_vendor_business_delete: "delete:businesses", // DELETE …/vendor-businesses/delete/ → vendor_business.py:935
@@ -177,6 +178,8 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_workflow_set_graph: "write:workflows", // PUT …/verification-settings/{uuid}/workflow-graph/ → workflow_graph.py:63
   didit_workflow_update: "write:workflows", // PATCH …/verification-settings/{uuid}/ → verification_settings.py:219
   didit_workflow_validate_graph: "read:workflows", // POST …/workflow-graph/validate/ → workflow_graph.py:142
+  // Internal-only families (compliance, travel rule, marketplace, networks, SDK token): empty in the public build.
+  ...INTERNAL_TOOL_PERMISSIONS,
 };
 
 export type PermissionDecision = "allow" | "would_deny" | "deny";

@@ -1,4 +1,5 @@
 import { apiRequest, orgAppPath } from "../config";
+import { createSessionPdfDownload } from "../session-pdf-download";
 import { pathSegment, assertBoolean, assertSafeWebhookUrl, DiditError, MAX_BATCH_IDS } from "../security";
 
 // createSession stays on the wired developer /session/ endpoint (accepts the user Bearer via
@@ -94,7 +95,7 @@ export async function batchDeleteSessions(
 export async function generateSessionPdf(sessionId: string): Promise<any> {
   // Console fetches the PDF via GET /session/{id}/generate-pdf/ (trailing slash matters —
   // a slash-less path redirects and drops the auth header → 403; flat, user Bearer).
-  return apiRequest(`/session/${sid(sessionId)}/generate-pdf/`);
+  return createSessionPdfDownload(sessionId);
 }
 
 export async function listSessionReviews(sessionId: string): Promise<any> {
@@ -103,6 +104,73 @@ export async function listSessionReviews(sessionId: string): Promise<any> {
 
 export async function addSessionReview(sessionId: string, data: Record<string, any>): Promise<any> {
   return apiRequest(orgAppPath(`/sessions/${sid(sessionId)}/reviews/`), { method: "POST", json: data });
+}
+
+/** Delivery log of a session's webhooks, compacted for the model: the raw body is
+ * capped (a full decision payload is several KB the diagnosis never needs) and only
+ * the signing headers survive — they are what a failing endpoint is checking. */
+const DELIVERY_BODY_MAX = 2048;
+const DELIVERY_HEADERS = ["x-signature", "x-timestamp"];
+
+export function compactWebhookDelivery(log: Record<string, any>): Record<string, any> {
+  const { request_body, request_header, ...rest } = log;
+  const body = typeof request_body === "string" ? request_body : JSON.stringify(request_body ?? "");
+  const headers = Object.fromEntries(
+    Object.entries(parseHeaders(request_header)).filter(([k]) => DELIVERY_HEADERS.includes(k.toLowerCase())),
+  );
+
+  return {
+    ...rest,
+    request_headers: headers,
+    request_body: body.length > DELIVERY_BODY_MAX ? `${body.slice(0, DELIVERY_BODY_MAX)}… [truncated]` : body,
+  };
+}
+
+function parseHeaders(raw: unknown): Record<string, string> {
+  const parsed = typeof raw === "string" ? tryParse(raw) : raw;
+  return parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
+}
+
+function tryParse(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+// Overridable so tests need not sleep for real; never below 250 ms so a bad value
+// cannot turn the wait into a tight loop against the API.
+const WEBHOOK_POLL_MS = Math.max(Number(process.env.MCP_WEBHOOK_POLL_MS) || 3000, 250);
+const WEBHOOK_WAIT_MAX_S = 60;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchDeliveries(sessionId: string): Promise<Record<string, any>[]> {
+  const logs = await apiRequest(`/session/${sid(sessionId)}/webhooks/`);
+  return Array.isArray(logs) ? logs : [];
+}
+
+/** GET /session/{id}/webhooks/ — with `waitSeconds` the call keeps polling until at
+ * least one delivery is recorded (a sandbox session fires its webhook within seconds),
+ * so the model needs one call instead of a retry loop that burns its step budget. */
+export async function listSessionWebhooks(sessionId: string, waitSeconds = 0): Promise<any> {
+  const started = Date.now();
+  const deadline = started + Math.min(Math.max(waitSeconds, 0), WEBHOOK_WAIT_MAX_S) * 1000;
+  let deliveries = await fetchDeliveries(sessionId);
+
+  while (deliveries.length === 0 && Date.now() < deadline) {
+    await sleep(Math.min(WEBHOOK_POLL_MS, deadline - Date.now()));
+    deliveries = await fetchDeliveries(sessionId);
+  }
+
+  return { deliveries: deliveries.map(compactWebhookDelivery), waited_seconds: Math.round((Date.now() - started) / 1000) };
+}
+
+/** POST /session/{id}/webhook/{uuid}/resend — the backend route has NO trailing slash. */
+export async function resendSessionWebhook(sessionId: string, webhookId: string): Promise<any> {
+  return compactWebhookDelivery(
+    await apiRequest(`/session/${sid(sessionId)}/webhook/${pathSegment(webhookId, "webhook_id")}/resend`, { method: "POST" }),
+  );
 }
 
 export async function shareSession(sessionId: string, data: Record<string, any>): Promise<any> {
