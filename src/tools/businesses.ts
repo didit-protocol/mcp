@@ -1,5 +1,5 @@
 import { apiRequest, orgAppPath } from "../config";
-import { assertBoolean, DiditError, MAX_BATCH_IDS } from "../security";
+import { assertBoolean, DiditError, MAX_BATCH_IDS, pathSegment } from "../security";
 
 // Vendor businesses — the console resource is `vendor-businesses`, org/app-scoped (these are
 // vendor business ENTITIES, not KYB sessions — KYB sessions are the separate `businesses`/
@@ -15,11 +15,11 @@ export async function createBusiness(data: Record<string, any>): Promise<any> {
 }
 
 export async function getBusiness(vendorData: string): Promise<any> {
-  return apiRequest(orgAppPath(`/vendor-businesses/${encodeURIComponent(vendorData)}/`));
+  return apiRequest(orgAppPath(`/vendor-businesses/${pathSegment(vendorData, "vendor_data", { opaque: true })}/`));
 }
 
 export async function updateBusiness(vendorData: string, data: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath(`/vendor-businesses/${encodeURIComponent(vendorData)}/update/`), { method: "PATCH", json: data });
+  return apiRequest(orgAppPath(`/vendor-businesses/${pathSegment(vendorData, "vendor_data", { opaque: true })}/update/`), { method: "PATCH", json: data });
 }
 
 export async function updateBusinessStatus(vendorData: string, status: string): Promise<any> {

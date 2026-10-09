@@ -1,5 +1,5 @@
 import { apiRequest, orgAppPath } from "../config";
-import { DiditError } from "../security";
+import { DiditError, pathSegment } from "../security";
 
 // Async export reports — org/app-scoped console resource.
 
@@ -58,17 +58,17 @@ export async function listReports(params?: Record<string, any>): Promise<any> {
 }
 
 export async function getReport(reportId: string): Promise<any> {
-  return apiRequest(orgAppPath(`/reports/${reportId}/`));
+  return apiRequest(orgAppPath(`/reports/${pathSegment(reportId, "report_id")}/`));
 }
 
 export async function getReportDownloadUrl(reportId: string): Promise<any> {
-  return apiRequest(orgAppPath(`/reports/${reportId}/download-url/`));
+  return apiRequest(orgAppPath(`/reports/${pathSegment(reportId, "report_id")}/download-url/`));
 }
 
 // kind ∈ sessions | transactions | businesses | vendor-users | vendor-businesses
 export async function exportReport(kind: string, data: Record<string, any> = {}): Promise<any> {
   try {
-    return await apiRequest(orgAppPath(`/reports/${kind}/`), { method: "POST", json: data });
+    return await apiRequest(orgAppPath(`/reports/${pathSegment(kind, "kind")}/`), { method: "POST", json: data });
   } catch (error) {
     // The backend's "Invalid columns" 400 never lists what IS valid, so `sessions` /
     // `vendor-users` / `vendor-businesses` exports were undiscoverable without reading

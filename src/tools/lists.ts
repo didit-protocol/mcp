@@ -1,5 +1,5 @@
 import { apiRequest, orgAppPath } from "../config";
-import { requireFileSource, resolveFileSource } from "../security";
+import { requireFileSource, resolveFileSource, pathSegment } from "../security";
 
 // Lists are org/app-scoped console resources; org/app resolve from the tool args via the
 // request context (see orgAppPath). Sub-paths match the console inventory 1:1.
@@ -13,27 +13,27 @@ export async function createList(data: Record<string, any>): Promise<any> {
 }
 
 export async function getListDetail(listUuid: string): Promise<any> {
-  return apiRequest(orgAppPath(`/lists/${listUuid}/`));
+  return apiRequest(orgAppPath(`/lists/${pathSegment(listUuid, "list_uuid")}/`));
 }
 
 export async function updateList(listUuid: string, data: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath(`/lists/${listUuid}/`), { method: "PATCH", json: data });
+  return apiRequest(orgAppPath(`/lists/${pathSegment(listUuid, "list_uuid")}/`), { method: "PATCH", json: data });
 }
 
 export async function deleteList(listUuid: string): Promise<any> {
-  return apiRequest(orgAppPath(`/lists/${listUuid}/`), { method: "DELETE" });
+  return apiRequest(orgAppPath(`/lists/${pathSegment(listUuid, "list_uuid")}/`), { method: "DELETE" });
 }
 
 export async function listEntries(listUuid: string, params?: Record<string, string>): Promise<any> {
-  return apiRequest(orgAppPath(`/lists/${listUuid}/entries/`), { params });
+  return apiRequest(orgAppPath(`/lists/${pathSegment(listUuid, "list_uuid")}/entries/`), { params });
 }
 
 export async function createEntry(listUuid: string, data: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath(`/lists/${listUuid}/entries/`), { method: "POST", json: data });
+  return apiRequest(orgAppPath(`/lists/${pathSegment(listUuid, "list_uuid")}/entries/`), { method: "POST", json: data });
 }
 
 export async function deleteEntry(listUuid: string, entryUuid: string): Promise<any> {
-  return apiRequest(orgAppPath(`/lists/${listUuid}/entries/${entryUuid}/`), { method: "DELETE" });
+  return apiRequest(orgAppPath(`/lists/${pathSegment(listUuid, "list_uuid")}/entries/${pathSegment(entryUuid, "entry_uuid")}/`), { method: "DELETE" });
 }
 
 export async function uploadFaceEntry(listUuid: string, data: Record<string, any>): Promise<any> {
@@ -42,7 +42,7 @@ export async function uploadFaceEntry(listUuid: string, data: Record<string, any
   const { image_path, image_base64, ...rest } = data;
   const source = requireFileSource({ path: image_path, base64: image_base64 }, "image");
   const { buffer } = resolveFileSource(source, "image", { required: true })!;
-  return apiRequest(orgAppPath(`/lists/${listUuid}/entries/face-upload/`), {
+  return apiRequest(orgAppPath(`/lists/${pathSegment(listUuid, "list_uuid")}/entries/face-upload/`), {
     method: "POST",
     json: { image: buffer.toString("base64"), ...rest },
   });

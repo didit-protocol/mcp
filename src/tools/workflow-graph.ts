@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { apiRequest, orgAppPath } from "../config";
 import { mapWithConcurrency, runForScope } from "../orgapp";
 import { resolveWorkflowScope, withWorkflowResolution } from "./search";
-import { DiditError } from "../security";
+import { DiditError, pathSegment } from "../security";
 import { assertKycKybSegregation, normalizeFeatureConfigs, resolveBranchRuleNodeIds } from "./feature-config";
 
 // Node/graph ("branching") workflows. The console drives these through dedicated endpoints on
@@ -171,7 +171,7 @@ async function returnedData(wf: any): Promise<any> {
   const settings =
     wf && typeof wf === "object" && "response_attributes" in wf
       ? wf
-      : await apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/`)).catch(() => null);
+      : await apiRequest(orgAppPath(`/verification-settings/${pathSegment(wf.uuid, "workflow_id")}/`)).catch(() => null);
 
   // A payload that omits the key is NOT an explicit null: null means "all data
   // points", and that permissive default must never be implied on uncertain data.
@@ -291,7 +291,7 @@ const AGE_UNREADABLE = {
 };
 
 async function rowAgeAssurance(row: any): Promise<void> {
-  const read = () => apiRequest(orgAppPath(`/verification-settings/${row.uuid}/workflow-graph/`));
+  const read = () => apiRequest(orgAppPath(`/verification-settings/${pathSegment(row.uuid, "workflow_id")}/workflow-graph/`));
   const inRowScope =
     row.organization_id && row.application_id
       ? () => runForScope(row.organization_id, row.application_id, read)
@@ -338,7 +338,7 @@ export async function getWorkflowGraph(
 ): Promise<any> {
   return inScope(workflowId, scope, async (wf) => {
     const [res, returned_data] = await Promise.all([
-      apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/workflow-graph/`)),
+      apiRequest(orgAppPath(`/verification-settings/${pathSegment(wf.uuid, "workflow_id")}/workflow-graph/`)),
       returnedData(wf),
     ]);
     if (!res || typeof res !== "object") return res;
@@ -517,7 +517,7 @@ export async function getWorkflowBranchFields(
   requireBranchFieldsArgs(graph, branchNodeId);
   normalizeFeatureConfigs(graph);
   return inScope(workflowId, scope, (wf) =>
-    apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/workflow-graph/branch-fields/`), {
+    apiRequest(orgAppPath(`/verification-settings/${pathSegment(wf.uuid, "workflow_id")}/workflow-graph/branch-fields/`), {
       method: "POST",
       json: { graph, branch_node_id: branchNodeId },
     }),
@@ -570,7 +570,7 @@ export async function validateWorkflowGraph(
 /** Create an editable DRAFT version from a (published) workflow. */
 export async function createWorkflowDraft(workflowId: string, scope: Scope = {}): Promise<any> {
   return inScope(workflowId, scope, (wf) =>
-    apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/create-draft/`), { method: "POST" }),
+    apiRequest(orgAppPath(`/verification-settings/${pathSegment(wf.uuid, "workflow_id")}/create-draft/`), { method: "POST" }),
   );
 }
 
@@ -579,7 +579,7 @@ export async function createWorkflowDraft(workflowId: string, scope: Scope = {})
  *  those fields" survived a save that kept them. */
 async function persistedGraph(uuid: string): Promise<any | null> {
   try {
-    const res = await apiRequest(orgAppPath(`/verification-settings/${uuid}/workflow-graph/`));
+    const res = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/workflow-graph/`));
 
     return res?.graph ?? res ?? null;
   } catch {
@@ -627,7 +627,7 @@ function readBackNote(stored: any, published: boolean, versionUuid: string): str
  *  for. A body carrying no status (204, bare success) means the PATCH did not error but nothing
  *  read it back, so it is reported as unconfirmed instead of being dressed up as a read-back. */
 async function publishVersion(uuid: string): Promise<{ status: string; confirmed: boolean }> {
-  const res = await apiRequest(orgAppPath(`/verification-settings/${uuid}/`), {
+  const res = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/`), {
     method: "PATCH",
     json: { status: "published" },
   });
@@ -653,7 +653,7 @@ async function versionToPublish(wf: any): Promise<string> {
         `(didit_workflow_edit_graph) and publish the version_uuid that edit returns.`,
     );
   }
-  const draft = await apiRequest(orgAppPath(`/verification-settings/${wf.uuid}/create-draft/`), {
+  const draft = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(wf.uuid, "workflow_id")}/create-draft/`), {
     method: "POST",
   });
   const uuid = draft?.uuid ?? draft?.workflow_id;
@@ -710,13 +710,13 @@ export async function setWorkflowGraph(
     const status = String(workflow.status ?? "").toLowerCase();
     if (status && status !== "draft") {
       const draft = await apiRequest(
-        orgAppPath(`/verification-settings/${workflow.uuid}/create-draft/`),
+        orgAppPath(`/verification-settings/${pathSegment(workflow.uuid, "workflow_id")}/create-draft/`),
         { method: "POST" },
       );
       targetUuid = draft?.uuid ?? draft?.workflow_id ?? targetUuid;
       createdDraft = true;
     }
-    await apiRequest(orgAppPath(`/verification-settings/${targetUuid}/workflow-graph/`), {
+    await apiRequest(orgAppPath(`/verification-settings/${pathSegment(targetUuid, "workflow_id")}/workflow-graph/`), {
       method: "PUT",
       json: { graph },
     });
@@ -759,7 +759,7 @@ export async function editWorkflowGraph(
   );
   return runForScope(organizationId, applicationId, async () => {
     // 1. Fetch the FULL current graph server-side (allow-lists included; never sent by the model).
-    const current = await apiRequest(orgAppPath(`/verification-settings/${workflow.uuid}/workflow-graph/`));
+    const current = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(workflow.uuid, "workflow_id")}/workflow-graph/`));
     const baseGraph = current?.graph ?? current;
     // 2. Apply the small ops in memory, then normalize branch catch-alls to explicit else branches.
     const { graph: merged, changes } = applyGraphOps(baseGraph, operations);
@@ -790,13 +790,13 @@ export async function editWorkflowGraph(
     let createdDraft = false;
     if (String(workflow.status ?? "").toLowerCase() !== "draft") {
       const draft = await apiRequest(
-        orgAppPath(`/verification-settings/${workflow.uuid}/create-draft/`),
+        orgAppPath(`/verification-settings/${pathSegment(workflow.uuid, "workflow_id")}/create-draft/`),
         { method: "POST" },
       );
       targetUuid = draft?.uuid ?? draft?.workflow_id ?? targetUuid;
       createdDraft = true;
     }
-    await apiRequest(orgAppPath(`/verification-settings/${targetUuid}/workflow-graph/`), {
+    await apiRequest(orgAppPath(`/verification-settings/${pathSegment(targetUuid, "workflow_id")}/workflow-graph/`), {
       method: "PUT",
       json: { graph: merged },
     });

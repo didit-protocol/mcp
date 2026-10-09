@@ -5,7 +5,7 @@ import { redactApiKey, redactCollection, pathSegment } from "../security";
 // with the user Bearer. org resolves from the tool arg / token context (resolveOrganizationId).
 
 function authPath(org: string, resource: string): string {
-  return `/organizations/${org}${resource}`;
+  return `/organizations/${pathSegment(org, "organization_id")}${resource}`;
 }
 
 export async function listMembers(organizationId?: string, params?: Record<string, any>): Promise<any> {
@@ -30,7 +30,7 @@ export async function updateMember(memberId: string, data: Record<string, any>, 
   // The detail route is declared WITHOUT a trailing slash (APPEND_SLASH only adds one), and
   // OrganizationMemberUpdateSerializer takes role + accessible_applications — member_id is a
   // path segment, not a body field.
-  return apiRequest(authPath(org, `/members/${memberId}`), {
+  return apiRequest(authPath(org, `/members/${pathSegment(memberId, "member_id")}`), {
     baseUrl: DIDIT_AUTH_BASE_URL,
     method: "PATCH",
     json: { role: data.role, accessible_applications: data.accessible_applications },
@@ -40,7 +40,7 @@ export async function updateMember(memberId: string, data: Record<string, any>, 
 export async function removeMember(memberId: string, organizationId?: string): Promise<any> {
   const org = resolveOrganizationId(organizationId);
   // Same detail route, no trailing slash.
-  return apiRequest(authPath(org, `/members/${memberId}`), { baseUrl: DIDIT_AUTH_BASE_URL, method: "DELETE" });
+  return apiRequest(authPath(org, `/members/${pathSegment(memberId, "member_id")}`), { baseUrl: DIDIT_AUTH_BASE_URL, method: "DELETE" });
 }
 
 export async function listRoles(organizationId?: string): Promise<any> {
@@ -52,7 +52,7 @@ export async function listApiKeys(organizationId?: string, applicationId?: strin
   const org = resolveOrganizationId(organizationId);
   // Console api-keys are nested under the application; if an app id is given use it.
   const path = applicationId
-    ? `/organizations/${org}/applications/${pathSegment(applicationId, "application_id")}/api-keys/`
+    ? `/organizations/${pathSegment(org, "organization_id")}/applications/${pathSegment(applicationId, "application_id")}/api-keys/`
     : authPath(org, "/api-keys/");
   const res = await apiRequest(path, { baseUrl: DIDIT_AUTH_BASE_URL });
   return redactCollection(res, redactApiKey);

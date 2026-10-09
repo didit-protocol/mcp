@@ -39,9 +39,9 @@ export class DiditError extends Error {
 //
 // EVERY user-controlled value interpolated into a request path MUST go through
 // pathSegment(). `new URL()` normalizes `..`, so a raw value like
-// "../billing/balance" would silently target a DIFFERENT endpoint. We reject the
-// routing/traversal metacharacters outright AND percent-encode the rest.
-export function pathSegment(value: unknown, field: string): string {
+// "../billing/balance" would silently target a DIFFERENT endpoint. Routing IDs
+// reject separators; opaque vendor IDs preserve their exact percent-encoded value.
+export function pathSegment(value: unknown, field: string, options: { opaque?: boolean } = {}): string {
   // A value that never ARRIVED and a value of the wrong SHAPE are different bugs, and
   // collapsing them sends the caller to the wrong place. the dispatcher was
   // stripping the routing ids out of a handler's args before the handler read them, so
@@ -67,21 +67,20 @@ export function pathSegment(value: unknown, field: string): string {
       hint: "Provide a single id/value with no path separators.",
     });
   }
-  const trimmed = value.trim();
-  if (!trimmed) {
+  // External vendor identifiers historically preserve whitespace and encode reserved
+  // characters. Keep that identity intact while still rejecting empty/dot segments.
+  const segment = options.opaque ? value : value.trim();
+  if (!segment) {
     throw new DiditError({
       code: "bad_request",
       message: `${field} must not be empty.`,
       field,
     });
   }
-  // Reject routing/path-separator metacharacters BEFORE encoding so the value can
-  // never escape its slot. NOTE: we reject only path-ESCAPING traversal — a bare
-  // "." or ".." segment (which `new URL()` would resolve as the current/parent
-  // dir) — NOT every "..". A dotted run *inside* a segment (e.g. a valid
-  // vendor_data like "customer..prod") is safe: `/` is already rejected, and
-  // encodeURIComponent leaves the dots literal so it can't be re-read as traversal.
-  if (/[\/?#]/.test(trimmed)) {
+  // Default routing IDs reject separators before encoding. Opaque IDs encode them
+  // instead. Both modes reject bare dot segments, which encodeURIComponent leaves
+  // literal and new URL would normalize. In-segment dots like customer..prod are safe.
+  if (!options.opaque && /[\/?#]/.test(segment)) {
     throw new DiditError({
       code: "bad_request",
       message: `${field} contains illegal path characters.`,
@@ -89,7 +88,7 @@ export function pathSegment(value: unknown, field: string): string {
       hint: "Path identifiers must not contain '/', '?', or '#'.",
     });
   }
-  if (trimmed === "." || trimmed === "..") {
+  if (segment === "." || segment === "..") {
     throw new DiditError({
       code: "bad_request",
       message: `${field} must not be a path-traversal segment.`,
@@ -97,7 +96,7 @@ export function pathSegment(value: unknown, field: string): string {
       hint: "A bare '.' or '..' segment is not a valid identifier.",
     });
   }
-  return encodeURIComponent(trimmed);
+  return encodeURIComponent(segment);
 }
 
 /**

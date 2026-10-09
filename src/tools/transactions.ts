@@ -12,7 +12,7 @@ export async function createTransaction(data: Record<string, any>): Promise<any>
 }
 
 export async function getTransaction(transactionId: string): Promise<any> {
-  return apiRequest(orgAppPath(`/transactions/${transactionId}/`));
+  return apiRequest(orgAppPath(`/transactions/${pathSegment(transactionId, "transaction_id")}/`));
 }
 
 export async function screenWallet(data: Record<string, any>): Promise<any> {

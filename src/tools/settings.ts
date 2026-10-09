@@ -1,4 +1,5 @@
 import { apiRequest, orgAppPath } from "../config";
+import { pathSegment } from "../security";
 import {
   assertKycKybSegregation,
   buildLinearGraphFromFeatures,
@@ -15,7 +16,7 @@ export async function listWorkflows(params?: Record<string, any>): Promise<any> 
 }
 
 export async function getWorkflow(uuid: string): Promise<any> {
-  return apiRequest(orgAppPath(`/verification-settings/${uuid}/`));
+  return apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/`));
 }
 
 /**
@@ -104,7 +105,7 @@ export async function createWorkflow(data: Record<string, any>): Promise<any> {
     };
   }
 
-  await apiRequest(orgAppPath(`/verification-settings/${uuid}/workflow-graph/`), {
+  await apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/workflow-graph/`), {
     method: "PUT",
     json: { graph },
   });
@@ -112,7 +113,7 @@ export async function createWorkflow(data: Record<string, any>): Promise<any> {
   const wantPublished = status === undefined || String(status).toLowerCase() === "published";
   let final = base;
   if (wantPublished) {
-    final = await apiRequest(orgAppPath(`/verification-settings/${uuid}/`), {
+    final = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/`), {
       method: "PATCH",
       json: { status: "published" },
     });
@@ -140,18 +141,18 @@ export async function updateWorkflow(uuid: string, data: Record<string, any>): P
     if (!current?.status) throw new Error(`Could not preserve the publication state of workflow ${uuid}.`);
     patch.status = current.status;
   }
-  return apiRequest(orgAppPath(`/verification-settings/${uuid}/`), { method: "PATCH", json: patch });
+  return apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/`), { method: "PATCH", json: patch });
 }
 
 export async function deleteWorkflow(uuid: string): Promise<any> {
   try {
-    return await apiRequest(orgAppPath(`/verification-settings/${uuid}/`), { method: "DELETE" });
+    return await apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/`), { method: "DELETE" });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/only version|only draft versions|archive it instead/i.test(message)) throw error;
     const current = await getWorkflow(uuid);
     if (!current?.status) throw error;
-    const archived = await apiRequest(orgAppPath(`/verification-settings/${uuid}/`), {
+    const archived = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/`), {
       method: "PATCH",
       json: { is_archived: true, status: current.status },
     });

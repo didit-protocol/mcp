@@ -1,5 +1,5 @@
 import { apiRequest, orgAppPath } from "../config";
-import { assertBoolean, DiditError, MAX_BATCH_IDS } from "../security";
+import { assertBoolean, DiditError, MAX_BATCH_IDS, pathSegment } from "../security";
 
 // Vendor users — the console resource is `vendor-users`, org/app-scoped. List/get(by
 // vendor_data, legacy path)/bulk-delete map cleanly. The console keys updates by internal
@@ -11,7 +11,7 @@ export async function listUsers(params?: Record<string, string>): Promise<any> {
 }
 
 export async function getUser(vendorData: string): Promise<any> {
-  return apiRequest(orgAppPath(`/vendor-users/${encodeURIComponent(vendorData)}/`));
+  return apiRequest(orgAppPath(`/vendor-users/${pathSegment(vendorData, "vendor_data", { opaque: true })}/`));
 }
 
 export async function createUser(data: Record<string, any>): Promise<any> {
@@ -19,7 +19,7 @@ export async function createUser(data: Record<string, any>): Promise<any> {
 }
 
 export async function updateUser(vendorData: string, data: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath(`/vendor-users/${encodeURIComponent(vendorData)}/update/`), { method: "PATCH", json: data });
+  return apiRequest(orgAppPath(`/vendor-users/${pathSegment(vendorData, "vendor_data", { opaque: true })}/update/`), { method: "PATCH", json: data });
 }
 
 export async function updateUserStatus(vendorData: string, status: string): Promise<any> {

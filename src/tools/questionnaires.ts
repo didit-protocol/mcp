@@ -1,4 +1,5 @@
 import { apiRequest, orgAppPath } from "../config";
+import { pathSegment } from "../security";
 
 // Questionnaires — org/app-scoped console resource. Reads (list/get) map 1:1. The console
 // edits questionnaires via versioned drafts (create-draft); the create/update/delete tools
@@ -120,7 +121,7 @@ function compactTranslations(value: any): any {
 }
 
 export async function getQuestionnaire(uuid: string, includeTranslations = false): Promise<any> {
-  const result = await apiRequest(orgAppPath(`/questionnaires/${uuid}/`));
+  const result = await apiRequest(orgAppPath(`/questionnaires/${pathSegment(uuid, "questionnaire_id")}/`));
   if (includeTranslations) return result;
   return {
     ...compactTranslations(result),
@@ -130,7 +131,7 @@ export async function getQuestionnaire(uuid: string, includeTranslations = false
 }
 
 export async function updateQuestionnaire(uuid: string, data: QuestionnaireWrite): Promise<any> {
-  return apiRequest(orgAppPath(`/questionnaires/${uuid}/`), {
+  return apiRequest(orgAppPath(`/questionnaires/${pathSegment(uuid, "questionnaire_id")}/`), {
     method: "PATCH",
     json: toGraphPayload(data),
   });
@@ -197,5 +198,5 @@ export async function appendQuestionnaireChoices(
 }
 
 export async function deleteQuestionnaire(uuid: string): Promise<any> {
-  return apiRequest(orgAppPath(`/questionnaires/${uuid}/`), { method: "DELETE" });
+  return apiRequest(orgAppPath(`/questionnaires/${pathSegment(uuid, "questionnaire_id")}/`), { method: "DELETE" });
 }

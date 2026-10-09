@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { DiditError, parseErrorBody, statusToCode, statusToHint, resolveFileSource } from "./security";
+import { DiditError, parseErrorBody, statusToCode, statusToHint, resolveFileSource, pathSegment } from "./security";
 import type { FileSource } from "./security";
 
 // Single source of truth for the version: package.json (falls back if unreadable).
@@ -154,14 +154,14 @@ export function resolveApplicationId(explicit?: string): string {
 
 /** `/organization/{org}/application/{app}{resource}` — org+app-scoped console path. */
 export function orgAppPath(resource: string, opts: OrgAppArgs = {}): string {
-  const org = resolveOrganizationId(opts.organizationId);
-  const app = resolveApplicationId(opts.applicationId);
+  const org = pathSegment(resolveOrganizationId(opts.organizationId), "organization_id");
+  const app = pathSegment(resolveApplicationId(opts.applicationId), "application_id");
   return `/organization/${org}/application/${app}${resource}`;
 }
 
 /** `/organization/{org}{resource}` — org-only console path (e.g. billing). */
 export function orgPath(resource: string, opts: { organizationId?: string } = {}): string {
-  return `/organization/${resolveOrganizationId(opts.organizationId)}${resource}`;
+  return `/organization/${pathSegment(resolveOrganizationId(opts.organizationId), "organization_id")}${resource}`;
 }
 
 /**
