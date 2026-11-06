@@ -42,6 +42,14 @@ import {
 } from "./internal-tools";
 import * as blocklist from "./tools/blocklist";
 import * as cases from "./tools/cases";
+import {
+  INVESTIGATOR_DECISION_TOOLS,
+  INVESTIGATOR_TOOL_DEFS,
+  INVESTIGATOR_WRITE_TOOLS,
+  actorViaFromHeaders,
+  dispatchInvestigatorTool,
+  isInvestigatorToolName,
+} from "./tools/investigator";
 import * as reports from "./tools/reports";
 import * as observability from "./tools/observability";
 import * as members from "./tools/members";
@@ -421,6 +429,7 @@ const TOOL_GROUP_BY_PREFIX: [string, string][] = [
   ["vendor_", "Vendor Users & Businesses"],
   ["transaction_", "Transactions (AML)"],
   ["case_", "Cases"],
+  ["investigator_", "Investigator"],
   ["webhook_", "Webhooks & Alerts"],
   ["alert_", "Webhooks & Alerts"],
   ["report_", "Reports & Audit"],
@@ -565,6 +574,8 @@ const EXPLICIT_DESTRUCTIVE_TOOLS = new Set([
   "didit_workflow_edit_graph",
   "didit_workflow_set_graph",
   "didit_workflow_publish",
+  // Investigator decisions and policy answers: human decisions behind confirm:true.
+  ...INVESTIGATOR_DECISION_TOOLS,
   ...INTERNAL_DESTRUCTIVE_TOOLS,
 ]);
 
@@ -581,6 +592,7 @@ const EXPLICIT_OPEN_WORLD_TOOLS = new Set([
   ...INTERNAL_OPEN_WORLD_TOOLS,
   "didit_verify_email_send",
   "didit_verify_phone_send",
+  "didit_session_check_import_provider",
   "didit_webhook_create",
   "didit_webhook_update",
 ]);
@@ -590,7 +602,13 @@ const EXPLICIT_OPEN_WORLD_TOOLS = new Set([
 const EXPLICIT_WRITE_TOOLS = new Set([
   "didit_report_export",
   "didit_session_generate_pdf",
+  "didit_session_get_signature_evidence",
+  "didit_session_get_signature_field_image",
+  "didit_session_get_signed_document",
+  "didit_session_manage_import",
+  "didit_session_validate_signatures",
   "didit_session_webhook_resend",
+  ...INVESTIGATOR_WRITE_TOOLS,
 ]);
 
 // The inverse: tools whose names carry no read-like token but whose handlers never
@@ -948,7 +966,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_session_list",
-      description: `List verification sessions for ONE app. If you have multiple apps (or pass no scope) this automatically spans every app, newest first — but didit_session_search is the canonical cross-app tool and what to reach for to answer "my last N sessions". status accepts session-level values: ${SESSION_STATUSES}.`,
+      description: `List verification sessions for ONE app. If you have multiple apps (or pass no scope) this automatically spans every app, newest first - but didit_session_search is the canonical cross-app tool and what to reach for to answer "my last N sessions". status accepts session-level values: ${SESSION_STATUSES}. HOW MANY: \`count\` stops at 100 (100 means "100 or more"); when it does, the result adds \`total_count\` (the exact number, from the console's own tab counts) or \`count_is_lower_bound: true\`. Answer "how many" from total_count, never report 100 as the number; limit:1 is enough to count.`,
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -968,6 +986,17 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     {
       name: "didit_session_get_decision",
       description: "Get the full verification decision and all extracted data for a session.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string", description: "Session UUID" },
+        },
+        required: ["session_id"],
+      },
+    },
+    {
+      name: "didit_session_get_location_evidence",
+      description: "Precise Location (GEOLOCATION) evidence of ONE session, per Location node: `config` (what judged it, every action resolved through the preset), `result` (the decision's verdict), EVERY attempt incl. retired ones (`retired:true`), `reference_points` (device, IP, address; `area_reading` is the earlier attempt a carried area verdict stands on), `distances`, `areas` (inside / blocked / undetermined area ids, `nearest_allowed_km`, `allowed_result`), `anonymizers` (vpn, proxy, tor, spoofing, emulator; null = cannot tell) and `history`: the same person's earlier checks (same vendor_data) that LOCATION_CONSECUTIVE_MISMATCHES and travel tolerance are judged from. The decision keeps only the accepted attempt: use this for 'which attempt was outside', 'why consecutive mismatches' or 'why was the distance excused'. Holds precise coordinates: quote only what the question needs. `nodes: []` means no Location attempt was recorded; a 404 'Precise Location is not available.' means the feature is off on this deployment.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1084,6 +1113,77 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       },
     },
     {
+      name: "didit_session_get_signature_evidence",
+      description:
+        "Return download_url, content_type, expires_at and expires_in (300 seconds) for a signer's evidence PDF of an E-signature step: level and format, " +
+        "signer, IP address, each document with its original SHA-256 and field values and the SHA-256 of every signed file, plus, for an Advanced (AES) " +
+        "signature, the verified identity session, the code confirmation, the certificate and the timestamp. Pass the evidence_file path's signer as " +
+        "signature_id; a Business Verification step with several signers needs it, otherwise the route picks one. Fetch the URL to save the PDF; no " +
+        "Authorization header is needed. Treat the URL as sensitive. Requires configured MCP HTTP downloads (see the README).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. The User Verification (KYC) or Business Verification (KYB) session." },
+          node_id: { type: "string", description: "REQUIRED. The E-signature step: node_id of the item in the decision's signatures[]." },
+          signature_id: { type: "string", description: "id of the signer's item in signatures[]. Required to pick a signer on a Business Verification step with several." },
+        },
+        required: ["session_id", "node_id"],
+      },
+    },
+    {
+      name: "didit_session_get_signed_document",
+      description:
+        "Return download_url, content_type, expires_at and expires_in (300 seconds) for the signed PDF of one document of an E-signature step: the document the " +
+        "signer was shown with their field values stamped and the evidence page (unless signature_evidence_page is off). An Advanced (AES) PDF also carries the " +
+        "PAdES signature with its timestamp; a Simple PDF has no digital signature, seal or timestamp. Didit checks the file against sha256_signed first (409 on a " +
+        "mismatch, nothing returned). Use the id of the document in signatures[].documents[]. Treat the URL as sensitive. Requires configured MCP HTTP downloads.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. The User Verification (KYC) or Business Verification (KYB) session." },
+          node_id: { type: "string", description: "REQUIRED. The E-signature step: node_id of the item in the decision's signatures[]." },
+          document_id: { type: "string", description: "REQUIRED. id of the document in signatures[].documents[]." },
+        },
+        required: ["session_id", "node_id", "document_id"],
+      },
+    },
+    {
+      name: "didit_session_get_signature_field_image",
+      description:
+        "Return download_url, content_type (image/png), expires_at and expires_in (300 seconds) for the signature or initials a signer applied to a field. " +
+        "Use the field id from the image_url of signatures[].documents[].fields[]. Treat the URL as sensitive. Requires configured MCP HTTP downloads.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. The User Verification (KYC) or Business Verification (KYB) session." },
+          node_id: { type: "string", description: "REQUIRED. The E-signature step: node_id of the item in the decision's signatures[]." },
+          field_id: { type: "string", description: "REQUIRED. The field on this signer's copy, as in the field's image_url." },
+        },
+        required: ["session_id", "node_id", "field_id"],
+      },
+    },
+    {
+      name: "didit_session_validate_signatures",
+      description:
+        "Re-check the signed documents of an E-signature step and save the result in each signer's validation. Didit re-reads every signed PDF, checks its " +
+        "SHA-256 and, for an Advanced (AES) signature, validates the PAdES signature, the certificate, the revocation data and the timestamp (a Simple signature " +
+        "has no digital signature, so only file integrity is checked). Nothing is signed again. Without signature_id every signer of the step is checked and the " +
+        "call fails with 409 if any has not signed; 400 means a stored signed PDF no longer matches its recorded SHA-256. Returns the checked signers.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. The User Verification (KYC) or Business Verification (KYB) session." },
+          node_id: { type: "string", description: "REQUIRED. The E-signature step: node_id of the item in the decision's signatures[]." },
+          signature_id: { type: "string", description: "id of one signer's item in signatures[]; omit to check every signer of the step." },
+        },
+        required: ["session_id", "node_id"],
+      },
+    },
+    {
       name: "didit_session_list_reviews",
       description: "List the review history and activity log for a session.",
       inputSchema: {
@@ -1175,16 +1275,81 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     // ── Session Imports (bulk migration) ────────────────────────────────
     {
       name: "didit_session_create_import",
-      description: "Create a bulk import job from a hosted CSV/NDJSON file (e.g. migrating historical verifications into Didit). Pass source_file_url. All imports use Didit's canonical schema. To label a record's source, include the optional per-row `provider` column in the file itself (defaults to generic) — there is no provider request field.",
+      description:
+        "Create a bulk import job: a hosted CSV/NDJSON file (source_file_url) of historical verifications, or (source=provider) a migration from another " +
+        "identity verification provider. File imports use Didit's canonical schema; label a record's source with the optional per-row `provider` column in the " +
+        "file. A provider migration reads Sumsub, Onfido, Persona and ComplyCube with the customer's READ-ONLY key (`credentials`, named as that provider's " +
+        "credential_fields from didit_session_list_import_providers); Veriff, iDenfy and MetaMap are read by the record IDs in source_file_url, and the others import " +
+        "an export file. The key is secret: ask the user for a read-only key, never log or repeat it, and never reuse it. Didit encrypts it, never returns it and " +
+        "erases it when the import ends. Prefer dry_run:true first: it counts what would import and writes nothing, ends READY, and didit_session_manage_import " +
+        "action=start then imports for real. Record IDs are namespaced by provider, so re-runs and moving between a file and a provider migration never import a " +
+        "record twice. An application runs at most 4 active import jobs at once (a fifth answers 429); a job a deploy interrupted resumes by itself. Imports must be " +
+        "enabled for the organization by Didit and are refused on a sandbox application (403).",
       inputSchema: {
         type: "object" as const,
         properties: {
-          source_file_url: { type: "string", description: "REQUIRED. Publicly fetchable URL of the CSV/NDJSON file to import." },
+          source_file_url: { type: "string", description: "Publicly fetchable HTTPS URL of the CSV/NDJSON file (or, for providers read by record IDs, of the ID list) to import." },
           import_type: { type: "string", enum: ["user_verification", "business_verification", "status_rules", "transactions"], description: "What the rows represent (default user_verification)" },
-          source_format: { type: "string", enum: ["csv", "ndjson"], description: "File format (default csv)" },
+          source_format: { type: "string", enum: ["csv", "ndjson"], description: "File format (default: inferred from the URL)" },
           workflow_id: { type: "string", description: "Workflow to associate imported sessions with" },
+          source: { type: "string", enum: ["file", "provider"], description: "provider makes this a migration from another provider. Omit for a file import." },
+          provider: { type: "string", description: "Migration source id from didit_session_list_import_providers (for example sumsub, onfido, persona). Required when source is provider." },
+          credentials: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description: "SECRET. The provider's read-only key, with the field names its credential_fields list. Never echo it back to the user or into logs.",
+          },
+          options: { type: "object", description: "Provider options, for example { region } (Onfido: eu, us, ca)." },
+          status_mapping: {
+            type: "object",
+            additionalProperties: { type: "string", enum: ["Approved", "Declined", "In Review", "Expired", "Not Finished", "Abandoned"] },
+            description: "Edits to the provider's default status mapping: source status to Didit status. Not Finished and Abandoned are skipped and counted, never imported.",
+          },
+          dry_run: { type: "boolean", description: "Count what a provider migration would import and write nothing; the job ends READY and is started with didit_session_manage_import." },
+          face_templates: { type: "boolean", description: "Build face templates from imported selfies and search them against the application's faces and blocklist (flags for review only). Requires lawful_basis_confirmed." },
+          lawful_basis_confirmed: { type: "boolean", description: "Confirms the customer has a lawful basis to share these selfies with Didit as processor. Only set it after the user states so." },
         },
         required: ["source_file_url"],
+      },
+    },
+    {
+      name: "didit_session_list_import_providers",
+      description: "List the 15 providers verifications can be migrated from: what each needs to connect (credential_fields, regions), whether its API can list records, the permissions its read-only key needs and its default status mapping.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
+    {
+      name: "didit_session_check_import_provider",
+      description:
+        "Read a provider with the customer's read-only key before creating a migration. Nothing is stored. For providers read by record IDs, pass record_ids " +
+        "(the first record ID of the export). The key is secret: never log or repeat it.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          provider: { type: "string", description: "REQUIRED. Provider id from didit_session_list_import_providers." },
+          credentials: { type: "object", additionalProperties: { type: "string" }, description: "REQUIRED. SECRET. The provider's read-only key, named as its credential_fields." },
+          options: { type: "object", description: "Provider options, for example { region }." },
+          record_ids: { type: "array", items: { type: "string" }, description: "For providers read by record IDs: the first record ID of the export." },
+        },
+        required: ["provider", "credentials"],
+      },
+    },
+    {
+      name: "didit_session_manage_import",
+      description:
+        "Act on an import job: start (a dry run that ended READY imports for real, with the status_mapping, face_templates and lawful_basis_confirmed sent now), " +
+        "pause, resume, cancel (what was imported stays; the uploaded file and the key are erased) or retry (runs an ended migration again as a NEW job with a new key " +
+        "in credentials, since the old one was erased; everything already in Didit is skipped).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          import_id: { type: "string", description: "REQUIRED. Import job ID." },
+          action: { type: "string", enum: ["start", "pause", "resume", "cancel", "retry"], description: "REQUIRED." },
+          data: {
+            type: "object",
+            description: "start: { status_mapping, face_templates, lawful_basis_confirmed }. retry: { credentials } (SECRET, never echo it). Other actions take none.",
+          },
+        },
+        required: ["import_id", "action"],
       },
     },
     {
@@ -1674,7 +1839,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_vendor_user_delete",
-      description: "Batch delete users by vendor_data list, or delete all users.",
+      description: "Batch delete users by vendor_data list, or delete all users. Deletion is permanent. If the API answers 409 (in_filed_report: a selected person is in a finalized regulatory report; subject_deletion_in_progress: another request is still deleting one of them), nothing is deleted: repeat the request once that deletion has finished.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1769,7 +1934,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_vendor_business_delete",
-      description: "Batch delete businesses by vendor_data list and/or didit_internal_id list, or delete all businesses.",
+      description: "Batch delete businesses by vendor_data list and/or didit_internal_id list, or delete all businesses. Deletion is permanent. If the API answers 409 (in_filed_report or subject_deletion_in_progress), nothing is deleted: repeat the request once the other deletion has finished.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1908,7 +2073,9 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         "aggregation or actions to a created rule. Prefer mode:'TEST', backtest the exact saved config, then switch " +
         "to ACTIVE only after confirming the hit rate. title is unique among non-deleted rules in the app. " +
         "actions is REQUIRED: every outcome the user named (review, decline, approve, score, case) must appear " +
-        "there; pass [] ONLY when the user explicitly wants a monitor-only rule that does nothing on match.",
+        "there; pass [] ONLY when the user explicitly wants a monitor-only rule that does nothing on match. " +
+        "To change a library (PRESET) rule, send its definition as a copy with metadata.based_on (the library key) " +
+        "and metadata.based_on_rule_uuid.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1935,7 +2102,10 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       name: "didit_transaction_rule_update",
       description:
         "Partially update a transaction-monitoring rule. Send every changed persisted field in this PATCH. PRESET " +
-        "rules only allow mode changes. Before raising impact, backtest the exact candidate config and keep the rule " +
+        "rules only allow mode changes: to change a PRESET rule's conditions, create a CUSTOM copy with " +
+        "didit_transaction_rule_create (the library rule's definition plus metadata.based_on = its library key and " +
+        "metadata.based_on_rule_uuid), then set the library rule's mode to DISABLED so a transaction does not alert " +
+        "twice. Before raising impact, backtest the exact candidate config and keep the rule " +
         "in TEST until the result is acceptable.",
       inputSchema: {
         type: "object" as const,
@@ -2059,24 +2229,23 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     {
       name: "didit_org_get_balance",
       description:
-        "Get current credit balance and auto-refill settings. A `0.00` balance does NOT by itself " +
-        "block verifications, so never answer a \"not enough credits\" report with \"top up\" from this " +
-        "result alone: a workflow whose features are all free-tier (ID verification, passive liveness, " +
-        "face match 1:1, device/IP analysis — 500 free each per month) runs fine on a zero balance. " +
-        "Read the failing workflow with didit_workflow_list first — `is_white_label_enabled: true` adds " +
-        "$0.20/session AND drops the workflow out of the free tier entirely, which is the single most " +
-        "common cause. This result also carries `allow_free_usage` (false = the free tier is off for " +
-        "this organization) and `usage_summary.white_label_sessions`. Only a NEGATIVE balance stops " +
-        "free-tier work; zero does not.",
+        "Get current credit balance and auto-refill settings. Every check is billed from the first one: " +
+        "from 1 Nov 2026 the Free plan carries $10 of monthly credit usable on any feature, paid plans carry " +
+        "their monthly plan credit (Growth $115, Scale $350), and no workflow is free of charge. Never answer " +
+        "a \"not enough credits\" report from this result alone: read the failing workflow with " +
+        "didit_workflow_list first - `is_white_label_enabled: true` adds $0.20/session, which is a common " +
+        "cause of credit running out faster than expected. This result also carries `allow_free_usage` " +
+        "(organizations on negotiated terms keep the monthly free allowance they were sold until renewal; " +
+        "false means that allowance is off for this organization) and `usage_summary.white_label_sessions`.",
       inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
     },
     {
       name: "didit_org_top_up",
-      description: "Create a Stripe checkout session to top up credits. Returns a checkout URL.",
+      description: "Create a Stripe checkout session to top up credits ($50 to $20,000 per top-up). Returns a checkout URL.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          amount_in_dollars: { type: "number", description: "Amount in USD (minimum $50)" },
+          amount_in_dollars: { type: "number", description: "Amount in USD (minimum $50, maximum $20,000 per self-serve top-up)" },
           success_url: { type: "string", description: "Optional redirect after successful payment" },
           cancel_url: { type: "string", description: "Optional redirect if payment is cancelled" },
           confirm: {
@@ -2357,6 +2526,46 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       },
     },
     {
+      name: "didit_verify_account_check",
+      description:
+        "Check that a bank account belongs to the person or company you name, before sending money to it. No session: send the name and the account, read the result. " +
+        "result is match, close_match, no_match or cannot_verify; on a close_match, holder_name is the name the bank holds the account under (when returned); account " +
+        "comes back masked to its last 4 characters. Billed once per check the bank answers at the account's country price, whatever the result (no_match and " +
+        "cannot_verify too); an error is never billed. Every call is a NEW billed check (no idempotency key, no read-back): do not retry blindly and store the response. " +
+        "Errors: 400 names the field and reason (consent required: in countries whose check needs the account holder's explicit consent, ask for it and send " +
+        "consent:true; nothing is billed); 402 top up; 404 country_not_covered or bank_not_covered; 503 the bank could not answer, send again later. " +
+        "Where Bank Verification is not switched on (production at the moment) it answers 404 bank_verification_not_available. A sandbox application calls no bank " +
+        "and charges nothing: the last 4 characters of the IBAN, else the account number, choose the answer (0001 close_match with holder_name, 0002 close_match " +
+        "without, 0003 and 0006 no_match, 0004 cannot_verify, 0005 a 503, 0009 a 400, anything else match).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          country: { type: "string", description: "REQUIRED. The account's country, ISO 3166-1 alpha-3 (for example GBR, NGA)." },
+          account: {
+            type: "object",
+            description:
+              "REQUIRED. The account the way its country writes it: an iban, or an account_number with the bank or branch code the country needs (sort_code, routing_number, " +
+              "transit_institution, bsb, ifsc, bank_code, bic). Mexico takes a clabe and Argentina a cbu_cvu. A business account adds registration_id where the country asks. " +
+              "Spaces, dashes and dots are ignored; a key the country needs and does not get is a 400 that names it.",
+            properties: {
+              iban: { type: "string" }, account_number: { type: "string" }, sort_code: { type: "string" }, routing_number: { type: "string" },
+              transit_institution: { type: "string" }, bsb: { type: "string" }, ifsc: { type: "string" }, bank_code: { type: "string" },
+              bic: { type: "string" }, clabe: { type: "string" }, cbu_cvu: { type: "string" }, registration_id: { type: "string" },
+            },
+          },
+          holder: {
+            type: "object",
+            description: "REQUIRED. The name to check: full_name for a person, or business_name for a company (a business name checks a business account).",
+            properties: { full_name: { type: "string" }, business_name: { type: "string" } },
+          },
+          vendor_data: { type: "string", description: "Your own reference for this check, returned unchanged." },
+          consent: { type: "boolean", description: "true when the account holder explicitly consented to this check. Required where the country's check needs it; only set it after the user states the holder consented." },
+        },
+        required: ["country", "account", "holder"],
+      },
+    },
+    {
       name: "didit_verify_database",
       description: "Validate identity data against national and global authoritative data sources. issuing_state (ISO 3166-1 alpha-3) is required and selects which sources run.",
       inputSchema: {
@@ -2406,7 +2615,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_verify_kyb_select",
-      description: "Resolve a candidate from didit_verify_kyb_search into a full company registry record. kyb_response_id is the per-search candidate handle returned by the search.",
+      description: "Resolve a candidate from didit_verify_kyb_search into a full company registry record. kyb_response_id is the per-search candidate handle returned by the search. A resolved record carries registry_status and verification_status (verified, failed or unknown).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -2526,7 +2735,8 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_verify_phone_send",
-      description: "Send a one-time verification code to a phone number via SMS. Code valid for 5 minutes.",
+      description:
+        "Send a one-time verification code to a phone number. Delivered on WhatsApp by default, falling back to SMS where WhatsApp cannot reach that country or number. The code is valid for 5 minutes. Returns request_id plus status: Success (a new code was sent), Retry (resent while an earlier code for that number is still pending) or Blocked (the number was refused; see reason). Paid from the organization's balance, so a live application really delivers a message, and answers 403 until the organization's first top-up or when the balance is short; a sandbox application mocks the send for free. Repeated sends to one number can answer 429 with code PHONE_RATE_LIMITED. Sends with the application's API key, so the caller's role needs create:sessions (Owner, Admin or Developer; an organization owner or admin with a local didit_account_login token), and an MCP sign-in needs the didit:management scope to read that key.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -2538,13 +2748,14 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_verify_phone_check",
-      description: "Verify the OTP code sent to a phone number. Max 3 attempts per code.",
+      description:
+        "Check the one-time code sent to a phone number and return what Didit knows about that number. Maximum 3 attempts per code, and the code expires 5 minutes after it was sent. Returns status Approved, Failed (with the attempts remaining), Declined, or 'Expired or Not Found' when that number has no code pending. A sandbox application mocks the check and approves any code. Sends with the application's API key, so the caller's role needs create:sessions (Owner, Admin or Developer; an organization owner or admin with a local didit_account_login token), and an MCP sign-in needs the didit:management scope to read that key.",
       inputSchema: {
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
           phone_number: { type: "string" },
-          code: { type: "string", description: "Verification code from SMS" },
+          code: { type: "string", description: "Verification code from the WhatsApp or SMS message" },
         },
         required: ["phone_number", "code"],
       },
@@ -2613,6 +2824,9 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       },
     },
 
+    // ── Investigator (AI case reviewer; decisions need human approval) ──
+    ...INVESTIGATOR_TOOL_DEFS,
+
     // ── Reports (async exports) ─────────────────────────────────────────
     {
       name: "didit_report_list",
@@ -2642,8 +2856,30 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     // ── Audit logs + alerts ─────────────────────────────────────────────
     {
       name: "didit_audit_log_list",
-      description: "List audit-log entries for the application (who changed what).",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, cursor: { type: "string" } } },
+      description:
+        "List the organization's audit log, newest first: who did what in the organization (members, API keys, " +
+        "Didit itself, the Didit assistant and the Investigator). Each entry has actor {type, name, email}, action, " +
+        "description, target {type, id, label} and changes. Decisions the Investigator took on its own are entries " +
+        "with actor_type 'investigator' and changes.investigator {run_id, outcome, recommendation, confidence, policy}. " +
+        "A person's decision on an Investigator report is that member's entry with changes.investigator.outcome " +
+        "'accepted' or 'overridden'. To answer \"who approved session 20458\", pass search='20458' (or target_id=<the " +
+        "record's uuid>) and read the actor of the decision entry.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          application_id: { type: "string", description: "Only this application's entries (application UUID). Omit for the whole organization." },
+          actor_type: { type: "string", enum: ["member", "api_key", "system", "assistant_delegated", "investigator"], description: "Only this kind of actor." },
+          action_category: { type: "string", description: "e.g. sessions, transactions, cases, api-keys, members; comma-separated for several." },
+          target_type: { type: "string", description: "The kind of record acted on, e.g. session, transaction, case." },
+          target_id: { type: "string", description: "The UUID of the record acted on." },
+          search: { type: "string", description: "A session number, event id (evt_...), email, IP, path or record label." },
+          created_at_start: { type: "string", description: "ISO date-time, inclusive." },
+          created_at_end: { type: "string", description: "ISO date-time, inclusive." },
+          page: { type: "integer", minimum: 1, description: "1-based page (default 1)." },
+          page_size: { type: "integer", minimum: 1, maximum: 100, description: "Entries per page (default 25, max 100)." },
+        },
+      },
     },
     {
       name: "didit_alert_list",
@@ -2738,11 +2974,14 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
             type: "array",
             items: { type: "string" },
             description:
-              "ONLY the verification steps the user NAMED, by feature code (OCR, LIVENESS, FACE_MATCH, NFC, " +
+              "The TRUNK: the steps EVERY session runs, by feature code (OCR, LIVENESS, FACE_MATCH, NFC, " +
               "PROOF_OF_ADDRESS, QUESTIONNAIRE, PHONE_VERIFICATION, EMAIL_VERIFICATION, AGE_ESTIMATION, " +
               "IP_ANALYSIS, AML, DATABASE_VALIDATION, DOCUMENT_AI; KYB: KYB_REGISTRY, KYB_DOCUMENTS, " +
-              "KYB_KEY_PEOPLE). NEVER add 'standard' steps uninvited ('only id verification' means OCR and " +
-              "nothing else); the builder itself adds true dependencies and orders the chain.",
+              "KYB_KEY_PEOPLE). ONLY steps the user NAMED: NEVER add 'standard' steps uninvited ('only id " +
+              "verification' means OCR and nothing else); the builder itself adds true dependencies and orders " +
+              "the chain. A step only SOME countries take goes in that branch's features ONLY, never here too " +
+              "('ID verification, then liveness and AML for UAE IDs, otherwise finish' = features [OCR] + " +
+              "branches [{countries: ['UAE'], features: ['LIVENESS', 'AML']}]).",
           },
           countries: {
             type: "object",
@@ -2809,7 +3048,12 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
                   items: { type: "string" },
                   description: "Countries exactly as the user named them (a name or ISO3 code per entry).",
                 },
-                features: { type: "array", items: { type: "string" } },
+                features: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "The steps ONLY these countries take, after the trunk's routing step. Never repeat a trunk step here.",
+                },
               },
               required: ["countries", "features"],
               additionalProperties: false,
@@ -2919,6 +3163,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
           undefined,
         applicationId: argApp || process.env.MCP_DEFAULT_APP || undefined,
         toolName: request.params.name,
+        actorVia: actorViaFromHeaders(extra?.requestInfo?.headers),
       },
       () => auditToolCall({ tool: request.params.name, args: callArgs, authInfo, hosted, permissionCheck }, async () => {
   const { name } = request.params;
@@ -2943,8 +3188,10 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
   // ...but a handful of handlers take the routing ids as EXPLICIT PARAMETERS rather than
   // resolving them from requestContext, and the strip above hands them `undefined`:
   // the auth-service tools build their URL path from the argument (and the reveal tool
-  // deliberately refuses every context/env fallback), and the *_search tools use the ids to
-  // NARROW their fan-out. Re-attach only what the caller actually sent, and only for those.
+  // deliberately refuses every context/env fallback), the *_search tools use the ids to
+  // NARROW their fan-out, and the staff tools either build a URL path from organization_id
+  // (the staff organization read) or filter by it (the staff warnings search and siblings).
+  // Re-attach only what the caller actually sent, and only for those.
   const withRoutingIds = (a?: Record<string, unknown>): Record<string, any> => ({
     ...(a ?? {}),
     ...(argOrg ? { organization_id: argOrg } : {}),
@@ -2994,9 +3241,13 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     // (same shape as the *_search sibling) instead of throwing, so the first call succeeds.
     const aggregate = aggregateFallbackFor(name);
     if (isPrivilegedToolName(name)) {
-      result = await dispatchPrivilegedTool(name, args);
+      // Same re-attachment as the auth-service/*_search branches: the staff organization read builds
+      // its URL path from organization_id, so the stripped args would always be undefined.
+      result = await dispatchPrivilegedTool(name, withRoutingIds(args));
     } else if (isInternalToolName(name)) {
       result = await dispatchInternalTool(name, args);
+    } else if (isInvestigatorToolName(name)) {
+      result = await dispatchInvestigatorTool(name, args);
     } else if (aggregate) {
       // Scope survives the fallback: when the org resolved but the app did not, span only
       // that org's apps rather than every org the caller can reach.
@@ -3070,6 +3321,9 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       case "didit_session_get_decision":
         result = await sessions.getSessionDecision(args!.session_id as string);
         break;
+      case "didit_session_get_location_evidence":
+        result = await sessions.getSessionLocationEvidence(args!.session_id as string);
+        break;
       case "didit_session_update_status": {
         const { session_id, ...data } = args as Record<string, any>;
         result = await sessions.updateSessionStatus(session_id, data);
@@ -3093,6 +3347,18 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         break;
       case "didit_session_generate_pdf":
         result = await sessions.generateSessionPdf(args!.session_id as string);
+        break;
+      case "didit_session_get_signature_evidence":
+        result = await sessions.getSignatureEvidence(args!.session_id as string, args!.node_id as string, args?.signature_id as string | undefined);
+        break;
+      case "didit_session_get_signed_document":
+        result = await sessions.getSignedDocument(args!.session_id as string, args!.node_id as string, args!.document_id as string);
+        break;
+      case "didit_session_get_signature_field_image":
+        result = await sessions.getSignatureFieldImage(args!.session_id as string, args!.node_id as string, args!.field_id as string);
+        break;
+      case "didit_session_validate_signatures":
+        result = await sessions.validateSignatures(args!.session_id as string, args!.node_id as string, args?.signature_id as string | undefined);
         break;
       case "didit_session_list_reviews":
         result = await sessions.listSessionReviews(args!.session_id as string);
@@ -3121,6 +3387,15 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       // Session imports
       case "didit_session_create_import":
         result = await sessions.createImport(args as Record<string, any>);
+        break;
+      case "didit_session_list_import_providers":
+        result = await sessions.listImportProviders();
+        break;
+      case "didit_session_check_import_provider":
+        result = await sessions.checkImportProvider(args as Record<string, any>);
+        break;
+      case "didit_session_manage_import":
+        result = await sessions.manageImport(args!.import_id as string, args!.action, args?.data as Record<string, any> | undefined);
         break;
       case "didit_session_get_import_template":
         result = await sessions.getImportTemplate();
@@ -3443,6 +3718,11 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         );
         break;
       }
+      case "didit_verify_account_check": {
+        const { organization_id: _o, application_id: _a, ...body } = args as Record<string, any>;
+        result = await standalone.accountCheck(body);
+        break;
+      }
       case "didit_verify_database":
         result = await standalone.databaseValidation(args as Record<string, any>);
         break;
@@ -3548,7 +3828,8 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
 
       // Audit logs + alerts
       case "didit_audit_log_list":
-        result = await observability.listAuditLogs(args as Record<string, any>);
+        // application_id is a filter of the organization's audit log, not routing.
+        result = await observability.listAuditLogs(withRoutingIds(args));
         break;
       case "didit_alert_list":
         result = await observability.listAlerts(args as Record<string, any>);

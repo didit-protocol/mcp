@@ -3,7 +3,7 @@ import { configKeys, WORKFLOW_FEATURES } from "../feature-config-schema";
 // Which workflow config key governs a warning, and what it is set to right now. The
 // graph names each node's feature (the contract's own feature name) and carries its
 // config; the contract lists the keys. Nothing here is a hand-kept map from risk to key
-// except THRESHOLD_LEVERS, whose keys the test checks against the contract.
+// except THRESHOLD_LEVERS and ACTION_LEVERS, whose keys the test checks against the contract.
 
 const STOP_TOKENS = new Set([
   "possible",
@@ -54,6 +54,37 @@ export const THRESHOLD_LEVERS: Record<string, string[]> = {
     "document_liveness_portrait_replace_review_threshold",
     "document_liveness_portrait_replace_decline_threshold",
   ],
+};
+
+/** Precise Location warnings name a finding, not their key, and several share one key
+ *  (RESTRICTED, TIMEOUT, SKIPPED… all on `geolocation_unavailable_action`). The backend
+ *  keeps the same map (service-didit-verification geolocation/services/status.py,
+ *  RISK_TO_CONFIG_KEY); every key listed here must exist in the contract. Replayed
+ *  challenges and failed attestations always decline and have no key. */
+export const ACTION_LEVERS: Record<string, string> = {
+  LOCATION_PERMISSION_DENIED: "geolocation_permission_denied_action",
+  LOCATION_RESTRICTED: "geolocation_unavailable_action",
+  LOCATION_UNAVAILABLE: "geolocation_unavailable_action",
+  LOCATION_TIMEOUT: "geolocation_unavailable_action",
+  LOCATION_SKIPPED: "geolocation_unavailable_action",
+  LOCATION_UNSUPPORTED_CLIENT: "geolocation_unavailable_action",
+  LOCATION_LOW_ACCURACY: "geolocation_low_accuracy_action",
+  LOCATION_ACCURACY_UNDETERMINED: "geolocation_low_accuracy_action",
+  LOCATION_STALE_FIX: "geolocation_stale_fix_action",
+  LOCATION_APPROXIMATE_ONLY: "geolocation_approximate_action",
+  LOCATION_MOCK_PROVIDER_DETECTED: "geolocation_mock_location_action",
+  LOCATION_SIMULATED_BY_SOFTWARE: "geolocation_mock_location_action",
+  LOCATION_OUTSIDE_GEOFENCE: "geolocation_geofencing_action",
+  LOCATION_GEOFENCE_UNDETERMINED: "geolocation_geofence_undetermined_action",
+  LOCATION_IP_DISTANCE_MISMATCH: "geolocation_ip_distance_action",
+  LOCATION_DOCUMENT_DISTANCE_MISMATCH: "geolocation_document_distance_action",
+  LOCATION_INTEGRITY_MISSING: "geolocation_integrity_missing_action",
+  LOCATION_IN_BLOCKED_AREA: "geolocation_blocked_area_action",
+  LOCATION_VPN_DETECTED: "geolocation_vpn_action",
+  LOCATION_PROXY_DETECTED: "geolocation_proxy_action",
+  LOCATION_TOR_DETECTED: "geolocation_tor_action",
+  LOCATION_EMULATOR_DETECTED: "geolocation_emulator_action",
+  LOCATION_CONSECUTIVE_MISMATCHES: "geolocation_consecutive_mismatch_action",
 };
 
 export type Node =
@@ -156,13 +187,16 @@ export function leverFor(risk: string, node: Node): Lever {
   const thresholds = (THRESHOLD_LEVERS[risk] ?? []).filter((key) =>
     known.has(key),
   );
+  const action = [ACTION_LEVERS[risk]].filter((key) => known.has(key));
   const found = thresholds.length
     ? { keys: thresholds, kind: "threshold" as const, match: "exact" as const }
-    : {
-        keys: actionKeyByName(risk, node),
-        kind: "action" as const,
-        match: "by-name" as const,
-      };
+    : action.length
+      ? { keys: action, kind: "action" as const, match: "exact" as const }
+      : {
+          keys: actionKeyByName(risk, node),
+          kind: "action" as const,
+          match: "by-name" as const,
+        };
 
   return found.keys.length
     ? { ...found, current: currentValues(found.keys, node) }

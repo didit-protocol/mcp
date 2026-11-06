@@ -5,7 +5,8 @@ import { assertBoolean, DiditError } from "../security";
 // (GET) returns balance + auto-refill config; POST initiates a top-up checkout.
 
 const TOP_UP_MINIMUM = 50;
-const TOP_UP_MAXIMUM = 1_000_000;
+// Self-serve ceiling: the API refuses a larger checkout (raised from $10,000 on 5 Nov 2026).
+export const TOP_UP_MAXIMUM = 20_000;
 
 export async function getBalance(organizationId?: string): Promise<any> {
   return apiRequest(orgPath("/top-up/", { organizationId }));

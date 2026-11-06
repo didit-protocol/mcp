@@ -1,4 +1,5 @@
 import { apiRequest, buildFormData, orgAppPath } from "../config";
+import { applicationApiKeyHeaders } from "../app-api-key";
 import { assertSafeWebhookUrl, requireFileSource } from "../security";
 import type { FileSource } from "../security";
 
@@ -6,6 +7,7 @@ import type { FileSource } from "../security";
 // /organization/{org}/application/{app}/apis/<check>/  (mirrors the console "manual checks"
 // feature). This lets these run with the user's OAuth Bearer + role permissions — no
 // app api-key. org/app resolve from the tool args via the request context (orgAppPath).
+// The phone OTP pair is the one exception: see the note above phoneSend.
 //
 // Every image input is a FileSource: a local absolute *_path (stdio/local runs) or
 // inline *_base64 content (hosted runs — e.g. Didit Copilot chat attachments).
@@ -28,6 +30,14 @@ export async function poaVerification(
 ): Promise<any> {
   const form = buildFormData({ document: requireFileSource(documentImage, "document_image") }, options);
   return apiRequest(orgAppPath("/apis/poa/"), { method: "POST", form });
+}
+
+/**
+ * `POST /bank/account-check/` is a public product API: only an application x-api-key is accepted, and the
+ * console proxy has no route for it, so it reads the key like the phone OTP pair (see app-api-key.ts).
+ */
+export async function accountCheck(data: Record<string, any>): Promise<any> {
+  return apiRequest("/bank/account-check/", { method: "POST", json: data, headers: await applicationApiKeyHeaders() });
 }
 
 export async function databaseValidation(data: Record<string, any>): Promise<any> {
@@ -87,10 +97,16 @@ export async function emailCheck(data: Record<string, any>): Promise<any> {
   return apiRequest(orgAppPath("/apis/email/check/"), { method: "POST", json: data });
 }
 
+// Phone OTP is the exception to the proxy rule above: the console registers no
+// …/apis/phone/send/ or …/apis/phone/check/ proxy (both 404), so these two call the
+// public product APIs directly - {DIDIT_API_BASE_URL}/phone/send/ and /phone/check/
+// (service-didit-verification apis/urls.py:24-25, mounted under the /v2/ and /v3/
+// API-key prefixes by core/urls.py:127,178). Those views accept an application
+// x-api-key and refuse a user Bearer; app-api-key.ts resolves the key and explains why.
 export async function phoneSend(data: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath("/apis/phone/send/"), { method: "POST", json: data });
+  return apiRequest("/phone/send/", { method: "POST", json: data, headers: await applicationApiKeyHeaders() });
 }
 
 export async function phoneCheck(data: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath("/apis/phone/check/"), { method: "POST", json: data });
+  return apiRequest("/phone/check/", { method: "POST", json: data, headers: await applicationApiKeyHeaders() });
 }

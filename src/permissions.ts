@@ -15,6 +15,7 @@
 // and everything that is not org/app-scoped. Unknown tools are never checked either.
 import { DiditError } from "./security";
 import { INTERNAL_TOOL_PERMISSIONS } from "./internal-tools";
+import { INVESTIGATOR_TOOL_PERMISSIONS } from "./tools/investigator";
 
 export type PermissionMode = "shadow" | "enforce" | "off";
 
@@ -47,7 +48,7 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_alert_configure: "write:applications", // PATCH …/alerts/{type}/ → alerts.py:42
   didit_alert_list: "read:applications", // GET …/alerts/ → alerts.py:62
   didit_analytics: "read:analytics", // GET …/analytics/ → analytics.py:196
-  didit_audit_log_list: null, // GET …/audit-logs/ — app-scoped route does not exist as coded (real one: /audit/{org}/audit-logs/, read:audit-logs)
+  didit_audit_log_list: "read:audit-logs", // GET /audit/{org}/audit-logs/ → audit/views/audit_log.py:292
   // ── Blocklist / allowlist ──
   didit_allowlist_add: "write:blocklist", // POST …/allowlist/add/ → allowlist.py:33
   didit_blocklist_add: "write:blocklist", // POST …/blocklist/add/ → blocklist.py:47
@@ -92,7 +93,15 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_session_create_import: null, // POST /session/imports/ → imports.py:77 — no decorator
   didit_session_delete: "delete:sessions", // DELETE /session/{id}/delete/ → session.py:1406
   didit_session_generate_pdf: "read:sessions", // GET /session/{id}/generate-pdf/ → pdf.py:86
+  didit_session_get_signature_evidence: "read:sessions", // GET /session/{id}/signatures/{node}/evidence/ → signatures/downloads.py:78
+  didit_session_get_signature_field_image: "read:sessions", // GET …/signatures/{node}/fields/{field}/image/ → same view
+  didit_session_get_signed_document: "read:sessions", // GET …/signatures/{node}/documents/{doc}/file/ → same view
+  didit_session_validate_signatures: "write:sessions", // POST …/signatures/{node}/validate/ → signatures/downloads.py:99
+  didit_session_list_import_providers: null, // GET /session/imports/providers/ → import_jobs.py:99 — no decorator
+  didit_session_check_import_provider: null, // POST /session/imports/providers/check/ → import_jobs.py:120 — no decorator
+  didit_session_manage_import: null, // POST /session/imports/{id}/{start|pause|resume|cancel|retry}/ → import_jobs.py — no decorator
   didit_session_get_decision: "read:sessions", // GET /session/{id}/decision/ → session.py:536
+  didit_session_get_location_evidence: "read:sessions", // GET /geolocation/sessions/{id}/evidence/ → geolocation/views/console.py:53
   didit_session_get_import: null, // GET /session/imports/{id}/ → imports.py:170 — no decorator
   didit_session_get_import_errors: null, // GET /session/imports/{id}/errors/ → imports.py:182 — no decorator
   didit_session_get_import_template: null, // GET /session/imports/template/ → imports.py:197 — no decorator
@@ -139,8 +148,12 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_vendor_user_update: "write:users", // PATCH …/vendor-users/{vendor_data}/update/ → vendor_user.py:1098
   didit_vendor_user_update_status: "write:users", // POST …/vendor-users/bulk-status/ → vendor_user.py:1169
   // ── Standalone verification APIs (proxy.py:36 gates every …/apis/* POST on create:sessions) ──
+  // The phone OTP pair does not go through that proxy (it registers no phone/send or
+  // phone/check route): it calls the public APIs with the application api-key, which the
+  // console application read only shows to a role holding create:sessions (app-api-key.ts).
   didit_verify_age: "create:sessions",
   didit_verify_aml: "create:sessions",
+  didit_verify_account_check: "create:sessions", // POST /bank/account-check/ (api-key) after the same application read as the phone pair
   didit_verify_database: "create:sessions",
   didit_verify_email_check: null, // …/apis/email/check/ — route does not exist as coded (only /apis/email-risk/)
   didit_verify_email_send: null, // …/apis/email/send/ — route does not exist as coded
@@ -150,8 +163,8 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_verify_kyb_search: "create:sessions",
   didit_verify_kyb_select: "create:sessions",
   didit_verify_passive_liveness: "create:sessions",
-  didit_verify_phone_check: null, // …/apis/phone/check/ — route does not exist as coded
-  didit_verify_phone_send: null, // …/apis/phone/send/ — route does not exist as coded
+  didit_verify_phone_check: "create:sessions", // POST /phone/check/ (api-key) after GET auth /organizations/{org}/applications/{app} → serializers/applications.py:100 blanks the key without it
+  didit_verify_phone_send: "create:sessions", // POST /phone/send/ (api-key) after the same application read
   didit_verify_poa: "create:sessions",
   // ── Webhooks (delete reuses write) ──
   didit_webhook_create: "write:webhooks", // POST …/webhook/destinations/ → webhook_destinations.py:112
@@ -179,6 +192,8 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_workflow_update: "write:workflows", // PATCH …/verification-settings/{uuid}/ → verification_settings.py:219
   didit_workflow_validate_graph: "read:workflows", // POST …/workflow-graph/validate/ → workflow_graph.py:142
   // Internal-only families (compliance, travel rule, marketplace, networks, SDK token): empty in the public build.
+  // ── Investigator (/v3/investigator/*): see tools/investigator.ts ──
+  ...INVESTIGATOR_TOOL_PERMISSIONS,
   ...INTERNAL_TOOL_PERMISSIONS,
 };
 

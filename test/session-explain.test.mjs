@@ -4,7 +4,10 @@ import {
   buildDecisionTrace,
   explainSessionDecision,
 } from "../dist/tools/session-explain.js";
-import { THRESHOLD_LEVERS } from "../dist/tools/session-explain-levers.js";
+import {
+  ACTION_LEVERS,
+  THRESHOLD_LEVERS,
+} from "../dist/tools/session-explain-levers.js";
 import { allConfigKeys } from "../dist/feature-config-schema.js";
 import { requestContext } from "../dist/config.js";
 import { TOOL_PERMISSIONS } from "../dist/permissions.js";
@@ -440,6 +443,124 @@ test("every threshold lever names a key that exists in the feature-config contra
   );
 
   assert.deepEqual(missing, []);
+});
+
+test("every action lever names a GEOLOCATION key that exists in the feature-config contract", () => {
+  const known = new Set(allConfigKeys());
+  const missing = Object.entries(ACTION_LEVERS)
+    .filter(([, key]) => !known.has(`GEOLOCATION.${key}`))
+    .map(([risk, key]) => `${risk} → ${key}`);
+
+  assert.deepEqual(missing, []);
+});
+
+// A Precise Location result the way the decision payload shapes it (geolocation_checks):
+// the device's coordinates sit next to the warnings and must never reach the trace.
+const locationDecision = (warnings) =>
+  decision({
+    status: "Declined",
+    features: ["GEOLOCATION"],
+    liveness_checks: [],
+    id_verifications: [],
+    geolocation_checks: [
+      {
+        node_id: "location-1",
+        status: "Declined",
+        outcome: "GRANTED",
+        latitude: 40.416775,
+        longitude: -3.70379,
+        city: "Madrid",
+        anonymizers: ["VPN"],
+        warnings,
+      },
+    ],
+  });
+
+const locationGraph = {
+  start_node: "location-1",
+  nodes: {
+    "location-1": {
+      node_type: "feature",
+      feature: "GEOLOCATION",
+      config: {
+        geolocation_vpn_action: "DECLINE",
+        geolocation_unavailable_action: "REVIEW",
+      },
+    },
+  },
+};
+
+test("Precise Location warnings resolve to the backend's own config key, shared keys included, with the node's current value", () => {
+  const trace = buildDecisionTrace(
+    locationDecision([
+      warning("GEOLOCATION", "LOCATION_VPN_DETECTED", "error"),
+      warning("GEOLOCATION", "LOCATION_RESTRICTED", "warning"),
+      warning("GEOLOCATION", "LOCATION_REPLAY_DETECTED", "error"),
+    ]),
+    locationGraph,
+  );
+  const location = trace.features.find((f) => f.feature === "GEOLOCATION");
+  const [vpn, restricted, replay] = location.causes;
+
+  assert.equal(trace.decided_by, "GEOLOCATION");
+  assert.deepEqual(vpn.lever, {
+    keys: ["geolocation_vpn_action"],
+    kind: "action",
+    match: "exact",
+    current: { geolocation_vpn_action: "DECLINE" },
+  });
+  assert.deepEqual(restricted.lever, {
+    keys: ["geolocation_unavailable_action"],
+    kind: "action",
+    match: "exact",
+    current: { geolocation_unavailable_action: "REVIEW" },
+  });
+  // A replayed challenge always declines: no key governs it and none is invented.
+  assert.equal(replay.lever, null);
+  assert.doesNotMatch(
+    JSON.stringify(trace),
+    /40\.41|-3\.70|Madrid|anonymizers/,
+  );
+});
+
+test("without the graph a Precise Location warning still names its key, with no current value", () => {
+  const trace = buildDecisionTrace(
+    locationDecision([
+      warning("GEOLOCATION", "LOCATION_OUTSIDE_GEOFENCE", "error"),
+    ]),
+    null,
+  );
+  const [outside] = trace.features.find(
+    (f) => f.feature === "GEOLOCATION",
+  ).causes;
+
+  assert.deepEqual(outside.lever, {
+    keys: ["geolocation_geofencing_action"],
+    kind: "action",
+    match: "exact",
+    current: {},
+  });
+});
+
+test("a Location warning on a node of another feature names no key: the map only applies inside GEOLOCATION", () => {
+  const trace = buildDecisionTrace(
+    decision({
+      status: "In Review",
+      liveness_checks: [
+        {
+          status: "In Review",
+          node_id: "liveness-1",
+          warnings: [warning("LIVENESS", "LOCATION_VPN_DETECTED", "warning")],
+        },
+      ],
+    }),
+    graph,
+  );
+
+  assert.equal(
+    trace.features.find((f) => f.feature === "LIVENESS").causes[0].lever,
+    null,
+  );
 });
 
 const json = (body, status = 200) =>

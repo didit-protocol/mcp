@@ -54,3 +54,32 @@ test("getBalance: no explicit id and no context org still throws the actionable 
   assert.match(err.message, /organization_id is required/);
   assert.match(err.message, /didit_context_get/);
 });
+
+// The self-serve top-up ceiling is $20,000 (sdv #2841). A larger amount is refused before any
+// request is made, and the tool schema advertises the same ceiling.
+import { topUp, TOP_UP_MAXIMUM } from "../dist/tools/billing.js";
+
+test("topUp: $20,000 is the ceiling, enforced before any checkout is created", async () => {
+  assert.equal(TOP_UP_MAXIMUM, 20_000);
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    return json({ checkout_url: "https://checkout.example/x" });
+  };
+  const err = await inContext({ accessToken: "tok", organizationId: "org-1" }, () => topUp(20_001, true)).then(
+    () => null,
+    (e) => e,
+  );
+  assert.ok(err, "expected a refusal above the ceiling");
+  assert.match(err.message, /maximum of \$20000/);
+  assert.equal(called, false);
+});
+
+test("topUp: exactly $20,000 reaches the API", async () => {
+  globalThis.fetch = async (url, init) => {
+    assert.equal(JSON.parse(init.body).amount_in_dollars, 20_000);
+    return json({ checkout_url: "https://checkout.example/x" });
+  };
+  const res = await inContext({ accessToken: "tok", organizationId: "org-1" }, () => topUp(20_000, true));
+  assert.equal(res.requires_human_approval, true);
+});

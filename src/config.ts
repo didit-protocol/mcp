@@ -48,6 +48,16 @@ export const MCP_OAUTH_INTROSPECT_URL =
   process.env.MCP_OAUTH_INTROSPECT_URL || "https://apx.didit.me/auth/v2/introspect/";
 // Optional: for single-org MCP deployments, the org to scope introspection to.
 export const MCP_DEFAULT_ORG = process.env.MCP_DEFAULT_ORG || "";
+// How long an accepted token is remembered before it is introspected again (auth/cached-verifier.ts).
+// Every MCP request is its own authenticated POST; 0 introspects every one of them.
+// A mistyped or negative value falls back to the default rather than turning the cache off.
+export const MCP_INTROSPECTION_CACHE_TTL_MS = nonNegativeMs(process.env.MCP_INTROSPECTION_CACHE_TTL_MS, 60_000);
+
+function nonNegativeMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
 // "Mixed auth" (MCP 2026-07-28 + RFC 9728): serve the PROTOCOL-NEGOTIATION surface without a
 // Bearer, and keep every tool behind OAuth exactly as before. `initialize`, its notification,
 // and `server/discover` return only the server name, version, capabilities and supported
@@ -100,7 +110,8 @@ export const MCP_SCOPES_SUPPORTED = (
  * so every tool authenticates as that user WITHOUT any tool-signature change. In stdio
  * mode the same Bearer is supplied via the DIDIT_ACCESS_TOKEN env var. There is NO
  * API-key mode — every tool targets the user-scoped console endpoints, which only
- * authorize a Bearer token (an x-api-key is rejected).
+ * authorize a Bearer token (an x-api-key is rejected). The phone OTP pair is the one
+ * exception: it reads the application's key with that Bearer (app-api-key.ts).
  */
 export interface RequestCredentials {
   accessToken?: string;
@@ -108,6 +119,9 @@ export interface RequestCredentials {
   applicationId?: string;
   /** Tool being dispatched — sent as User-Agent so the backend audit log attributes the request. */
   toolName?: string;
+  /** Where the user acted from, sent to the Investigator as X-Didit-Actor-Via: "copilot" when the
+   *  console assistant said so on the MCP request, otherwise "mcp". */
+  actorVia?: "copilot" | "mcp";
 }
 export const requestContext = new AsyncLocalStorage<RequestCredentials>();
 
@@ -168,6 +182,7 @@ export function orgPath(resource: string, opts: { organizationId?: string } = {}
  * Auth headers for the Didit APIs. The MCP always authenticates as a Didit user via a
  * Bearer access token (from the OAuth flow in hosted mode, or DIDIT_ACCESS_TOKEN in stdio
  * mode). There is no API-key path — the user-scoped console endpoints reject x-api-key.
+ * Only the phone OTP pair passes its own x-api-key headers (app-api-key.ts).
  */
 function authHeaders(): Record<string, string> {
   const ctx = requestContext.getStore();
@@ -210,9 +225,15 @@ export function getAuthHeaders(accessToken: string): Record<string, string> {
   };
 }
 
+/** Binary bodies apiRequest returns as bytes: the content type and file signature both have to match. */
+const BINARY_RESPONSES = {
+  pdf: { contentType: "application/pdf", magic: Buffer.from("%PDF-", "ascii"), label: "PDF report" },
+  png: { contentType: "image/png", magic: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), label: "PNG image" },
+} as const;
+
 export interface ApiRequestOptions {
-  /** Preserve the original PDF bytes instead of decoding them as text. */
-  responseType?: "pdf";
+  /** Preserve the original file bytes (PDF or PNG) instead of decoding them as text. */
+  responseType?: "pdf" | "png";
   method?: string;
   /** JSON request body. */
   json?: any;
@@ -244,7 +265,7 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
 
   const resolvedHeaders = headers ?? (form ? getMultipartHeaders() : getHeaders());
   const init: RequestInit = { method, headers: { "User-Agent": userAgent(), ...resolvedHeaders } };
-  if (opts.responseType === "pdf") {
+  if (opts.responseType) {
     init.redirect = "error";
     init.signal = AbortSignal.timeout(60000);
   }
@@ -256,13 +277,14 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
 
   const res = await fetch(url.toString(), init);
 
-  if (res.ok && opts.responseType === "pdf") {
-    if (res.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/pdf") {
-      throw new Error("Didit did not return a PDF report.");
+  if (res.ok && opts.responseType) {
+    const binary = BINARY_RESPONSES[opts.responseType];
+    if (res.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== binary.contentType) {
+      throw new Error(`Didit did not return a ${binary.label}.`);
     }
     const bytes = Buffer.from(await res.arrayBuffer());
-    if (bytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
-      throw new Error("Didit returned an invalid PDF report.");
+    if (!bytes.subarray(0, binary.magic.length).equals(binary.magic)) {
+      throw new Error(`Didit returned an invalid ${binary.label}.`);
     }
     return bytes;
   }

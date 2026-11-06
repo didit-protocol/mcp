@@ -1,6 +1,6 @@
 # Tools
 
-Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **138 tools**, grouped by domain.
+Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **164 tools**, grouped by domain.
 For the categorized reference with read/write/destructive markers, see
 https://docs.didit.me/integration/mcp/tools.
 
@@ -52,6 +52,26 @@ https://docs.didit.me/integration/mcp/tools.
 
 - `didit_context_get`
 
+## investigator
+
+- `didit_investigator_accept`
+- `didit_investigator_activity_list`
+- `didit_investigator_add_note`
+- `didit_investigator_backtest_get`
+- `didit_investigator_backtest_start`
+- `didit_investigator_batch_accept`
+- `didit_investigator_dashboard_get`
+- `didit_investigator_override`
+- `didit_investigator_performance_get`
+- `didit_investigator_question_answer`
+- `didit_investigator_question_dismiss`
+- `didit_investigator_question_get`
+- `didit_investigator_question_list`
+- `didit_investigator_queue_list`
+- `didit_investigator_record_get`
+- `didit_investigator_report_get`
+- `didit_investigator_rereview`
+
 ## lists
 
 - `didit_lists_create`
@@ -99,6 +119,7 @@ https://docs.didit.me/integration/mcp/tools.
 
 - `didit_session_add_review`
 - `didit_session_batch_delete`
+- `didit_session_check_import_provider`
 - `didit_session_create`
 - `didit_session_create_import`
 - `didit_session_delete`
@@ -108,14 +129,21 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_session_get_import`
 - `didit_session_get_import_errors`
 - `didit_session_get_import_template`
+- `didit_session_get_location_evidence`
+- `didit_session_get_signature_evidence`
+- `didit_session_get_signature_field_image`
+- `didit_session_get_signed_document`
 - `didit_session_import_shared`
 - `didit_session_list`
+- `didit_session_list_import_providers`
 - `didit_session_list_reviews`
+- `didit_session_manage_import`
 - `didit_session_search`
 - `didit_session_share`
 - `didit_session_update_data`
 - `didit_session_update_poa_data`
 - `didit_session_update_status`
+- `didit_session_validate_signatures`
 - `didit_session_webhook_resend`
 - `didit_session_webhooks`
 
@@ -155,6 +183,7 @@ https://docs.didit.me/integration/mcp/tools.
 
 ## verify
 
+- `didit_verify_account_check`
 - `didit_verify_age`
 - `didit_verify_aml`
 - `didit_verify_database`

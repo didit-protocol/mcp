@@ -494,7 +494,7 @@ export function assertSafeWebhookUrl(rawUrl: unknown, field = "url"): string {
 }
 
 // ── Error sanitization (WS-G security) ────────────────────────────────────────
-const SENSITIVE_KEY_RE = /(api[_-]?key|secret|token|password|passwd|pwd|authorization|bearer|refresh[_-]?token|client[_-]?secret|signing[_-]?secret)/i;
+const SENSITIVE_KEY_RE = /(api[_-]?key|credentials?|secret|token|password|passwd|pwd|authorization|bearer|refresh[_-]?token|client[_-]?secret|signing[_-]?secret)/i;
 
 /** Canonical RFC-4122 UUID (8-4-4-4-12 hex). A legitimate resource id. */
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
@@ -629,7 +629,7 @@ export function statusToCode(status: number): string {
 export function statusToHint(status: number, body: any): string | undefined {
   switch (status) {
     case 402:
-      return "Insufficient balance. Use didit_top_up to add credits (minimum $50), then retry.";
+      return "Insufficient balance. Use didit_org_top_up to add credits ($50 to $20,000), then retry.";
     case 404:
       return "The referenced id was not found. List the parent collection first (e.g. didit_list_sessions / didit_list_workflows) to get a valid id.";
     case 422:

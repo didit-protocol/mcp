@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import express from "express";
 import { downloadSessionPdf, SESSION_PDF_DOWNLOAD_PATH } from "./session-pdf-download";
+import { downloadSessionSignatureFile, SESSION_SIGNATURE_DOWNLOAD_PATH } from "./signature-download";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   mcpAuthMetadataRouter,
@@ -11,13 +12,16 @@ import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 import { createServer } from "./index";
 import { modernGate, isModernRequest, handleModernRpc } from "./mcp-modern";
-import { mountDomainChallenge, mountProfileEndpoint, type CatalogProfile } from "./chatgpt-app";
+import { mountDomainChallenge, mountProfileEndpoint, mountWidgetFonts, type CatalogProfile } from "./chatgpt-app";
+import { mountInvestigatorAgentEndpoint } from "./investigator-agent";
 import { DiditTokenVerifier } from "./auth/verifier";
 import { IntrospectionTokenVerifier } from "./auth/introspection-verifier";
+import { CachingTokenVerifier } from "./auth/cached-verifier";
 import {MCP_PORT,
   MCP_RESOURCE_URI,
   MCP_SCOPES_SUPPORTED,
   MCP_TOKEN_VERIFY_MODE,
+  MCP_INTROSPECTION_CACHE_TTL_MS,
   DIDIT_AUTH_ISSUER,
   DIDIT_OIDC_DISCOVERY_URL,
   DIDIT_OIDC_AUTHORIZE_URL,
@@ -74,6 +78,7 @@ export async function createHttpApp(): Promise<express.Express> {
   const app = express();
   // This narrowly scoped capability URL authenticates itself; no MCP Bearer required.
   app.get(SESSION_PDF_DOWNLOAD_PATH, downloadSessionPdf);
+  app.get(SESSION_SIGNATURE_DOWNLOAD_PATH, downloadSessionSignatureFile);
   // Base64 file inputs (*_base64 tool params, 15MB decoded cap + ~33% base64
   // overhead) must fit in the JSON-RPC body. Overridable per environment.
   app.use(express.json({ limit: process.env.MCP_JSON_BODY_LIMIT || "25mb" }));
@@ -100,6 +105,9 @@ export async function createHttpApp(): Promise<express.Express> {
   });
 
   mountDomainChallenge(app);
+  mountWidgetFonts(app);
+  // The Investigator's remote engine: authenticated by a run token the backend verifies, not by OAuth.
+  mountInvestigatorAgentEndpoint(app);
 
   const resourceServerUrl = new URL(MCP_RESOURCE_URI);
   const oauthMetadata = await resolveAuthorizationServerMetadata();
@@ -139,8 +147,12 @@ export async function createHttpApp(): Promise<express.Express> {
   // for unauthenticated calls, and populates req.auth on success.
   // Default to introspection: the auth service's OIDC flow issues opaque tokens
   // that cannot be validated locally. JWKS is available for JWT-access-token setups.
+  // Introspection is a network call per request, so accepted tokens are remembered briefly
+  // (auth/cached-verifier.ts); JWKS verification is local and needs no cache.
   const verifier =
-    MCP_TOKEN_VERIFY_MODE === "jwks" ? new DiditTokenVerifier() : new IntrospectionTokenVerifier();
+    MCP_TOKEN_VERIFY_MODE === "jwks"
+      ? new DiditTokenVerifier()
+      : new CachingTokenVerifier(new IntrospectionTokenVerifier(), MCP_INTROSPECTION_CACHE_TTL_MS);
   console.error(`[didit-mcp] token verification mode: ${MCP_TOKEN_VERIFY_MODE}`);
   // One endpoint per catalog profile. Each is its own OAuth protected resource, so its 401
   // challenge points at its own metadata URL and the client requests a token for the right
@@ -240,6 +252,37 @@ export async function createHttpApp(): Promise<express.Express> {
     app.get(endpoint.path, methodNotAllowed(endpoint.path));
     app.delete(endpoint.path, methodNotAllowed(endpoint.path));
   }
+
+  // Body-parser failures happen before any MCP route runs, and Express's default handler
+  // answers HTML. An MCP client parses only JSON-RPC, so a malformed or oversized body must
+  // come back in the protocol's own shape (JSON-RPC Parse error / Invalid Request), exactly
+  // like the empty-body case the transport already answers. Anything else falls through.
+  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next(err);
+    if (err?.type === "entity.parse.failed") {
+      res.status(400).json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error: Invalid JSON" } });
+      return;
+    }
+    if (err?.type === "entity.too.large") {
+      res.status(413).json({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "Invalid Request: request body exceeds the configured size limit" },
+      });
+      return;
+    }
+    // Any other body-parser rejection (unsupported charset/encoding) is still the client's
+    // request being invalid, so it keeps the protocol's envelope and status too.
+    if (typeof err?.type === "string" && /^(entity|charset|encoding)\./.test(err.type) && typeof err.status === "number") {
+      res.status(err.status).json({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "Invalid Request: the request body could not be read" },
+      });
+      return;
+    }
+    return next(err);
+  });
 
   return app;
 }

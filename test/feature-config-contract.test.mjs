@@ -148,6 +148,95 @@ test("DATABASE_VALIDATION is documented to the depth DOCUMENT_AI always had", as
   }
 });
 
+test("GEOLOCATION advertises the Location node's keys with their shapes and vocabularies", async () => {
+  // The keys the console's Location node edits (position source, areas, anonymizers,
+  // travel tolerance, presets, refusal path). Pinned by name so a contract refresh
+  // that loses one fails here, not in a customer's workflow.
+  const locationKeys = [
+    "geolocation_areas",
+    "geolocation_blocked_area_action",
+    "geolocation_consecutive_mismatch_action",
+    "geolocation_consecutive_mismatch_count",
+    "geolocation_document_distance_basis",
+    "geolocation_emulator_action",
+    "geolocation_low_accuracy_behavior",
+    "geolocation_position_source",
+    "geolocation_preset",
+    "geolocation_proxy_action",
+    "geolocation_refusal_path",
+    "geolocation_tor_action",
+    "geolocation_travel_max_days",
+    "geolocation_travel_tolerance_enabled",
+    "geolocation_travel_usual_area_km",
+    "geolocation_vpn_action",
+  ];
+  const contractKeys = configKeys("GEOLOCATION");
+  for (const key of locationKeys) {
+    assert.ok(contractKeys.includes(key), `GEOLOCATION has no ${key} in the contract. ${REFRESH}`);
+  }
+
+  const fields = FEATURE_CONFIG_SCHEMA.features.GEOLOCATION.fields;
+  const tools = await listAdvertisedTools();
+  for (const name of FULL_REFERENCE_TOOLS) {
+    const description = tools.find((t) => t.name === name).inputSchema.properties.graph.description;
+    for (const key of locationKeys) {
+      assert.ok(description.includes(key), `${name} never mentions ${key}. ${REFRESH}`);
+    }
+    // The area list's shape, not just its name: an agent needs every `kind` to draw one.
+    assert.ok(description.includes(fields.geolocation_areas.shape), `${name} does not advertise the geolocation_areas shape.`);
+    for (const key of [
+      "geolocation_position_source",
+      "geolocation_refusal_path",
+      "geolocation_low_accuracy_behavior",
+      "geolocation_document_distance_basis",
+      "geolocation_preset",
+    ]) {
+      for (const value of fields[key].enum) {
+        assert.ok(description.includes(`'${value}'`), `${name} does not offer '${value}' for ${key}.`);
+      }
+    }
+  }
+});
+
+test("BANK_VERIFICATION advertises the per-country methods, their order and the account check settings", async () => {
+  // The Bank node offers bank sign-in and the account check per country, in an
+  // order. The step's default order and a country's own `methods` are
+  // both JSON an agent cannot guess, so every tool that carries a config must
+  // show their shapes, not just the key names. The account check's own settings
+  // (BV-BE3) are plain scalars: the contract and the full reference must name them.
+  const methodKeys = [
+    "bank_method_order",
+    "bank_countries",
+    "bank_account_check_accept_close_match",
+    "bank_account_check_max_attempts",
+  ];
+  const contractKeys = configKeys("BANK_VERIFICATION");
+  for (const key of methodKeys) {
+    assert.ok(contractKeys.includes(key), `BANK_VERIFICATION has no ${key} in the contract. ${REFRESH}`);
+  }
+
+  const fields = FEATURE_CONFIG_SCHEMA.features.BANK_VERIFICATION.fields;
+  assert.deepEqual(fields.bank_method_order.items.enum, ["open_banking", "account_lookup"]);
+  assert.ok(fields.bank_countries.shape.includes('"methods"?'), `bank_countries has no per-country methods. ${REFRESH}`);
+  assert.equal(fields.bank_account_check_max_attempts.type, "integer");
+
+  const tools = await listAdvertisedTools();
+  for (const name of CONFIG_CARRYING_TOOLS) {
+    const tool = tools.find((t) => t.name === name);
+    if (!tool) continue; // preview_graph is gated in some catalogs
+    const text = toolText(tool);
+    for (const key of ["bank_method_order", "bank_countries"]) {
+      assert.ok(text.includes(JSON.stringify(fields[key].shape).slice(1, -1)), `${name} does not advertise the ${key} shape.`);
+    }
+  }
+  for (const name of FULL_REFERENCE_TOOLS) {
+    const description = tools.find((t) => t.name === name).inputSchema.properties.graph.description;
+    for (const key of methodKeys) {
+      assert.ok(description.includes(key), `${name} never mentions ${key}. ${REFRESH}`);
+    }
+  }
+});
+
 test("the advertised feature enum comes from the contract, not from a literal", async () => {
   const tools = await listAdvertisedTools();
   const create = tools.find((t) => t.name === "didit_workflow_create");

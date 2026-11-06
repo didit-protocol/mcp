@@ -194,6 +194,103 @@ test("BANK_VERIFICATION: a BYOK provider_key and field sources survive the round
   assert.equal(result.readBack.bank_min_balance, 0);
 });
 
+test("BANK_VERIFICATION: the method order and per-country methods survive the round trip", async () => {
+  // the order is the meaning (the person starts on the first method,
+  // the second is the backup), so a sort or a dedupe on the way out would swap
+  // what the person sees. MEX puts the account check first, ESP offers bank
+  // sign-in only and GBR follows the step's bank_method_order.
+  const config = {
+    provider_key: null,
+    fallback_to_native: false,
+    bank_method_order: ["open_banking", "account_lookup"],
+    bank_countries: {
+      GBR: { enabled: true, institutions: "all" },
+      MEX: { enabled: true, institutions: "all", methods: ["account_lookup", "open_banking"] },
+      ESP: { enabled: true, institutions: "all", methods: ["open_banking"] },
+    },
+    bank_account_check_accept_close_match: false,
+    bank_account_check_max_attempts: 1,
+    bank_max_attempts: 3,
+  };
+  const result = await roundTrip("BANK_VERIFICATION", config, {
+    ocr: { node_type: "feature", feature: "OCR", next: "step" },
+  });
+  assertIdentical(result, "BANK_VERIFICATION per-country methods");
+  // `false` is a real choice (a close match counts as a no match), not "unset".
+  assert.equal(result.readBack.bank_account_check_accept_close_match, false);
+  assert.equal(result.readBack.bank_account_check_max_attempts, 1);
+  assert.deepEqual(result.readBack.bank_countries.MEX.methods, ["account_lookup", "open_banking"]);
+  assert.deepEqual(result.readBack.bank_method_order, ["open_banking", "account_lookup"]);
+});
+
+// ── Precise Location ─────────────────────────────────────────────
+
+test("GEOLOCATION: allowed and blocked areas of every kind survive the round trip", async () => {
+  // One area of each `kind`, both types, a label left out on purpose: the list is
+  // what branch rules name by `id`, so neither its order nor an area may change.
+  const areas = [
+    { id: "spain", label: "Spain", type: "allowed", kind: "country", country: "ESP" },
+    { id: "ceuta-melilla", type: "blocked", kind: "region", country: "ESP", regions: ["ES-CE", "ES-ML"] },
+    {
+      id: "gibraltar-border",
+      label: "Gibraltar border",
+      type: "blocked",
+      kind: "circle",
+      center: { latitude: 36.14, longitude: -5.35 },
+      radius_km: 25,
+    },
+    {
+      id: "madrid-office",
+      label: "Madrid office",
+      type: "allowed",
+      kind: "polygon",
+      points: [
+        { latitude: 40.42, longitude: -3.71 },
+        { latitude: 40.43, longitude: -3.69 },
+        { latitude: 40.41, longitude: -3.68 },
+      ],
+    },
+  ];
+  const config = {
+    geolocation_position_source: "ip_only",
+    is_geolocation_geofencing_enabled: true,
+    geolocation_areas: areas,
+    geolocation_blocked_area_action: "DECLINE",
+    geolocation_geofencing_action: "REVIEW",
+    geolocation_preset: "licensing",
+    geolocation_consecutive_mismatch_count: 2,
+    geolocation_consecutive_mismatch_action: "REVIEW",
+  };
+  const result = await roundTrip("GEOLOCATION", config);
+  assertIdentical(result, "GEOLOCATION areas");
+  assert.deepEqual(result.readBack.geolocation_areas.map((area) => area.id), areas.map((area) => area.id));
+});
+
+test("GEOLOCATION: the device node's anonymizer, accuracy, travel and refusal settings survive", async () => {
+  const config = {
+    geolocation_position_source: "device_and_ip",
+    geolocation_preset: "fraud_screening",
+    geolocation_max_accuracy_radius_m: 500,
+    geolocation_low_accuracy_behavior: "fail",
+    geolocation_vpn_action: "DECLINE",
+    geolocation_proxy_action: "REVIEW",
+    geolocation_tor_action: "DECLINE",
+    geolocation_emulator_action: "NO_ACTION",
+    geolocation_document_distance_km: 50,
+    geolocation_document_distance_basis: "declared",
+    geolocation_document_distance_action: "REVIEW",
+    geolocation_travel_tolerance_enabled: false,
+    geolocation_travel_usual_area_km: 100,
+    geolocation_travel_max_days: 14,
+    geolocation_refusal_path: "end_session",
+    geolocation_permission_denied_action: "REVIEW",
+  };
+  const result = await roundTrip("GEOLOCATION", config);
+  assertIdentical(result, "GEOLOCATION device");
+  // `false` turns travel tolerance off; dropped as falsy it would read as "unset".
+  assert.equal(result.readBack.geolocation_travel_tolerance_enabled, false);
+});
+
 // ── Document AI ─────────────────────────────────────────────────────────────
 
 test("DOCUMENT_AI: multiple documents, every action key and is_full_name survive", async () => {

@@ -34,6 +34,38 @@ function createdAtMs(row: any): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
+/**
+ * A fan-out branch is only skipped when that SCOPE cannot answer: the caller's role has
+ * no access to the resource on that application (403), the application/route does not
+ * exist there (404/405/501), or the backend failed for that application (5xx). Anything
+ * else — a revoked or expired token (401), a filter the backend rejected (400/422), rate
+ * limiting or a network failure — is a real error and must reach the caller. Swallowing
+ * those reported "no sessions" for a revoked token and an empty result for a filter the
+ * backend refused. A search whose every scope failed (not merely some) surfaces the
+ * failure too; see everyLeafFailed below.
+ */
+function isScopeGap(error: unknown): boolean {
+  if (!(error instanceof DiditError)) return false;
+  const status = error.shape.status ?? 0;
+  return status === 403 || status === 404 || status === 405 || status >= 500;
+}
+
+function isDenied(error: unknown): boolean {
+  return error instanceof DiditError && (error.shape.status === 403 || error.shape.code === "forbidden");
+}
+
+/** Every reachable scope refused for permission: an empty success would claim nothing exists. */
+function allDeniedError(attempts: number, firstDenial: DiditError): DiditError {
+  return new DiditError({
+    code: "forbidden",
+    message:
+      `Your role cannot read this resource in any of the ${attempts} application(s) the search reached, ` +
+      `so no result can be shown (the backend said: ${firstDenial.shape.message}).`,
+    hint: "Ask an organization owner or admin to grant the read/list permission for this resource, then retry. This is not an empty result.",
+    status: 403,
+  });
+}
+
 interface SearchArgs {
   organization_id?: string;
   application_id?: string;
@@ -61,9 +93,35 @@ async function aggregateSearch(
   const map = await getOrgAppMap();
   const orgs = map.filter((o) => !organization_id || o.orgId === organization_id);
 
+  // Leaf calls that actually ran, and how many of them a role refused (403). Every scope
+  // refused must not read as "no results" — see allDeniedError.
+  let leafAttempts = 0;
+  let deniedLeaves = 0;
+  let failedLeaves = 0;
+  let firstDenial: DiditError | undefined;
+  let firstFailure: DiditError | undefined;
+  const noteGap = (error: unknown): void => {
+    if (!isScopeGap(error)) throw error;
+    if (isDenied(error)) {
+      deniedLeaves++;
+      firstDenial ??= error as DiditError;
+    } else if (((error as DiditError).shape.status ?? 0) >= 500) {
+      // A 404/405 is that route being absent from this application: empty, not a failure.
+      failedLeaves++;
+      firstFailure ??= error as DiditError;
+    }
+  };
+  /** No row came back and no scope answered: a permission refusal or a failure, never "empty". */
+  const everyLeafFailed = (): DiditError | undefined => {
+    if (leafAttempts === 0 || deniedLeaves + failedLeaves !== leafAttempts) return undefined;
+    if (deniedLeaves === leafAttempts) return firstDenial ? allDeniedError(leafAttempts, firstDenial) : undefined;
+    return firstFailure;
+  };
+
   // Per-app fan-out for one org (fallback path / vendor path), tagging rows with org + app.
   const fanOutOrg = async (o: OrgRef): Promise<any[]> => {
     const appBatches = await mapWithConcurrency(o.apps, FANOUT_CONCURRENCY, async (a) => {
+      leafAttempts++;
       try {
         const page = await runForScope(o.orgId, a.appId, () => listFn({ ...filters, limit }));
         return rowsOf(page).map((r) => ({
@@ -73,7 +131,8 @@ async function aggregateSearch(
           application_id: a.appId,
           application_name: a.appName,
         }));
-      } catch {
+      } catch (error) {
+        noteGap(error);
         return [] as any[];
       }
     });
@@ -95,12 +154,15 @@ async function aggregateSearch(
           organization_name: o.orgName,
           ...r,
         }));
-      } catch {
+      } catch (error) {
+        if (!isScopeGap(error)) throw error; // a revoked token or a bad filter is fatal
         fellBack++;
         return fanOutOrg(o);
       }
     });
     const merged = batches.flat().sort((x, y) => createdAtMs(y) - createdAtMs(x)).slice(0, limit);
+    const fatal = merged.length ? undefined : everyLeafFailed();
+    if (fatal) throw fatal;
     return {
       results: merged,
       returned: merged.length,
@@ -114,6 +176,7 @@ async function aggregateSearch(
   let skipped = 0;
   const pairs = orgs.flatMap((o) => o.apps.map((a) => ({ o, a })));
   const batches = await mapWithConcurrency(pairs, FANOUT_CONCURRENCY, async ({ o, a }) => {
+    leafAttempts++;
     try {
       const page = await runForScope(o.orgId, a.appId, () => listFn({ ...filters, limit }));
       return rowsOf(page).map((r) => ({
@@ -123,12 +186,15 @@ async function aggregateSearch(
         application_id: a.appId,
         application_name: a.appName,
       }));
-    } catch {
+    } catch (error) {
+      noteGap(error);
       skipped++;
       return [] as any[];
     }
   });
   const merged = batches.flat().sort((x, y) => createdAtMs(y) - createdAtMs(x)).slice(0, limit);
+  const fatal = merged.length ? undefined : everyLeafFailed();
+  if (fatal) throw fatal;
   return {
     results: merged,
     returned: merged.length,
@@ -188,7 +254,8 @@ async function probeWorkflowDirect(
             application_name: a.appName,
           }
         : null;
-    } catch {
+    } catch (error) {
+      if (!isScopeGap(error)) throw error; // a revoked token must not read as "not in this app"
       return null; // 404 here just means "not in this app"
     }
   });
@@ -208,7 +275,11 @@ export async function searchWorkflows(args: SearchArgs): Promise<any> {
     o.apps.filter((a) => !application_id || a.appId === application_id).map((a) => ({ o, a })),
   );
   let skipped = 0;
+  let leafAttempts = 0;
+  let deniedLeaves = 0;
+  let firstDenial: DiditError | undefined;
   const batches = await mapWithConcurrency(pairs, FANOUT_CONCURRENCY, async ({ o, a }) => {
+    leafAttempts++;
     try {
       const page = await runForScope(o.orgId, a.appId, () => listWorkflows());
       return rowsOf(page).map((r) => ({
@@ -218,11 +289,18 @@ export async function searchWorkflows(args: SearchArgs): Promise<any> {
         application_id: a.appId,
         application_name: a.appName,
       }));
-    } catch {
+    } catch (error) {
+      if (!isScopeGap(error)) throw error;
+      if (isDenied(error)) {
+        deniedLeaves++;
+        firstDenial ??= error as DiditError;
+      }
       skipped++;
       return [] as any[];
     }
   });
+  // Every application refused this role: say so instead of reporting "no workflows".
+  if (firstDenial && deniedLeaves === leafAttempts) throw allDeniedError(leafAttempts, firstDenial);
   let rows = batches.flat();
   if (workflow_id) rows = rows.filter((r) => workflowMatchesId(r, String(workflow_id)));
   if (search) {

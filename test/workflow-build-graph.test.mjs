@@ -150,3 +150,64 @@ test("validate_graph summarizes big configs on the unsaved-canvas path too", asy
   assert.equal(result.config_summarized, true);
   assert.ok(JSON.stringify(result.graph).length < JSON.stringify(graph).length / 4, "config not summarized");
 });
+
+test("the spec says features is the trunk and a branch step goes in the branch only", async () => {
+  // Staging, 2026-11-04 (customer demo): "ID verification, then liveness with flashing and AML for
+  // UAE IDs, otherwise finish" came back with LIVENESS and AML in `features` AND in the UAE branch,
+  // so every session ran them and the UAE ran them twice. The builder now asks instead; the
+  // description is what lets a model write the right spec the first time.
+  const byName = await listTools();
+  const { properties } = byName.get("didit_workflow_build_graph").inputSchema;
+
+  assert.match(properties.features.description, /TRUNK: the steps EVERY session runs/);
+  assert.match(properties.features.description, /branch's features ONLY, never here too/);
+  assert.match(properties.branches.items.properties.features.description, /ONLY these countries take/);
+});
+
+test("build_graph refuses a check repeated in the trunk and a branch before any request, with the fix", async () => {
+  // The DeepSeek arm's spec for the 2026-11-04 demo prompt: LIVENESS and AML everywhere AND in the UAE branch.
+  const { buildWorkflow } = await import("../dist/tools/compliance.js");
+  const { requestContext } = await import("../dist/config.js");
+  let requested = 0;
+  globalThis.fetch = async () => {
+    requested += 1;
+    return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  await assert.rejects(
+    requestContext.run({ accessToken: "tok-repeat", organizationId: "org-1", applicationId: "app-1" }, () =>
+      buildWorkflow({
+        features: ["OCR", "LIVENESS", "AML"],
+        branches: [{ countries: ["UAE"], features: ["LIVENESS", "AML"] }],
+      }),
+    ),
+    (error) => {
+      assert.match(error.message, /LIVENESS, AML are in features .* again in branches\[0\]\.features/);
+      assert.match(error.shape.hint, /goes in that branch ONLY/);
+      assert.match(error.shape.hint, /do not ask the user/);
+      return true;
+    },
+  );
+  assert.equal(requested, 0, "the repeated spec reached the API");
+});
+
+test("a second document or a branch registry check is not a repeat and reaches the builder", async () => {
+  const { buildWorkflow } = await import("../dist/tools/compliance.js");
+  const { requestContext } = await import("../dist/config.js");
+  let requested = 0;
+  globalThis.fetch = async () => {
+    requested += 1;
+    return new Response(JSON.stringify({ graph: null, questions: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  await requestContext.run({ accessToken: "tok-repeat-ok", organizationId: "org-1", applicationId: "app-1" }, () =>
+    buildWorkflow({
+      features: ["OCR", "DATABASE_VALIDATION"],
+      branches: [{ countries: ["BRA"], features: ["OCR", "DATABASE_VALIDATION"] }],
+    }),
+  );
+  assert.equal(requested, 1);
+});

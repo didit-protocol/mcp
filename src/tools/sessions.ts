@@ -1,6 +1,8 @@
-import { apiRequest, orgAppPath } from "../config";
+import { apiRequest, getHeaders, orgAppPath, resolveApplicationId, resolveOrganizationId } from "../config";
 import { createSessionPdfDownload } from "../session-pdf-download";
+import { createSignatureDownload } from "../signature-download";
 import { pathSegment, assertBoolean, assertSafeWebhookUrl, DiditError, MAX_BATCH_IDS } from "../security";
+import { withoutScope } from "./compliance";
 
 // createSession stays on the wired developer /session/ endpoint (accepts the user Bearer via
 // IsValidUserOrgClient). Session LIST / bulk-delete / reviews are org/app-scoped console
@@ -18,8 +20,69 @@ export async function createSession(data: Record<string, any>): Promise<any> {
   return apiRequest("/session/", { method: "POST", json });
 }
 
+/**
+ * The list's `count` stops at 100 (the backend's bounded COUNT): 100 means "100 or more". Asked
+ * "how many sessions are in review?" on staging (2026-11-04) the console copilot read `count: 100`
+ * off a one-row page and answered 100 while the console's own Needs review tab said 266.
+ */
+export const LIST_COUNT_CAP = 100;
+
+/** The single list view `GET …/sessions/counts/` counts exactly for a `status` filter. */
+const COUNT_VIEW_BY_STATUS: Record<string, string> = {
+  "In Review": "needs_review",
+  Approved: "approved",
+  Declined: "declined",
+};
+/** `…/sessions/counts/` stops at this many; a count equal to it means at least that many. */
+const VIEW_COUNT_CAP = 10_000;
+
 export async function listSessions(params?: Record<string, string>): Promise<any> {
-  return apiRequest(orgAppPath("/sessions/"), { params });
+  const page = await apiRequest(orgAppPath("/sessions/"), { params });
+
+  if (page?.count !== LIST_COUNT_CAP) return page;
+  return { ...page, ...(await exactSessionCount(params)) };
+}
+
+/**
+ * When the list's count hit its cap, the exact total from the console's own tab counts (same
+ * filters, exact up to 10,000), so an agent never reports the cap as the number. A status the
+ * counts cannot express alone, or a counts call that fails (429 busy, 503 timeout), keeps the
+ * honest lower bound instead of failing the list.
+ */
+async function exactSessionCount(params?: Record<string, string>): Promise<Record<string, unknown>> {
+  const { status, limit: _limit, offset: _offset, ...filters } = withoutScope(params);
+  const view = status ? COUNT_VIEW_BY_STATUS[status.trim()] : "all";
+  const lowerBound = {
+    count_is_lower_bound: true,
+    count_note: `count stops at ${LIST_COUNT_CAP}: there are at least ${LIST_COUNT_CAP} matching sessions.`,
+  };
+
+  if (!view) return lowerBound;
+  try {
+    // The console's own tab counts: a flat route scoped by headers, not by the path.
+    const counts = await apiRequest("/sessions/counts/", {
+      params: filters,
+      headers: {
+        ...getHeaders(),
+        "X-Didit-Organization-Id": resolveOrganizationId(params?.organization_id),
+        "X-Didit-Application-Id": resolveApplicationId(params?.application_id),
+      },
+    });
+    const total = counts?.views?.[view];
+
+    if (typeof total !== "number") return lowerBound;
+    return {
+      total_count: total,
+      ...(total >= VIEW_COUNT_CAP
+        ? {
+            count_is_lower_bound: true,
+            count_note: `total_count stops at ${VIEW_COUNT_CAP}: there are at least that many.`,
+          }
+        : {}),
+    };
+  } catch {
+    return lowerBound;
+  }
 }
 
 export async function getSessionDecision(sessionId: string): Promise<any> {
@@ -98,12 +161,43 @@ export async function generateSessionPdf(sessionId: string): Promise<any> {
   return createSessionPdfDownload(sessionId);
 }
 
+// E-signature step files. A signed PDF, an evidence PDF and a field PNG are binary, so each tool returns a
+// short-lived download link (the same capability-link design as the session PDF) and never the bytes.
+export async function getSignatureEvidence(sessionId: string, nodeId: string, signatureId?: string): Promise<any> {
+  return createSignatureDownload({ kind: "evidence", session_id: sessionId, node_id: nodeId, target_id: signatureId });
+}
+
+export async function getSignedDocument(sessionId: string, nodeId: string, documentId: string): Promise<any> {
+  return createSignatureDownload({ kind: "document", session_id: sessionId, node_id: nodeId, target_id: documentId });
+}
+
+export async function getSignatureFieldImage(sessionId: string, nodeId: string, fieldId: string): Promise<any> {
+  return createSignatureDownload({ kind: "field_image", session_id: sessionId, node_id: nodeId, target_id: fieldId });
+}
+
+export async function validateSignatures(sessionId: string, nodeId: string, signatureId?: string): Promise<any> {
+  return apiRequest(`/session/${sid(sessionId)}/signatures/${pathSegment(nodeId, "node_id")}/validate/`, {
+    method: "POST",
+    json: signatureId ? { signature_id: signatureId } : {},
+  });
+}
+
 export async function listSessionReviews(sessionId: string): Promise<any> {
   return apiRequest(orgAppPath(`/sessions/${sid(sessionId)}/reviews/`));
 }
 
 export async function addSessionReview(sessionId: string, data: Record<string, any>): Promise<any> {
   return apiRequest(orgAppPath(`/sessions/${sid(sessionId)}/reviews/`), { method: "POST", json: data });
+}
+
+/** GET /geolocation/sessions/{id}/evidence/: the session page's Location section, node by
+ * node (flat, user Bearer: the session in the path decides the application). Each node's
+ * `map` (the console map's drawing props, which repeat the config's areas) and `map_url` (a
+ * PNG path no tool can fetch) are dropped; everything else is what the reviewer reads. */
+export async function getSessionLocationEvidence(sessionId: string): Promise<any> {
+  const evidence = await apiRequest(`/geolocation/sessions/${sid(sessionId)}/evidence/`);
+  if (!Array.isArray(evidence?.nodes)) return evidence;
+  return { ...evidence, nodes: evidence.nodes.map(({ map, map_url, ...node }: Record<string, any>) => node) };
 }
 
 /** Delivery log of a session's webhooks, compacted for the model: the raw body is
@@ -187,7 +281,70 @@ export async function createImport(data: Record<string, any>): Promise<any> {
   if (typeof json.source_file_url === "string") {
     json.source_file_url = assertSafeWebhookUrl(json.source_file_url, "source_file_url");
   }
-  return apiRequest("/session/imports/", { method: "POST", json });
+  assertProviderCredentials(json);
+  return withoutCredentials(await apiRequest("/session/imports/", { method: "POST", json }));
+}
+
+/**
+ * A provider migration carries the customer's read-only key for the OTHER provider. It goes to Didit
+ * in the request body and nowhere else: the audit log records argument keys and a digest only, the
+ * error redaction drops `credentials` keys, and a response is stripped of the key even though the
+ * API never returns it.
+ */
+function assertProviderCredentials(json: Record<string, any>): void {
+  if (json.source === "provider" && !json.provider) {
+    throw new DiditError({ code: "bad_request", message: "provider is required when source is provider.", field: "provider" });
+  }
+  const credentials = json.credentials;
+  if (credentials === undefined) return;
+  const isStringMap = credentials !== null && typeof credentials === "object" && !Array.isArray(credentials) &&
+    Object.values(credentials).every((value) => typeof value === "string");
+  if (!isStringMap) {
+    throw new DiditError({
+      code: "bad_request",
+      message: "credentials must be an object of string values named as the provider's credential_fields.",
+      field: "credentials",
+      hint: "Call didit_session_list_import_providers for each provider's credential_fields.",
+    });
+  }
+}
+
+function withoutCredentials(body: any): any {
+  if (body && typeof body === "object" && !Array.isArray(body) && "credentials" in body) {
+    const { credentials: _credentials, ...rest } = body;
+    return rest;
+  }
+  return body;
+}
+
+export async function listImportProviders(): Promise<any> {
+  return apiRequest("/session/imports/providers/");
+}
+
+export async function checkImportProvider(data: Record<string, any>): Promise<any> {
+  assertProviderCredentials(data);
+  return withoutCredentials(await apiRequest("/session/imports/providers/check/", { method: "POST", json: data }));
+}
+
+const IMPORT_ACTIONS = ["start", "pause", "resume", "cancel", "retry"] as const;
+
+export async function manageImport(importId: string, action: unknown, data: Record<string, any> = {}): Promise<any> {
+  if (typeof action !== "string" || !(IMPORT_ACTIONS as readonly string[]).includes(action)) {
+    throw new DiditError({
+      code: "bad_request",
+      message: `action must be one of ${IMPORT_ACTIONS.join(", ")}.`,
+      field: "action",
+      allowed: [...IMPORT_ACTIONS],
+    });
+  }
+  assertProviderCredentials(data);
+  const body = action === "start" || action === "retry" ? data : undefined;
+  return withoutCredentials(
+    await apiRequest(`/session/imports/${pathSegment(importId, "import_id")}/${pathSegment(action, "action")}/`, {
+      method: "POST",
+      json: body ?? {},
+    }),
+  );
 }
 
 export async function getImportTemplate(): Promise<any> {

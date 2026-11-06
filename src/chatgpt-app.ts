@@ -64,6 +64,8 @@ export function stdioCatalogProfile(): CatalogProfile {
 
 export function mountDomainChallenge(_app: Express): void {}
 
+export function mountWidgetFonts(_app: Express): void {}
+
 export interface ProfileEndpoint {
   path: string;
   profile: CatalogProfile;

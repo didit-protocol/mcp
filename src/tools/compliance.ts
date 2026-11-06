@@ -71,6 +71,48 @@ function refuseUnknownSpecKeys(spec: Record<string, any>): void {
   });
 }
 
+/**
+ * Steps a country branch may repeat from the trunk, because the branch node does something the
+ * trunk's does not: a document step captures ANOTHER document, a Database Validation queries the
+ * branch countries' own registries. Mirrors service-didit-verification's
+ * `spec_builder.BRANCH_REPEATABLE_FEATURES`; keep the two in sync.
+ */
+const BRANCH_REPEATABLE_FEATURES = new Set(["OCR", "PROOF_OF_ADDRESS", "KYB_DOCUMENTS", "DOCUMENT_AI", "DATABASE_VALIDATION"]);
+
+/**
+ * Staging, 2026-11-04 (customer demo): "ID verification first; if the ID is from the UAE, an
+ * additional active liveness with flashing and AML screening; otherwise finish" came in as
+ * `features: [OCR, LIVENESS, AML]` plus a UAE branch with `[LIVENESS, AML]`. Every session would
+ * run them and the UAE twice. The backend now answers that spec with a question for the user, but
+ * the user's words were never the problem: the spec is the model's, so it is refused here, before
+ * any request, with the fix, the same way an invented key is (refuseUnknownSpecKeys).
+ */
+function refuseRepeatedBranchSteps(spec: Record<string, any>): void {
+  const trunk = new Set<string>((Array.isArray(spec.features) ? spec.features : []).map(String));
+  const branches: any[] = Array.isArray(spec.branches) ? spec.branches : [];
+  const repeats = branches.flatMap((branch, index) =>
+    (Array.isArray(branch?.features) ? branch.features : [])
+      .map(String)
+      .filter((feature: string) => trunk.has(feature) && !BRANCH_REPEATABLE_FEATURES.has(feature))
+      .map((feature: string) => ({ feature, index })),
+  );
+  if (repeats.length === 0) return;
+
+  const steps = [...new Set(repeats.map((repeat) => repeat.feature))];
+  const where = [...new Set(repeats.map((repeat) => `branches[${repeat.index}]`))].join(", ");
+  throw new DiditError({
+    code: "bad_request",
+    message:
+      `${steps.join(", ")} ${steps.length === 1 ? "is" : "are"} in features (the trunk EVERY session runs) and ` +
+      `again in ${where}.features, so ${steps.length === 1 ? "it" : "they"} would run twice for those countries.`,
+    field: "features",
+    hint:
+      "A step runs in ONE place. \"If the ID is from X, also do Y\" means Y goes in that branch ONLY: remove it from " +
+      "features. Keep a step in features only when every session takes it, and then not in a branch. Rewrite the " +
+      "spec and call didit_workflow_build_graph again - do not ask the user.",
+  });
+}
+
 /** Slim by default: the graph itself stays OUT of the model's context (the
  * document catalog alone is ~100KB and stalled the flash arm into reasoning-only
  * steps, 2026-09-02). The model gets a summary + the accepted spec and applies by
@@ -79,6 +121,7 @@ function refuseUnknownSpecKeys(spec: Record<string, any>): void {
 export async function buildWorkflow(data?: Record<string, any>): Promise<any> {
   const { include_graph, ...spec } = withoutScope(data) ?? {};
   refuseUnknownSpecKeys(spec);
+  refuseRepeatedBranchSteps(spec);
   const built = await apiRequest(orgAppPath("/compliance/build-workflow/"), { method: "POST", json: spec });
   if (!built?.graph || include_graph) return { ...built, spec };
   const nodes = Object.values(built.graph.nodes ?? {}) as Array<Record<string, any>>;
