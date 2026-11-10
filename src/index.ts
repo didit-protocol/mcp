@@ -3442,6 +3442,28 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     };
   }
 
+  // Mirror of the tools/list exclusion for the secret-reveal tool: a remote Bearer that is not
+  // staff never has it listed, so it never runs it either, whatever scopes the token carries.
+  // Leaving a tool out of tools/list is not access control; this refusal is (2026-11-10 report:
+  // an openid-only grant called the unlisted reveal tool directly). The money tool has its own
+  // refusal below, with a link the person can pay through.
+  if (
+    authInfo?.token &&
+    !isPrivilegedCaller(authInfo, { hosted }) &&
+    HOSTED_APP_EXCLUDED_TOOLS.has(name) &&
+    name !== MONEY_TOOL
+  ) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Tool '${name}' is not available to a remote connector. Copy the API key from the application's page in the Didit console, or use the local stdio server (npx @didit-protocol/mcp-server).`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
   // Mirror of the tools/list exclusion for the one money tool: a remote connector never creates
   // a payment page itself, even when a client calls the unlisted name. The person pays in the
   // console, through the link didit_org_get_balance returns.

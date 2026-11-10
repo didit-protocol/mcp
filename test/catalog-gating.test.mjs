@@ -96,6 +96,38 @@ test("hosted connector refuses account bootstrap calls outright", async () => {
   });
 });
 
+test("an unlisted secret-reveal tool is refused on call for every non-staff remote Bearer", async () => {
+  // Regression for the 2026-11-10 report: the tool was left out of tools/list but a direct
+  // tools/call still ran it. Refused before any request leaves, whatever the token's scopes.
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    return Response.json({ api_key: "live_secret" });
+  };
+  try {
+    for (const scopes of [[], ["openid"], ["didit:management", "didit:verification"]]) {
+      const authInfo = { token: "remote-bearer", clientId: "c", scopes, extra: { organization_id: "org-1" } };
+      for (const hosted of [true, false]) {
+        await withClient({ hosted, authInfo }, async (c) => {
+          const names = (await c.listTools()).tools.map((t) => t.name);
+          assert.ok(!names.includes("didit_org_reveal_application_api_key"));
+          const res = await c.callTool({
+            name: "didit_org_reveal_application_api_key",
+            arguments: { organization_id: "org-1", application_id: "app-1", confirm: true },
+          });
+          assert.equal(res.isError, true);
+          assert.match(res.content[0].text, /not available to a remote connector/);
+          assert.doesNotMatch(JSON.stringify(res), /live_secret/);
+        });
+      }
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(calls, [], "no request reaches the auth service");
+});
+
 test("hosted staff token keeps the staff surface but still no account tools", { skip: !HAS_STAFF_SURFACE }, async () => {
   const names = await listNames({
     hosted: true,
