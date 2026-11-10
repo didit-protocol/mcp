@@ -1,4 +1,11 @@
 import { DIDIT_AUTH_BASE_URL, apiRequest, getAuthHeaders } from "../config";
+import {
+  DeviceLoginError,
+  PendingDeviceLogin,
+  defaultDeps,
+  pollDeviceLogin,
+  startDeviceLogin,
+} from "../device-login";
 import { redactApplication, redactCollection, pathSegment, DiditError } from "../security";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -13,24 +20,59 @@ export async function register(email: string, password: string): Promise<any> {
 }
 
 export async function verifyEmail(email: string, code: string): Promise<any> {
-  return apiRequest("/programmatic/verify-email/", {
-    method: "POST",
-    baseUrl: DIDIT_AUTH_BASE_URL,
-    headers: JSON_HEADERS,
-    json: { email, code },
-  });
+  try {
+    const res = await apiRequest("/programmatic/verify-email/", {
+      method: "POST",
+      baseUrl: DIDIT_AUTH_BASE_URL,
+      headers: JSON_HEADERS,
+      json: { email, code },
+    });
+    // An account that already has a second factor gets the login's step up instead of tokens (auth #982).
+    return res?.["2fa_required"] ? twoFactorStepUp(res) : res;
+  } catch (error) {
+    const sso = ssoRequiredResult(error);
+    if (sso) return sso;
+    throw error;
+  }
+}
+
+// auth #986: a member of an organization that enforces SSO gets 403 `sso_required` from the password login
+// and from verify-email. No token, API key or application is issued programmatically, so this is a result
+// the agent hands to the person, not a failure to retry.
+function ssoRequiredResult(error: unknown): Record<string, unknown> | undefined {
+  if (!(error instanceof DiditError) || error.shape.status !== 403 || error.shape.backend_code !== "sso_required") {
+    return undefined;
+  }
+  const organization = error.shape.sso_organization;
+  return {
+    sso_required: true,
+    ...(organization?.name ? { organization_name: organization.name } : {}),
+    ...(organization?.slug ? { organization_slug: organization.slug } : {}),
+    next_step:
+      `This account${organization?.name ? ` belongs to the organization '${organization.name}', which` : "'s organization"} ` +
+      "enforces SSO, so no access token or API key is issued here and retrying will not help. Ask the person to sign in " +
+      "to the Didit console (https://business.didit.me) through their organization's SSO in a browser. " +
+      "To use the API afterwards, they create an API key in the console, or approve a code with didit_account_device_login_start.",
+  };
 }
 
 export async function login(email: string, password: string): Promise<any> {
   // Redact any echoed api_key/client_secret; keep access_token/refresh_token (the caller needs them).
-  const res = redactApplication(
-    await apiRequest("/programmatic/login/", {
-      method: "POST",
-      baseUrl: DIDIT_AUTH_BASE_URL,
-      headers: JSON_HEADERS,
-      json: { email, password },
-    }),
-  );
+  let res: any;
+  try {
+    res = redactApplication(
+      await apiRequest("/programmatic/login/", {
+        method: "POST",
+        baseUrl: DIDIT_AUTH_BASE_URL,
+        headers: JSON_HEADERS,
+        json: { email, password },
+      }),
+    );
+  } catch (error) {
+    const sso = ssoRequiredResult(error);
+    if (sso) return sso;
+    throw error;
+  }
   return res?.["2fa_required"] ? twoFactorStepUp(res) : res;
 }
 
@@ -43,8 +85,9 @@ function twoFactorStepUp(res: any): any {
     return {
       ...base,
       next_step:
-        "This account signs in with a passkey, which a local MCP server cannot use. Connect the hosted Didit MCP " +
-        "connector (it signs in through the browser), or add an authenticator app to the account and log in again.",
+        "This account signs in with a passkey, which a password login cannot use. Call didit_account_device_login_start " +
+        "(or run `didit-mcp-server login` in a terminal) to approve a code on any device with a browser, connect the " +
+        "hosted Didit MCP connector, or add an authenticator app to the account and log in again.",
     };
   }
   return {
@@ -132,4 +175,66 @@ export async function revealApplicationApiKey(
     `/organizations/me/${pathSegment(orgId, "organization_id")}/applications/${pathSegment(appId, "application_id")}/`,
     { baseUrl: DIDIT_AUTH_BASE_URL, headers: accessToken ? getAuthHeaders(accessToken) : undefined },
   );
+}
+
+// ── Device-code sign-in (RFC 8628), stdio only ──────────────────────────────
+// The pending device_code stays in this module's memory: the agent only ever sees the user_code
+// and the URLs, never the secret that redeems the grant.
+let pendingDeviceLogin: PendingDeviceLogin | undefined;
+const POLL_WINDOW_MS = 45_000;
+
+const deviceLoginFailure = (err: unknown): never => {
+  if (err instanceof DeviceLoginError) {
+    throw new DiditError({
+      code: err.code === "access_denied" ? "forbidden" : err.code === "temporarily_unavailable" || err.code === "slow_down" ? "rate_limited" : "bad_request",
+      message: err.message,
+      hint:
+        err.code === "access_denied"
+          ? "The person denied the request. Do not retry unless they ask you to."
+          : "Call didit_account_device_login_start to begin a new sign-in.",
+    });
+  }
+  throw err;
+};
+
+export async function deviceLoginStart(): Promise<any> {
+  try {
+    pendingDeviceLogin = await startDeviceLogin(defaultDeps);
+  } catch (err) {
+    return deviceLoginFailure(err);
+  }
+  const p = pendingDeviceLogin;
+  return {
+    verification_uri: p.verification_uri,
+    verification_uri_complete: p.verification_uri_complete,
+    user_code: p.user_code,
+    expires_in: Math.max(0, Math.round((p.expires_at - defaultDeps.now()) / 1000)),
+    next_step:
+      "Show the person the verification_uri and the user_code (or the verification_uri_complete link) and ask them to " +
+      "open it on any device with a browser and approve ONLY if the code on that page matches this user_code. " +
+      "Then call didit_account_device_login_poll.",
+  };
+}
+
+export async function deviceLoginPoll(): Promise<any> {
+  const pending = pendingDeviceLogin;
+  if (!pending) {
+    throw new DiditError({
+      code: "bad_request",
+      message: "No device sign-in is pending.",
+      hint: "Call didit_account_device_login_start first.",
+    });
+  }
+  try {
+    const outcome = await pollDeviceLogin(defaultDeps, pending, { deadline: defaultDeps.now() + POLL_WINDOW_MS });
+    if (outcome.status === "pending") {
+      return { status: "pending", next_step: "The person has not approved yet. Call didit_account_device_login_poll again." };
+    }
+    pendingDeviceLogin = undefined;
+    return { status: "connected", scope: outcome.scope };
+  } catch (err) {
+    // Denied, expired and failed requests are final; a transient outage keeps the pending code.
+    if (!(err instanceof DeviceLoginError) || err.code !== "temporarily_unavailable") pendingDeviceLogin = undefined;
+    return deviceLoginFailure(err);
+  }
 }

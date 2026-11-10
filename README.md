@@ -70,6 +70,36 @@ claude mcp add --transport http didit https://mcp.didit.me/mcp
 
 See [per-client setup](https://docs.didit.me/integration/mcp/installation) for Claude Desktop and VS Code.
 
+### Sign in without a browser (device code)
+
+For the local (stdio) server on a remote machine, in a container or in CI, where no browser can open, sign in with an [OAuth device code](https://www.rfc-editor.org/rfc/rfc8628).
+It also works for accounts that use a passkey or SSO and have no password.
+
+```bash
+npx -y @didit-protocol/mcp-server login
+```
+
+The terminal prints a short code and a link:
+
+```
+To connect this machine to your Didit account, open https://business.didit.me/device and enter the code WDJB-MJHT
+Or open: https://business.didit.me/device?user_code=WDJB-MJHT
+Approve only if the code on the page matches this one.
+```
+
+Open the link on any device with a browser, sign in to Didit, check that the code matches and approve.
+The command then saves your credentials and prints the scopes that were granted (never the token).
+Approve only a code you started yourself.
+
+- Credentials live in `~/.config/didit/mcp-credentials.json` (override with `DIDIT_MCP_CREDENTIALS_FILE`), readable by you only, one entry per Didit environment.
+- The local server uses them automatically when `DIDIT_ACCESS_TOKEN` is not set, and refreshes them before they expire.
+- `npx -y @didit-protocol/mcp-server logout` revokes the grant and deletes the stored credentials.
+- Set `DIDIT_DEVICE_NAME` to change the name shown on the approval page (default: the machine's hostname).
+- In CI, run `login` once on a trusted machine and mount the credentials file as a secret, or set `DIDIT_ACCESS_TOKEN` as before.
+  Do not share one credentials file between jobs that run at the same time, because refresh tokens rotate.
+- No shell? Ask the agent to call `didit_account_device_login_start`, show you the link and code, then `didit_account_device_login_poll` once you approve.
+  Both tools exist only on the local server.
+
 ## Authentication
 
 The MCP is an OAuth 2.1 **resource server**; the Didit console (`business.didit.me`) is the **authorization server**. On first connect your client opens a browser, you **Log in with Didit** and approve the scopes, and the MCP then acts as **you** — across every organization you belong to, with your role's permissions. Tokens are short-lived and refreshed automatically.
@@ -93,6 +123,46 @@ See [Authentication](https://docs.didit.me/integration/mcp/authentication).
 - **Investigator (AI case reviewer):** `didit_investigator_queue_list`, `didit_investigator_report_get` (recommendation, basis, evidence, precedents), `didit_investigator_record_get` (the review of one verification or transaction, open or decided), `didit_investigator_add_note` (a fact the user adds, as a team note the next review reads), questions, the free backtest (`didit_investigator_backtest_start`), performance, dashboard and Activity. Its decisions (`didit_investigator_accept`, `_override`, `_batch_accept`), policy answers (`_question_answer`, `_question_dismiss`) and the re-review that replaces the open report (`_rereview`, optionally with a note) are annotated destructive and refused without `confirm: true`, which a client sends only after the user approves that exact action. Every Investigator call sends `X-Didit-Actor-Via: mcp` (or `copilot` when the console assistant marks its request so), so the Investigator Activity shows where the user acted from.
 - **Compliance:** transaction monitoring, custom and preset rule management with backtesting, lists/blocklist/allowlist, cases, reports, audit logs, alerts.
 - **Workspace:** questionnaires, webhooks, members, billing, branding.
+- **API key for your integration:** `didit_org_create_api_key` creates ONE key per connected app and application, scoped to what the signed-in person can do (never full access or key management), rate-limited and audit-logged.
+  The secret is returned once; the person sees the key with the connected app in the console and can revoke it there.
+- **Billing:** `didit_org_get_balance`, `didit_billing_get_plan`, `didit_billing_quote_plan`, `didit_billing_list_payment_methods`, `didit_billing_list_receipts`, `didit_billing_get_details` and `didit_billing_update_details`.
+  No tool charges a card: when credit or a plan change is needed, the tools return console links (`next_steps.top_up_url` opens the top-up dialog with the amount filled in) and the person pays there.
+  The local stdio server and the unlisted `/mcp/payments` endpoint (below) also offer `didit_org_top_up`.
+
+### Agent payments (`/mcp/payments`, stdio)
+
+The directory-listed connectors (`/mcp` and `/mcp/chatgpt`) never move money: `didit_org_top_up` is not in their catalog and a call to it is refused with the console link.
+`https://mcp.didit.me/mcp/payments` is a separate, unlisted endpoint for coding agents that may top up the organization's saved card once a person turned that on.
+It uses the same OAuth sign-in and tokens as `/mcp` (its own protected-resource metadata is at `/.well-known/oauth-protected-resource/mcp/payments`), serves the full catalog plus `didit_org_top_up`, and is never submitted to a directory.
+The local stdio server offers the same tool.
+
+`didit_org_top_up` parameters:
+
+| Parameter | Description |
+|---|---|
+| `amount_in_dollars` | USD, $50 to $20,000 per top-up. |
+| `confirm` | Required, `true`, only after the person approved this exact action. |
+| `payment_method` | `checkout` (default) creates a Stripe Checkout page for the person to pay. `saved_card` charges the organization's saved primary card off-session, now. |
+| `idempotency_key` | Required for `saved_card` (1 to 255 characters). Choose one unique key per intended top-up and reuse it on any retry of that same top-up: the same key and amount returns the same top-up and never charges twice, another amount is `idempotency_key_conflict`. The server never retries a charge by itself. |
+
+`saved_card` works only when a person turned on "Connected AI agents can top up with your saved card" in the Didit console (Billing > Payment methods; off by default).
+While it is on, the saved primary card is charged off session at the normal self-serve amounts ($50 to $20,000).
+`didit_org_get_balance` shows the switch as `agent_top_up: {enabled}` on `/mcp/payments` and stdio (and nowhere else).
+A successful call returns the backend body (`outcome`, `top_up`).
+A refusal comes back as `Error [<code>]: <detail>` followed by `Next step: {"action", "url", "description"}`, unchanged from the backend, so the agent can hand the person `next_step.url`: a Top up dialog link that says which agent asked and has the amount filled in.
+
+| Code | Meaning | The person |
+|---|---|---|
+| `agent_top_up_not_enabled` | The switch is off (the default). | Tops up in the console, or turns the switch on. |
+| `authentication_required` | The card's bank asks the cardholder to approve; nothing was charged. | Approves it in the console. |
+| `payment_method_required` | No saved card. | Adds a card. |
+| `card_declined` | The card was declined. | Tops up in the console. |
+| `billing_address_required`, `top_up_in_progress`, `payment_provider_error` | See `detail`. | Follows `next_step` (retry with the same key where it says so). |
+
+On the directory-listed endpoints a refused `didit_org_top_up` call includes a signed request link for the requested amount when one can be made (`POST /organization/{org}/billing/top-up-requests/`; it charges nothing).
+`didit_org_top_up` with `checkout` returns the same signed link as `next_steps.console_top_up_url`.
+
+Every request the MCP server sends to the Didit API carries `X-Didit-Agent: mcp`; the backend refuses settings changes (including the agent top-up switch) that carry it, so an agent can never turn it on itself.
 
 ### File inputs
 
@@ -132,7 +202,7 @@ A key that is not listed here is not part of the contract and is dropped silentl
 
 <!-- BEGIN GENERATED FEATURE CONFIG REFERENCE -->
 
-_Generated from `schema/feature-config-schema.json` (contract `sha256:b5ff2371c2a41779d8421cf1333fd50706cb78f9eaa320656b0c30bdb7875226`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
+_Generated from `schema/feature-config-schema.json` (contract `sha256:76c4acb7cff69ae13d13d71e61bb7fa0d6b29f04d834a58558d458cd2806bb02`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
 
 ### AGE_ESTIMATION
 
@@ -678,7 +748,7 @@ Configuration for Questionnaire feature.
 | `signature_evidence_page` | boolean | boolean |  |
 | `signature_format` | string | 'cades'\|'pades'\|'xades' |  |
 | `signature_identity_not_verified_action` | string | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the signer lacks approved identity evidence. |
-| `signature_level` | string | 'aes'\|'qes'\|'simple' | `simple` (default) needs no ID verification, email or phone: the signer types their name (or uses a verified one the session already has) and signs on the session link, with no code. `aes` needs an approved ID verification and a verified email or phone, and confirms with a one-time code. `qes` is not available yet and is refused. `simple` is only valid for `signature_signer: verified_person`. Simple suits low-risk agreements; regulated or high-value contracts should use `aes`. |
+| `signature_level` | string | 'aes'\|'qes'\|'simple' | `simple` (default) needs no ID verification, email or phone: the signer types their name (or uses a verified one the session already has) and signs on the session link, with no code. `aes` needs an approved ID verification and a verified email or phone, and confirms with a one-time code. `qes` (an add-on) needs an approved ID verification with a passport or national ID card and a verified phone (`signature_otp_channel: sms`), documents of at most 5 MB, and is refused while the workflow's `signature_availability.qes` is false; a qualified trust service provider texts the code and issues the signer a qualified certificate. `simple` is only valid for `signature_signer: verified_person`. Simple suits low-risk agreements; regulated or high-value contracts should use `aes` or `qes`. |
 | `signature_link_validity_days` | integer | integer >=1 <=30 |  |
 | `signature_name_mismatch_action` | string | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the verified name does not match the requested signer. |
 | `signature_otp_channel` | string | 'email'\|'sms' |  |

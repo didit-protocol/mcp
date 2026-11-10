@@ -8,6 +8,8 @@ import {
   MCP_OAUTH_CLIENT_SECRET,
   MCP_RESOURCE_URI,
   MCP_DEFAULT_ORG,
+  AGENT_HEADER,
+  AGENT_HEADER_VALUE,
 } from "../config";
 
 /** Attempts at the auth service per verification: one retry for a timeout, a network error, a 429 or a 5xx. */
@@ -42,7 +44,7 @@ export class IntrospectionTokenVerifier implements OAuthTokenVerifier {
       try {
         const res = await fetch(MCP_OAUTH_INTROSPECT_URL, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: this.basic },
+          headers: { "Content-Type": "application/json", Authorization: this.basic, [AGENT_HEADER]: AGENT_HEADER_VALUE },
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(8000),
         });

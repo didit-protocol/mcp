@@ -1,11 +1,13 @@
 # Tools
 
-Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **164 tools**, grouped by domain.
+Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **174 tools**, grouped by domain.
 For the categorized reference with read/write/destructive markers, see
 https://docs.didit.me/integration/mcp/tools.
 
 ## account
 
+- `didit_account_device_login_poll`
+- `didit_account_device_login_start`
 - `didit_account_login`
 - `didit_account_register`
 - `didit_account_resend_otp`
@@ -27,6 +29,15 @@ https://docs.didit.me/integration/mcp/tools.
 ## audit
 
 - `didit_audit_log_list`
+
+## billing
+
+- `didit_billing_get_details`
+- `didit_billing_get_plan`
+- `didit_billing_list_payment_methods`
+- `didit_billing_list_receipts`
+- `didit_billing_quote_plan`
+- `didit_billing_update_details`
 
 ## blocklist
 
@@ -86,6 +97,7 @@ https://docs.didit.me/integration/mcp/tools.
 
 ## org
 
+- `didit_org_create_api_key`
 - `didit_org_get_application`
 - `didit_org_get_balance`
 - `didit_org_invite_member`
@@ -140,6 +152,7 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_session_manage_import`
 - `didit_session_search`
 - `didit_session_share`
+- `didit_session_simulate`
 - `didit_session_update_data`
 - `didit_session_update_poa_data`
 - `didit_session_update_status`

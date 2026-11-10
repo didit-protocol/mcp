@@ -1,5 +1,5 @@
 {
-  "checksum": "sha256:b5ff2371c2a41779d8421cf1333fd50706cb78f9eaa320656b0c30bdb7875226",
+  "checksum": "sha256:76c4acb7cff69ae13d13d71e61bb7fa0d6b29f04d834a58558d458cd2806bb02",
   "features": {
     "AGE_ESTIMATION": {
       "description": "Configuration for Age Estimation feature.",
@@ -5199,7 +5199,7 @@
         },
         "signature_level": {
           "default": "simple",
-          "description": "`simple` (default) needs no ID verification, email or phone: the signer types their name (or uses a verified one the session already has) and signs on the session link, with no code. `aes` needs an approved ID verification and a verified email or phone, and confirms with a one-time code. `qes` is not available yet and is refused. `simple` is only valid for `signature_signer: verified_person`. Simple suits low-risk agreements; regulated or high-value contracts should use `aes`.",
+          "description": "`simple` (default) needs no ID verification, email or phone: the signer types their name (or uses a verified one the session already has) and signs on the session link, with no code. `aes` needs an approved ID verification and a verified email or phone, and confirms with a one-time code. `qes` (an add-on) needs an approved ID verification with a passport or national ID card and a verified phone (`signature_otp_channel: sms`), documents of at most 5 MB, and is refused while the workflow's `signature_availability.qes` is false; a qualified trust service provider texts the code and issues the signer a qualified certificate. `simple` is only valid for `signature_signer: verified_person`. Simple suits low-risk agreements; regulated or high-value contracts should use `aes` or `qes`.",
           "enum": [
             "simple",
             "aes",

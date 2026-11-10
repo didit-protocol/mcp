@@ -35,7 +35,11 @@ export async function getWorkflow(uuid: string): Promise<any> {
  */
 export async function createWorkflow(data: Record<string, any>): Promise<any> {
   const { features, status, ...rest } = data || {};
-  const featureList = Array.isArray(features) ? features : [];
+  // A bare feature name (["OCR", "LIVENESS"]) is the most common shorthand agents send; it used to
+  // be dropped item by item and answered "no features". It means exactly { feature: "OCR" }.
+  const featureList = (Array.isArray(features) ? features : []).map((item: any) =>
+    typeof item === "string" ? { feature: item } : item,
+  );
 
   // Assemble and check the feature list BEFORE anything is created. The backend types a workflow
   // on CREATE and then refuses to change it ("Workflow type cannot be changed once it has been

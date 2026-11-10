@@ -28,7 +28,8 @@ import {MCP_PORT,
   DIDIT_OIDC_TOKEN_URL,
   DIDIT_OIDC_REGISTRATION_URL,
   DIDIT_JWKS_URL, SERVER_VERSION,
-  MCP_PUBLIC_DISCOVERY } from "./config";
+  MCP_PUBLIC_DISCOVERY,
+  MCP_PAYMENTS_PATH } from "./config";
 
 /**
  * Resolve the upstream Authorization Server (service-didit-auth) metadata that we
@@ -136,6 +137,20 @@ export async function createHttpApp(): Promise<express.Express> {
     }),
   );
 
+  // The unlisted agent payments endpoint: the full catalog plus didit_org_top_up. Same authorization
+  // server, scopes and tokens as /mcp; its own protected resource (RFC 9728) so a client asks for a
+  // token for this resource. Never submitted to a directory. Lives here, not in chatgpt-app.ts,
+  // so the open-source build serves it too.
+  const paymentsResourceUrl = new URL(MCP_PAYMENTS_PATH, resourceServerUrl);
+  app.use(
+    mcpAuthMetadataRouter({
+      oauthMetadata,
+      resourceServerUrl: paymentsResourceUrl,
+      scopesSupported: MCP_SCOPES_SUPPORTED,
+      resourceName: "Didit MCP (agent payments)",
+    }),
+  );
+
   // A reduced catalog profile may be a second protected resource on the same server (see chatgpt-app.ts).
   const profileEndpoint = mountProfileEndpoint(app, { oauthMetadata, resourceServerUrl, scopesSupported: MCP_SCOPES_SUPPORTED });
 
@@ -157,9 +172,12 @@ export async function createHttpApp(): Promise<express.Express> {
   // One endpoint per catalog profile. Each is its own OAuth protected resource, so its 401
   // challenge points at its own metadata URL and the client requests a token for the right
   // resource indicator. The dispatch is identical apart from the profile handed to the server.
-  const endpoints: Array<{ path: string; profile: CatalogProfile; resourceUrl: URL }> = [
-    { path: "/mcp", profile: "full", resourceUrl: resourceServerUrl },
-    ...(profileEndpoint ? [profileEndpoint] : []),
+  // `moneyTools` is the one explicit money gate (index.ts createServer): false everywhere except
+  // the unlisted payments endpoint, so the directory-listed /mcp and /mcp/chatgpt never move money.
+  const endpoints: Array<{ path: string; profile: CatalogProfile; resourceUrl: URL; moneyTools: boolean }> = [
+    { path: "/mcp", profile: "full", resourceUrl: resourceServerUrl, moneyTools: false },
+    ...(profileEndpoint ? [{ ...profileEndpoint, moneyTools: false }] : []),
+    { path: MCP_PAYMENTS_PATH, profile: "full", resourceUrl: paymentsResourceUrl, moneyTools: true },
   ];
 
   // Stateless mode does not support server-initiated streams or session teardown.
@@ -210,7 +228,7 @@ export async function createHttpApp(): Promise<express.Express> {
       }
       if (isModernRequest(rpc, req.headers)) {
         try {
-          const reply = await handleModernRpc(rpc, req.auth, { profile: endpoint.profile });
+          const reply = await handleModernRpc(rpc, req.auth, { profile: endpoint.profile, moneyTools: endpoint.moneyTools });
           if (reply) res.json(reply);
           else res.status(202).end();
         } catch (err) {
@@ -226,7 +244,7 @@ export async function createHttpApp(): Promise<express.Express> {
         return;
       }
 
-      const server = createServer({ hosted: true, profile: endpoint.profile });
+      const server = createServer({ hosted: true, profile: endpoint.profile, moneyTools: endpoint.moneyTools });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {
         transport.close().catch(() => {});

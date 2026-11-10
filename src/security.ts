@@ -17,6 +17,12 @@ export interface DiditErrorShape {
   allowed?: string[];
   /** HTTP status, when this originated from an HTTP response. */
   status?: number;
+  /** The backend's own error `code` (e.g. agent_top_up_not_enabled), when its body carried one. */
+  backend_code?: string;
+  /** The backend's `next_step` {action, url, description}: where a person finishes what the agent cannot. */
+  next_step?: Record<string, unknown>;
+  /** The organization behind a 403 `sso_required` (name and slug as the backend names them). */
+  sso_organization?: { name?: string; slug?: string };
 }
 
 /**
@@ -565,10 +571,23 @@ export function redactDeep(value: any): any {
  * URL / email / token), so each is run through sanitizeText. Any other nested fields
  * go through redactDeep.
  */
+function publicNextStep(nextStep: Record<string, unknown>): Record<string, string> {
+  const text = (value: unknown) => (typeof value === "string" ? sanitizeText(value) : undefined);
+  const url = typeof nextStep.url === "string" && /^https:\/\//.test(nextStep.url) ? nextStep.url : undefined;
+  return Object.fromEntries(
+    Object.entries({ action: text(nextStep.action), url, description: text(nextStep.description) }).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+}
+
 export function sanitizeErrorShape(shape: DiditErrorShape): DiditErrorShape {
-  const { code, field, allowed, hint, message, ...rest } = shape as any;
+  const { code, field, allowed, hint, message, next_step: nextStep, ...rest } = shape as any;
   return {
     ...(redactDeep(rest) as object),
+    // The backend's next_step is the link a person follows to finish what the agent cannot, so its
+    // url must survive redaction: only its three text fields, and only an https url, pass through.
+    ...(nextStep ? { next_step: publicNextStep(nextStep) } : {}),
     ...(code !== undefined ? { code } : {}),
     ...(field !== undefined ? { field } : {}),
     ...(allowed !== undefined

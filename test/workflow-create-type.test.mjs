@@ -76,3 +76,23 @@ test("a KYC feature list keeps the backend's default type", async () => {
   );
   assert.equal("workflow_type" in state.created, false);
 });
+
+// Agents most often send bare feature names. Each string used to be dropped, and the call
+// failed with "Cannot build a workflow with no features" (staging, 9 Nov 2026).
+test("bare feature names build the same workflow as { feature } objects", async () => {
+  const state = fakeBackend();
+  let graph;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith("/verification-settings/wf-new/workflow-graph/")) graph = JSON.parse(init.body).graph;
+    return realFetch(url, init);
+  };
+  await inContext(() =>
+    createWorkflow({ workflow_label: "KYC", features: ["OCR", "LIVENESS", "FACE_MATCH"], status: "draft" }),
+  );
+  assert.ok(state.created, "the draft was created");
+  const features = Object.values(graph.nodes)
+    .filter((node) => node.node_type === "feature")
+    .map((node) => node.feature);
+  assert.deepEqual(features, ["OCR", "LIVENESS", "FACE_MATCH"]);
+});

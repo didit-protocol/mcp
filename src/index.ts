@@ -26,6 +26,7 @@ import * as standalone from "./tools/standalone";
 import {
   PRIVILEGED_TOOL_DEFS,
   PRIVILEGED_GROUP_PREFIX,
+  PRIVILEGED_READ_TOOLS,
   isPrivilegedToolName,
   isPrivilegedCaller,
   dispatchPrivilegedTool,
@@ -67,6 +68,8 @@ import {
 } from "./feature-config-schema";
 import * as analytics from "./tools/analytics";
 import * as compliance from "./tools/compliance";
+import { DeviceLoginError, getStoredAccessToken } from "./device-login";
+import { loginCliCommand, runLoginCli } from "./login-cli";
 import { requestContext, stripRoutingIds, SERVER_VERSION, permissionMode } from "./config";
 import { dropBlankOptionals, type InputSchema } from "./blank-args";
 import { applyCatalogProfile, applyCatalogResult, catalogProfileRefusal, stdioCatalogProfile, CONSOLE_OPEN_TOOL, consoleOpenResult, listWidgetResources, profileServesWidgets, readWidgetResource, widgetToolMeta, widgetTools, type CatalogProfile } from "./chatgpt-app";
@@ -420,6 +423,7 @@ const TOOL_GROUP_BY_PREFIX: [string, string][] = [
   ["account_", "Account Setup"],
   ["context_", "Account & Org"],
   ["org_", "Account & Org"],
+  ["billing_", "Billing"],
   ["session_", "Sessions"],
   ["workflow_", "Workflows & Questionnaires"],
   ["questionnaire_", "Workflows & Questionnaires"],
@@ -454,6 +458,8 @@ const SCOPE_AGNOSTIC_TOOLS = new Set([
   "didit_account_resend_otp",
   "didit_account_login",
   "didit_account_verify_2fa",
+  "didit_account_device_login_start",
+  "didit_account_device_login_poll",
   "didit_org_list",
   "didit_context_get",
   // Public pricing catalog: no org/app scope to resolve.
@@ -470,11 +476,15 @@ const ACCOUNT_BOOTSTRAP_TOOLS = new Set([
   "didit_account_resend_otp",
   "didit_account_login",
   "didit_account_verify_2fa",
+  "didit_account_device_login_start",
+  "didit_account_device_login_poll",
 ]);
 
 // These tools remain available in local/stdio contexts, but should not be part
 // of the authenticated ChatGPT app catalog because public app review disallows
 // digital-credit checkout flows and live credential/secret exposure.
+const MONEY_TOOL = "didit_org_top_up";
+
 const HOSTED_APP_EXCLUDED_TOOLS = new Set([
   ...ACCOUNT_BOOTSTRAP_TOOLS,
   "didit_org_reveal_application_api_key",
@@ -565,6 +575,8 @@ function toolTitle(name: string): string {
 // name: revealing a live secret, moving money, consequential decisions, and overwrites.
 const EXPLICIT_DESTRUCTIVE_TOOLS = new Set([
   "didit_org_reveal_application_api_key",
+  // Issues a credential; clients ask before running it.
+  "didit_org_create_api_key",
   "didit_org_top_up",
   "didit_case_manage",
   "didit_session_update_status",
@@ -618,12 +630,15 @@ const EXPLICIT_WRITE_TOOLS = new Set([
 // requires read:workflows, and applying the graph goes through the didit_workflow_* writes).
 const EXPLICIT_READ_TOOLS = new Set([
   ...INTERNAL_READ_TOOLS,
+  ...PRIVILEGED_READ_TOOLS,
   // build_graph computes a graph from a plain feature spec, persisting nothing.
   "didit_workflow_build_graph",
   // The per-session webhook delivery log (its only verb-like token is "webhooks").
   "didit_session_webhooks",
   // Folds a session's decision payload and its workflow graph into the outcome trace.
   "didit_session_explain_decision",
+  // Quotes a plan change (a GET): nothing is bought, the person confirms in the console.
+  "didit_billing_quote_plan",
 ]);
 
 function annotationsFor(name: string): {
@@ -667,9 +682,16 @@ function annotationsFor(name: string): {
  * `profile` selects the catalog served (see chatgpt-app.ts): `full` (default) or `chatgpt`,
  * the reduced allow-list the hosted server exposes at /mcp/chatgpt for the ChatGPT app store.
  */
-export function createServer(options: { hosted?: boolean; profile?: CatalogProfile } = {}): Server {
+export function createServer(options: { hosted?: boolean; profile?: CatalogProfile; moneyTools?: boolean } = {}): Server {
   const hosted = options.hosted === true;
   const profile: CatalogProfile = options.profile ?? "full";
+  // THE money gate of the hosted server. Every hosted endpoint hides and refuses didit_org_top_up
+  // unless it passes `moneyTools: true`, and only the unlisted /mcp/payments endpoint does (http.ts).
+  // It never opens on a reduced catalog profile (the ChatGPT catalog has no credit-purchase flow),
+  // and stdio is the person's own local server, where the tool is always offered. Checked in three
+  // places below: tools/list, the tools/call refusal, and the balance enrichment.
+  const moneyTools = hosted && options.moneyTools === true && profile === "full";
+  const hostedMoneyBlocked = hosted && !moneyTools;
 
   // `access_token` on the auth-service discovery tools is a stdio full-profile convenience: it lets
   // someone running the local server hand over the Bearer that didit_account_login returned.
@@ -729,7 +751,10 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_account_verify_email",
-      description: "Verify email with the 6-character code. Returns access_token, refresh_token, organization, application (with client_id and api_key).",
+      description:
+        "Verify email with the 6-character code. Returns access_token, refresh_token, organization, application (with client_id and api_key). " +
+        "If the account already has two-factor authentication it returns 2fa_required (and a temp_token when it has an authenticator) instead of tokens: finish with didit_account_verify_2fa. " +
+        "If the account's organization enforces SSO it returns sso_required: no token or API key is issued here, so ask the person to sign in through their organization's SSO in the Didit console in a browser; do not retry.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -754,7 +779,9 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       name: "didit_account_login",
       description:
         "Login to existing Didit account. Returns access_token and refresh_token. If the account has two-factor " +
-        "authentication it returns 2fa_required and a temp_token instead: finish with didit_account_verify_2fa.",
+        "authentication it returns 2fa_required and a temp_token instead: finish with didit_account_verify_2fa. " +
+        "If the account's organization enforces SSO it returns sso_required: no token is issued by password, so ask the person to sign in through SSO in the console, or use didit_account_device_login_start. " +
+        "For an account that signs in with a passkey or SSO (no password), use didit_account_device_login_start instead.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -763,6 +790,21 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         },
         required: ["email", "password"],
       },
+    },
+    {
+      name: "didit_account_device_login_start",
+      description:
+        "Sign in WITHOUT a password or local browser (OAuth device code): returns a short user_code and a URL the " +
+        "person opens on any device to approve this connection. Works for passkey and SSO accounts. Then call " +
+        "didit_account_device_login_poll. Credentials are stored locally and used automatically afterwards.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
+    {
+      name: "didit_account_device_login_poll",
+      description:
+        "Wait (up to about 45 seconds) for the person to approve the sign-in started with " +
+        "didit_account_device_login_start. Returns status pending (call again) or connected with the granted scope.",
+      inputSchema: { type: "object" as const, properties: {} },
     },
     {
       name: "didit_account_verify_2fa",
@@ -1001,6 +1043,28 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         type: "object" as const,
         properties: {
           session_id: { type: "string", description: "Session UUID" },
+        },
+        required: ["session_id"],
+      },
+    },
+    {
+      name: "didit_session_simulate",
+      description:
+        "SANDBOX ONLY: finish a session of a sandbox application (mode 'sandbox' in didit_context_get) with the " +
+        "outcome you pick, without anyone going through the verification flow, then read it with " +
+        "didit_session_get_decision and its webhooks with didit_session_webhooks. Never billed. Pass new_status " +
+        "('Approved', 'Declined', 'In Review', 'Expired', 'Abandoned'), a scenario slug ('approve', 'decline_aml_hit', " +
+        "'decline_document_expired', 'review_aml_possible_match', ...) or a risk. A live session answers not found.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. A session of a sandbox application." },
+          new_status: { type: "string", enum: ["Approved", "Declined", "In Review", "Expired", "Abandoned"] },
+          scenario: { type: "string", description: "Sandbox scenario slug whose outcome to reproduce." },
+          risk: { type: "string", description: "A risk case to add as a warning." },
+          comment: { type: "string", description: "Note on the activity entry." },
+          send_webhooks: { type: "boolean", description: "Send the webhooks a real status change sends (default true)." },
         },
         required: ["session_id"],
       },
@@ -2230,31 +2294,151 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       name: "didit_org_get_balance",
       description:
         "Get current credit balance and auto-refill settings. Every check is billed from the first one: " +
-        "from 1 Nov 2026 the Free plan carries $10 of monthly credit usable on any feature, paid plans carry " +
-        "their monthly plan credit (Growth $115, Scale $350), and no workflow is free of charge. Never answer " +
+        "from 1 Nov 2026 an eligible Free organization gets $10 of monthly credit usable on any feature, paid " +
+        "plans carry their monthly plan credit (Growth $115, Scale $350), and no workflow is free of charge. " +
+        "The Free credit is decided per organization: `free_credit.receives` says whether this one gets it, " +
+        "and `free_credit.this_month` holds this month's credit, also once used up. `free_credit.eligibility` " +
+        "says why an organization does NOT get it, because the credit needs a work email: personal_email " +
+        "means it signed up with a personal email, temporary_email with a temporary one, company_exists " +
+        "that its company already has an organization, api_created that it was created through the API. " +
+        "Such an organization never had the credit, so it was not used up. Answer from these fields, never " +
+        "from the plan alone; when `free_credit` is absent, say you could not read it. Never answer " +
         "a \"not enough credits\" report from this result alone: read the failing workflow with " +
         "didit_workflow_list first - `is_white_label_enabled: true` adds $0.20/session, which is a common " +
         "cause of credit running out faster than expected. This result also carries `allow_free_usage` " +
         "(organizations on negotiated terms keep the monthly free allowance they were sold until renewal; " +
-        "false means that allowance is off for this organization) and `usage_summary.white_label_sessions`.",
+        "false means that allowance is off for this organization) and `usage_summary.white_label_sessions`. " +
+        "When the balance cannot cover what the person wants to run, give them `next_steps.top_up_url` (the console " +
+        "top-up dialog with the amount filled in; replace the number to change it) or `next_steps.automatic_top_up_url` " +
+        "(save a card and turn on automatic top-up so the balance never runs out). Didit tools never charge a card. " +
+        "Meanwhile keep building in the organization's sandbox application (`mode: sandbox` in didit_context_get), " +
+        "which is never billed.",
       inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
     },
     {
       name: "didit_org_top_up",
-      description: "Create a Stripe checkout session to top up credits ($50 to $20,000 per top-up). Returns a checkout URL.",
+      description:
+        "Top up credits ($50 to $20,000 per top-up). payment_method \"checkout\" (default) creates a Stripe Checkout " +
+        "page and returns checkout_session_url for the person to pay; it never charges a card by itself. " +
+        "payment_method \"saved_card\" charges the organization's saved primary card off-session, now, when a person " +
+        "turned on \"Connected AI agents can top up with your saved card\" in the Didit console (Billing > Payment " +
+        "methods; off by default; didit_org_get_balance shows it as agent_top_up.enabled where this tool is offered). " +
+        "It needs idempotency_key: choose ONE unique key per intended top-up (for example a UUID) and reuse that same " +
+        "key on any retry of that same top-up, so a retry can never charge twice; never reuse a key for another " +
+        "amount and never retry with a new key. A refusal carries `code`, `detail` and `next_step` {action, url, " +
+        "description}: agent_top_up_not_enabled (the switch is off), authentication_required (the card's bank asks the " +
+        "cardholder to approve), payment_method_required (no saved card) and card_declined are finished by the " +
+        "person: give them next_step.url (a Top up dialog link that says which agent asked, with the amount filled in).",
       inputSchema: {
         type: "object" as const,
         properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
           amount_in_dollars: { type: "number", description: "Amount in USD (minimum $50, maximum $20,000 per self-serve top-up)" },
-          success_url: { type: "string", description: "Optional redirect after successful payment" },
-          cancel_url: { type: "string", description: "Optional redirect if payment is cancelled" },
+          payment_method: {
+            type: "string",
+            enum: ["checkout", "saved_card"],
+            description:
+              "checkout (default): a Stripe Checkout page for the person to pay. saved_card: charge the organization's saved primary card now, only while a person has turned on the agent top-up switch in the console; requires idempotency_key.",
+          },
+          idempotency_key: {
+            type: "string",
+            minLength: 1,
+            maxLength: 255,
+            description:
+              "REQUIRED for payment_method saved_card (1 to 255 characters). One unique key per intended top-up; reuse the same key on any retry of that same top-up so the card is never charged twice. Ignored for checkout.",
+          },
           confirm: {
             type: "boolean",
             description:
-              "REQUIRED. Must be true - creates a Stripe checkout that moves money (it never auto-charges). Only set after explicit user confirmation of this exact action.",
+              "REQUIRED. Must be true. Only set after explicit user confirmation of this exact action: checkout creates a payment page, saved_card charges the saved card immediately.",
           },
         },
         required: ["amount_in_dollars"],
+      },
+    },
+
+    {
+      name: "didit_billing_get_plan",
+      description:
+        "Get the organization's plan: the plan and its status, monthly fee and credit, the next charge, the last " +
+        "payment, any unpaid invoice and any scheduled plan change. `next_steps.plans_url` is the console page where " +
+        "the person changes the plan.",
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+    },
+    {
+      name: "didit_billing_quote_plan",
+      description:
+        "Quote a plan change without making it: what it charges today (`amount_due`), the credit it adds " +
+        "(`credit_added`) and the billing period. Plans: free, growth ($99/month, $115 of credit a month, 4% off every " +
+        "price), scale ($299/month, $350 of credit a month, 10% off); yearly billing is cheaper. Show the person the " +
+        "quote; they confirm and pay on `next_steps.plans_url` (Didit tools never buy a plan).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          plan: { type: "string", enum: ["free", "growth", "scale"], description: "The plan to quote." },
+          billing_interval: { type: "string", enum: ["monthly", "yearly"], description: "Defaults to monthly." },
+        },
+        required: ["plan"],
+      },
+    },
+    {
+      name: "didit_billing_list_payment_methods",
+      description:
+        "List the organization's saved cards (brand, last 4 digits, expiry) in the order automatic charges try them, " +
+        "card 1 being the primary. An empty list means no card is saved: top-ups then go through Checkout or the " +
+        "console. `next_steps.add_card_url` is where the person adds a card or turns on automatic top-up.",
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+    },
+    {
+      name: "didit_billing_list_receipts",
+      description: "List the organization's payment receipts (top-ups and plan charges), newest first.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          limit: { type: "number", description: "Page size (default set by the server)." },
+          offset: { type: "number", description: "Rows to skip." },
+        },
+      },
+    },
+    {
+      name: "didit_billing_get_details",
+      description:
+        "Get the billing details printed on every receipt and invoice: legal name, tax ID, address, billing emails " +
+        "and PO number.",
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+    },
+    {
+      name: "didit_billing_update_details",
+      description:
+        "Change the billing details printed on receipts and invoices. Pass only the fields to change; the rest " +
+        "keep their saved values. Before calling, show the person each change and get their confirmation. When " +
+        "the organization confirms billing changes with an authenticator code, the change is refused and the " +
+        "person saves it in the console instead (the error names the page).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          legal_name: { type: "string", description: "The company's legal name." },
+          tax_id_type: { type: "string", description: "Stripe tax ID type, e.g. eu_vat, gb_vat, us_ein. Needs tax_id." },
+          tax_id: { type: "string", description: "The tax ID number. Needs tax_id_type." },
+          address: {
+            type: "object",
+            description: "Billing address; only the lines passed change.",
+            properties: {
+              line1: { type: "string" },
+              line2: { type: "string" },
+              city: { type: "string" },
+              state: { type: "string" },
+              postal_code: { type: "string" },
+              country: { type: "string", description: "ISO 3166-1 alpha-2, e.g. ES, US." },
+            },
+            additionalProperties: false,
+          },
+          billing_emails: { type: "array", items: { type: "string" }, description: "Addresses that receive receipts and invoices (replaces the list)." },
+          po_number: { type: "string", description: "Purchase order number printed on invoices." },
+        },
       },
     },
 
@@ -2945,9 +3129,42 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
     },
     {
+      name: "didit_org_create_api_key",
+      description:
+        "Create the API key the integration you are building needs (sent as x-api-key to the verification API), " +
+        "for one application. Didit allows ONE live key per connected app and application, scoped to what the " +
+        "signed-in person can do (never full access, never API key management), rate-limited and audit-logged; " +
+        "the person sees it with this connected app in the console and can revoke it there. The secret is returned " +
+        "ONCE: write it straight to the project's secret store or .env and never repeat it in the chat. Pick the " +
+        "application by its mode in didit_context_get: a sandbox key to build and test for free, a live key to go " +
+        "live. Requires confirm:true after the person agreed.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: { type: "string", description: "REQUIRED. The organization (from didit_context_get)." },
+          application_id: { type: "string", description: "REQUIRED. The application the key is for (from didit_context_get)." },
+          label: { type: "string", description: "Name shown in the console, e.g. 'Acme backend (Codex)'." },
+          scopes: {
+            type: "object",
+            description:
+              "Optional narrower access: resource -> 'read' | 'write' (sessions, decisions, media, users, businesses, " +
+              "transactions, workflows, webhooks, applications, analytics). Omit it for everything the person can do.",
+            additionalProperties: { type: "string", enum: ["read", "write"] },
+          },
+          workflow_ids: { type: "array", items: { type: "string" }, description: "Optional: only these workflows' sessions (needs scopes)." },
+          expires_at: { type: "string", description: "Optional ISO 8601 expiry." },
+          confirm: {
+            type: "boolean",
+            description: "REQUIRED. Must be true - issues a credential shown once. Only set after explicit user confirmation of this exact action.",
+          },
+        },
+        required: ["organization_id", "application_id", "confirm"],
+      },
+    },
+    {
       name: "didit_org_list_api_keys",
-      description: "List API key metadata with raw key values redacted (pass application_id for an app's keys).",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description: "List one application's API key metadata with raw key values redacted. API keys belong to an application, so application_id is required: read it from didit_context_get.",
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS }, required: ["application_id"] },
     },
 
     // ── Compliance ──────────────────────────────────────────────────────
@@ -3082,9 +3299,14 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
   // checkout / secret-reveal tools — the public app catalog must stay free of
   // credential-collection, checkout, and secret-reveal flows. Privileged (staff)
   // callers and local stdio setups keep the full catalog.
-  const hasUserBearer = Boolean(extra?.authInfo?.token || process.env.DIDIT_ACCESS_TOKEN);
+  // Only a remote (HTTP) request carries authInfo. A local stdio server started with
+  // DIDIT_ACCESS_TOKEN is a local setup and keeps the full catalog, as documented; counting
+  // that env token as a remote Bearer hid didit_org_top_up and the key reveal from it.
+  const remoteBearer = Boolean(extra?.authInfo?.token);
   let catalog =
-    hasUserBearer && !isPrivileged ? tools.filter((t) => !HOSTED_APP_EXCLUDED_TOOLS.has(t.name)) : tools;
+    remoteBearer && !isPrivileged
+      ? tools.filter((t) => !HOSTED_APP_EXCLUDED_TOOLS.has(t.name) || (moneyTools && t.name === MONEY_TOOL))
+      : tools;
   // Remote connectors authenticate with OAuth, so account credentials must never travel
   // through the conversation: hosted servers drop the bootstrap tools for EVERY caller
   // (staff included), regardless of Bearer state. They remain available on stdio.
@@ -3150,12 +3372,18 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       targetOrg: argOrg || tokenOrg,
     });
     const permissionCheck = permission === "would_deny" ? permission : undefined;
+    // Local sign-in (device code): only a stdio server with no Bearer of its own reads the stored
+    // credentials, so hosted mode and DIDIT_ACCESS_TOKEN setups are untouched.
+    const storedToken =
+      !authInfo?.token && !hosted && !process.env.DIDIT_ACCESS_TOKEN && !ACCOUNT_BOOTSTRAP_TOOLS.has(request.params.name)
+        ? await storedDeviceLoginToken()
+        : undefined;
     return requestContext.run(
       {
         // Hosted mode: per-request Bearer from OAuth introspection. Stdio mode (tests/eval):
         // fall back to DIDIT_ACCESS_TOKEN + MCP_DEFAULT_ORG/APP env so the console-path tools
         // authenticate as that Bearer without the hosted layer.
-        accessToken: authInfo?.token || process.env.DIDIT_ACCESS_TOKEN || undefined,
+        accessToken: authInfo?.token || process.env.DIDIT_ACCESS_TOKEN || storedToken || undefined,
         organizationId:
           argOrg ||
           ((authInfo?.extra as Record<string, unknown> | undefined)?.organization_id as string | undefined) ||
@@ -3212,6 +3440,28 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       content: [{ type: "text", text: `Tool '${name}' is not available on the hosted connector - authentication is handled by OAuth. Use the local stdio server (npx @didit-protocol/mcp-server) for account setup.` }],
       isError: true,
     };
+  }
+
+  // Mirror of the tools/list exclusion for the one money tool: a remote connector never creates
+  // a payment page itself, even when a client calls the unlisted name. The person pays in the
+  // console, through the link didit_org_get_balance returns.
+  // saved_card moves money with no person present, so not even a staff caller gets it on an endpoint
+  // that is not the payments one; staff keep the Checkout page they always had.
+  if (
+    hostedMoneyBlocked &&
+    name === MONEY_TOOL &&
+    (!isPrivilegedCaller(authInfo, { hosted }) || callArgs?.payment_method === "saved_card")
+  ) {
+    // A signed request link creates no payment and moves no money, so it is allowed here; best
+    // effort, the static text below is the fallback.
+    const signedUrl = await billing.signedTopUpLink(
+      callArgs?.amount_in_dollars ?? callArgs?.amount,
+      callArgs?.organization_id as string | undefined,
+    );
+    const text = signedUrl
+      ? `Top-ups are paid by the person in the Didit console. Give them this link: ${signedUrl} (it opens the top-up dialog with the amount filled in and says which agent asked; nothing is charged until they pay), or next_steps.automatic_top_up_url from didit_org_get_balance.`
+      : "Top-ups are paid by the person in the Didit console. Call didit_org_get_balance and give them next_steps.top_up_url (the top-up dialog with the amount filled in) or next_steps.automatic_top_up_url.";
+    return { content: [{ type: "text", text }], isError: true };
   }
 
   // Mirror of the tools/list catalog profile: a tool (or an input property) the endpoint does
@@ -3271,6 +3521,12 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       case "didit_account_login":
         result = await auth.login(args!.email as string, args!.password as string);
         break;
+      case "didit_account_device_login_start":
+        result = await auth.deviceLoginStart();
+        break;
+      case "didit_account_device_login_poll":
+        result = await auth.deviceLoginPoll();
+        break;
       case "didit_account_verify_2fa":
         result = await auth.verify2fa(args!.temp_token as string, args!.code as string);
         break;
@@ -3324,6 +3580,11 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       case "didit_session_get_location_evidence":
         result = await sessions.getSessionLocationEvidence(args!.session_id as string);
         break;
+      case "didit_session_simulate": {
+        const { session_id, ...data } = args as Record<string, any>;
+        result = await sessions.simulateSandboxSession(session_id, data);
+        break;
+      }
       case "didit_session_update_status": {
         const { session_id, ...data } = args as Record<string, any>;
         result = await sessions.updateSessionStatus(session_id, data);
@@ -3622,16 +3883,47 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
 
       // Billing
       case "didit_org_get_balance":
-        result = await billing.getBalance(args?.organization_id as string | undefined);
+        // The ChatGPT catalog carries no credit-purchase flow (app review), so no top-up links there.
+        result = await billing.getBalance(args?.organization_id as string | undefined, {
+          links: profile !== "chatgpt",
+          // The agent top-up switch only where an agent may top up: /mcp/payments and stdio.
+          agentTopUp: profile === "full" && !hostedMoneyBlocked,
+        });
         break;
       case "didit_org_top_up":
         result = await billing.topUp(
           (args?.amount_in_dollars ?? args?.amount) as number,
           args?.confirm,
-          args?.success_url as string,
-          args?.cancel_url as string,
+          args?.organization_id as string | undefined,
+          { payment_method: args?.payment_method, idempotency_key: args?.idempotency_key },
         );
         break;
+      case "didit_billing_get_plan":
+        result = await billing.getPlan(args?.organization_id as string | undefined);
+        break;
+      case "didit_billing_quote_plan":
+        result = await billing.quotePlan(args?.plan, args?.billing_interval, args?.organization_id as string | undefined);
+        break;
+      case "didit_billing_list_payment_methods":
+        result = await billing.listPaymentMethods(args?.organization_id as string | undefined);
+        break;
+      case "didit_billing_list_receipts":
+        result = await billing.listReceipts(
+          args?.organization_id as string | undefined,
+          args?.limit as number | undefined,
+          args?.offset as number | undefined,
+        );
+        break;
+      case "didit_billing_get_details":
+        result = await billing.getBillingDetails(args?.organization_id as string | undefined);
+        break;
+      case "didit_billing_update_details": {
+        // The dispatcher already moved organization_id into the request context (stripRoutingIds);
+        // dropping it here too keeps the handler correct if that ever changes.
+        const { organization_id: _org, application_id: _app, ...changes } = (args ?? {}) as Record<string, unknown>;
+        result = await billing.updateBillingDetails(changes);
+        break;
+      }
 
       // Customization
       case "didit_branding_get":
@@ -3855,7 +4147,11 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         result = await members.listRoles(args?.organization_id as string | undefined);
         break;
       case "didit_org_list_api_keys":
-        result = await members.listApiKeys(args?.organization_id as string | undefined, args?.application_id as string | undefined);
+        // Routing ids are stripped from args above; the ones the caller sent are argOrg / argApp.
+        result = await members.listApiKeys(argOrg as string | undefined, argApp as string | undefined);
+        break;
+      case "didit_org_create_api_key":
+        result = await members.createApiKey(argOrg, argApp, (args ?? {}) as Record<string, any>);
         break;
 
       // Compliance
@@ -3894,8 +4190,10 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     const fieldLine = shape.field ? `\nField: ${shape.field}` : "";
     const hintLine = shape.hint ? `\nHint: ${shape.hint}` : "";
     const allowedLine = shape.allowed && shape.allowed.length ? `\nAllowed: ${shape.allowed.join(", ")}` : "";
+    // A backend refusal that names where a person finishes the action (agent top-ups) passes it on unchanged.
+    const nextStepLine = shape.next_step ? `\nNext step: ${JSON.stringify(shape.next_step)}` : "";
     return {
-      content: [{ type: "text", text: `Error [${shape.code}]: ${shape.message}${fieldLine}${hintLine}${allowedLine}` }],
+      content: [{ type: "text", text: `Error [${shape.code}]: ${shape.message}${fieldLine}${hintLine}${allowedLine}${nextStepLine}` }],
       isError: true,
     };
   }
@@ -3906,7 +4204,23 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
   return server;
 }
 
+// Never throws: a revoked grant is reported once on stderr and the tool then fails like any
+// unauthenticated call. The message carries no token.
+async function storedDeviceLoginToken(): Promise<string | undefined> {
+  try {
+    return await getStoredAccessToken();
+  } catch (err) {
+    if (err instanceof DeviceLoginError) console.error(`Didit: ${err.message}`);
+    return undefined;
+  }
+}
+
 async function main() {
+  const cliCommand = loginCliCommand(process.argv.slice(2));
+  if (cliCommand) {
+    process.exitCode = await runLoginCli(cliCommand);
+    return;
+  }
   const transport = new StdioServerTransport();
   const server = createServer({ profile: stdioCatalogProfile() });
   await server.connect(transport);

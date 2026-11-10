@@ -11,6 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 const CONFIRM_GATED_TOOLS = [
   "didit_org_reveal_application_api_key",
+  "didit_org_create_api_key",
   "didit_session_delete",
   "didit_session_batch_delete",
   "didit_vendor_user_delete",

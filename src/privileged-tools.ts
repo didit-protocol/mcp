@@ -10,6 +10,8 @@ export function isPrivilegedToolName(_name: string): boolean {
   return false;
 }
 
+export const PRIVILEGED_READ_TOOLS: string[] = [];
+
 export function isPrivilegedCaller(_authInfo: any, _opts?: { hosted?: boolean }): boolean {
   return false;
 }

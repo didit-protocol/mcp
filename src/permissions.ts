@@ -25,6 +25,8 @@ const PERMISSION_RE = /^(read|write|delete|list|create|approve):[a-z-]+$/;
 
 export const TOOL_PERMISSIONS: Record<string, string | null> = {
   // ── Auth service (apx.didit.me): membership-scoped or bootstrap, no @has_privileges ──
+  didit_account_device_login_poll: null, // OAuth device grant token poll on the console - account bootstrap, stdio only
+  didit_account_device_login_start: null, // OAuth device authorization on the console - account bootstrap, stdio only
   didit_account_login: null, // POST auth /programmatic/login/ — account bootstrap
   didit_account_register: null, // POST auth /programmatic/register/ — account bootstrap
   didit_account_resend_otp: null, // POST auth /programmatic/resend-otp/ — account bootstrap
@@ -36,6 +38,7 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_org_list_applications: null, // GET auth /organizations/me/{org}/applications/ — hardcoded owner/admin check, no decorator
   didit_org_reveal_application_api_key: null, // same endpoint as didit_org_get_application
   didit_org_invite_member: "write:members", // POST auth /organizations/{org}/members/invite/ → member.py:394
+  didit_org_create_api_key: "write:api-keys", // POST auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py (agent rules: services/agent_api_keys.py)
   didit_org_list_api_keys: "read:applications", // GET auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py:24
   didit_org_list_members: "list:members", // GET auth /organizations/{org}/members/ → member.py:141
   didit_org_list_roles: "list:roles", // GET auth /organizations/{org}/roles/ → roles.py:55
@@ -43,7 +46,13 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_org_update_member: "write:members", // PATCH auth /organizations/{org}/members/{id}/ → member.py:76
   // ── Billing ──
   didit_org_get_balance: "read:subscription", // GET /organization/{org}/top-up/ → stripe.py:498
-  didit_org_top_up: null, // POST /organization/{org}/top-up/ — TopUpView has only GET/PUT as coded
+  didit_org_top_up: "write:subscription", // checkout: GET /organization/{org}/checkout-session/ → stripe.py CreateCheckoutSessionView; saved_card: POST /organization/{org}/billing/agent-top-ups/ (or POST /v3/billing/top-up/ with an API key), both write:subscription
+  didit_billing_get_plan: "read:subscription", // GET /organization/{org}/billing/plans/ → billing/views.py PlanBillingView
+  didit_billing_quote_plan: "read:subscription", // GET …/billing/plans/quote/ → PlanQuoteView
+  didit_billing_list_payment_methods: "read:subscription", // GET …/billing/payment-methods/ → PaymentMethodsView
+  didit_billing_list_receipts: "read:subscription", // GET …/billing/receipts/ → ReceiptsView
+  didit_billing_get_details: "read:subscription", // GET …/billing/details/ → BillingDetailsView
+  didit_billing_update_details: "write:subscription", // PUT …/billing/details/ → BillingDetailsView (+ step-up)
   // ── Alerts, analytics, audit ──
   didit_alert_configure: "write:applications", // PATCH …/alerts/{type}/ → alerts.py:42
   didit_alert_list: "read:applications", // GET …/alerts/ → alerts.py:62
@@ -112,6 +121,7 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_session_share: "write:sessions", // POST /session/{id}/share/ → shared_session.py:44
   didit_session_update_data: "write:sessions", // PATCH /session/{id}/update-data/ → session.py:1238
   didit_session_update_poa_data: "write:sessions", // PATCH /session/{id}/update-poa-data/ → session.py:1461
+  didit_session_simulate: "write:sessions", // POST /session/{id}/simulate/ → sandbox simulate (sandbox sessions only)
   didit_session_update_status: "write:sessions", // PATCH /session/{id}/update-status/ → session.py:1033
   didit_session_explain_decision: "read:sessions", // GET /session/{id}/decision/ folded into its trace
   didit_session_webhooks: "read:sessions", // GET /session/{id}/webhooks/ → webhooks.py:38

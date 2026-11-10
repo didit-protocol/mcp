@@ -33,6 +33,8 @@ export const DIDIT_API_BASE_URL = process.env.DIDIT_API_BASE_URL || "https://ver
 export const MCP_PORT = parseInt(process.env.MCP_PORT || "3000", 10);
 // The RFC 8707 / RFC 9728 resource identifier for this MCP server.
 // It must match the actual Streamable HTTP transport endpoint.
+// Unlisted hosted endpoint that also offers didit_org_top_up (agent payments); see http.ts.
+export const MCP_PAYMENTS_PATH = "/mcp/payments";
 export const MCP_RESOURCE_URI = process.env.MCP_RESOURCE_URI || "https://mcp.didit.me/mcp";
 // The dedicated OAuth client registered in service-didit-auth for the MCP.
 export const MCP_OAUTH_CLIENT_ID = process.env.MCP_OAUTH_CLIENT_ID || "";
@@ -209,6 +211,10 @@ export function userAgent(): string {
   return `didit-mcp-server/${SERVER_VERSION}${tool ? ` tool/${tool}` : ""}`;
 }
 
+/** Sent on every backend request the MCP server makes (apiRequest and the other Didit-bound fetches). */
+export const AGENT_HEADER = "X-Didit-Agent";
+export const AGENT_HEADER_VALUE = "mcp";
+
 export function getHeaders(): Record<string, string> {
   return { "Content-Type": "application/json", ...authHeaders() };
 }
@@ -264,7 +270,9 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
   }
 
   const resolvedHeaders = headers ?? (form ? getMultipartHeaders() : getHeaders());
-  const init: RequestInit = { method, headers: { "User-Agent": userAgent(), ...resolvedHeaders } };
+  // X-Didit-Agent marks every request as agent-originated: the backend refuses settings changes
+  // that carry it (the agent top-up switch is a person's decision). Last, so a caller cannot drop it.
+  const init: RequestInit = { method, headers: { "User-Agent": userAgent(), ...resolvedHeaders, [AGENT_HEADER]: AGENT_HEADER_VALUE } };
   if (opts.responseType) {
     init.redirect = "error";
     init.signal = AbortSignal.timeout(60000);
@@ -310,10 +318,37 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
       field: parsed.field,
       allowed: parsed.allowed,
       status: res.status,
+      ...backendAction(body),
     });
   }
 
   return body;
+}
+
+/**
+ * A refusal the backend answers with its own machine code and a `next_step` (action, url,
+ * description) - the agent top-up route does - keeps both, unchanged, so the model can hand the
+ * person the console link. Bodies without them add nothing.
+ */
+function backendAction(body: any): {
+  backend_code?: string;
+  next_step?: Record<string, unknown>;
+  sso_organization?: { name?: string; slug?: string };
+} {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return {};
+  // 403 `sso_required` (service-didit-auth): the account's organization enforces SSO. Its machine code
+  // is under `error`, with the organization named beside it.
+  if (body.error === "sso_required") {
+    const text = (value: unknown) => (typeof value === "string" && value ? value.slice(0, 200) : undefined);
+    const name = text(body.organization_name);
+    const slug = text(body.organization_slug);
+    return { backend_code: "sso_required", ...(name || slug ? { sso_organization: { name, slug } } : {}) };
+  }
+  const nextStep = body.next_step && typeof body.next_step === "object" && !Array.isArray(body.next_step) ? body.next_step : undefined;
+  return {
+    ...(typeof body.code === "string" && body.code ? { backend_code: body.code } : {}),
+    ...(nextStep ? { next_step: nextStep } : {}),
+  };
 }
 
 /**

@@ -93,6 +93,46 @@ export async function updateSessionStatus(sessionId: string, data: Record<string
   return apiRequest(`/session/${sid(sessionId)}/update-status/`, { method: "PATCH", json: data });
 }
 
+const SIMULATED_STATUSES = ["Approved", "Declined", "In Review", "Expired", "Abandoned"];
+
+/**
+ * Finish a SANDBOX session with a chosen outcome (POST /v3/session/{id}/simulate/), so an agent
+ * can test the decision and the webhooks end to end without anyone going through the flow. The
+ * backend answers 404 for a live session, so this can never decide a real verification.
+ */
+export async function simulateSandboxSession(sessionId: string, data: Record<string, any>): Promise<any> {
+  const body: Record<string, any> = {};
+  for (const key of ["new_status", "scenario", "risk", "node_id", "comment", "send_webhooks"]) {
+    if (data?.[key] !== undefined) body[key] = data[key];
+  }
+  if (body.new_status !== undefined && !SIMULATED_STATUSES.includes(body.new_status)) {
+    throw new DiditError({
+      code: "bad_request",
+      message: `new_status must be one of ${SIMULATED_STATUSES.join(", ")}.`,
+      field: "new_status",
+      allowed: SIMULATED_STATUSES,
+    });
+  }
+  if (body.new_status === undefined && body.scenario === undefined && body.risk === undefined) {
+    throw new DiditError({
+      code: "bad_request",
+      message: "Pass new_status, scenario or risk.",
+      hint: "new_status:'Approved' finishes the session approved; scenario:'decline_aml_hit' reproduces that outcome.",
+    });
+  }
+  try {
+    return await apiRequest(`/session/${sid(sessionId)}/simulate/`, { method: "POST", json: body });
+  } catch (error) {
+    if (error instanceof DiditError && error.shape.status === 404) {
+      throw new DiditError({
+        ...error.shape,
+        hint: "Only a session of a SANDBOX application can be simulated (mode 'sandbox' in didit_context_get); a live session is decided by the person who verifies.",
+      });
+    }
+    throw error;
+  }
+}
+
 export async function updateSessionData(sessionId: string, data: Record<string, any>): Promise<any> {
   return apiRequest(`/session/${sid(sessionId)}/update-data/`, { method: "PATCH", json: data });
 }

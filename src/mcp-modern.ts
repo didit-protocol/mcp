@@ -147,7 +147,7 @@ function invalidEnvelope(rpc: RpcMessage): boolean {
 export async function handleModernRpc(
   rpc: RpcMessage,
   authInfo?: AuthInfo,
-  options: { profile?: CatalogProfile } = {},
+  options: { profile?: CatalogProfile; moneyTools?: boolean } = {},
 ): Promise<Record<string, unknown> | undefined> {
   // The SDK's Protocol silently drops envelopes that fail schema validation, which
   // would leave this dispatch (and the HTTP request) hanging forever — reject first.
@@ -161,7 +161,7 @@ export async function handleModernRpc(
   }
 
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  const server = createServer({ hosted: true, profile: options.profile });
+  const server = createServer({ hosted: true, profile: options.profile, moneyTools: options.moneyTools === true });
 
   await server.connect(serverSide);
   try {
