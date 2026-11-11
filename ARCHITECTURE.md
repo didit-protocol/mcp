@@ -57,6 +57,8 @@ The Didit management API is scoped per application (`/organization/{org}/applica
 | `MCP_OAUTH_CLIENT_ID` / `MCP_OAUTH_CLIENT_SECRET` | hosted | — | Basic-auth credentials for introspection. |
 | `MCP_SCOPES_SUPPORTED` | hosted | `didit:management didit:verification` | Scopes advertised in metadata. |
 | `MCP_DEFAULT_ORG` / `MCP_DEFAULT_APP` | both | — | Auto-fill scope for single-tenant deployments. |
+| `WAKESHIFT_KEY` | hosted | — | Wakeshift app key. With `DIDIT_EVENTS_SECRET`, turns on agent wakes ([`docs/backend-events.md`](docs/backend-events.md)). |
+| `DIDIT_EVENTS_SECRET` | hosted | — | Standard Webhooks secret (`whsec_…`) the Didit backend signs `POST /internal/events/*` with. |
 
 See [`.env.example`](.env.example) for a copyable template.
 
@@ -68,6 +70,8 @@ src/
   http.ts         Express resource server (CORS, metadata, Bearer middleware)
   config.ts       env config, requestContext (AsyncLocalStorage), apiRequest()
   security.ts     error sanitization, input/file validation
+  wakeshift.ts    agent wakes: events, watch tools, emits (loaded only when configured)
+  backend-events.ts  signed backend notifications for wakeshift.ts
   orgapp.ts       org/app discovery + cross-app fan-out
   dates.ts        relative-date helpers
   auth/           token verifiers (introspection, jwks)
