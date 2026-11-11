@@ -16,6 +16,8 @@ import { createServer, serverDescriptorOf } from "./index";
 import { SERVER_VERSION } from "./config";
 import type { CatalogProfile } from "./chatgpt-app";
 import type { CatalogSelection } from "./toolsets";
+// Type only: wakeshift.ts (and @wakeshift/sdk) load only when http.ts turns Wakeshift on.
+import type { WakeshiftHooks } from "./wakeshift";
 
 export const MODERN_VERSION = "2026-07-28";
 /** Advertised in server/discover and in -32022 error data: modern era + every SDK-negotiable legacy version. */
@@ -136,6 +138,8 @@ export interface ModernOptions {
   moneyTools?: boolean;
   /** What the connection asked to load (toolsets.ts); omitted, nothing is narrowed. */
   selection?: CatalogSelection;
+  /** Wakeshift (wakeshift.ts), when http.ts turned it on. */
+  wakeshift?: WakeshiftHooks;
 }
 
 /** serverInfo on every result (SHOULD) + the mandatory CacheableResult fields. */
@@ -195,6 +199,7 @@ export async function handleModernRpc(
     moneyTools: options.moneyTools === true,
     selection: options.selection,
     apiKey: Boolean(apiKeyScopeOf(authInfo)),
+    wakeshift: options.wakeshift,
   });
 
   await server.connect(serverSide);

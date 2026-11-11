@@ -88,6 +88,8 @@ import { applyCatalogProfile, applyCatalogResult, catalogProfileRefusal, stdioCa
 import { getOrgAppMap, ORG_APP_PROPS } from "./orgapp";
 import { PAGE_PROPS, pageParams } from "./paging";
 import { toSafeErrorShape, DiditError } from "./security";
+// Type only: wakeshift.ts (and @wakeshift/sdk) load only when http.ts turns Wakeshift on.
+import type { WakeshiftHooks } from "./wakeshift";
 import { auditToolCall } from "./audit-log";
 import { decidePermission, missingPermissionError } from "./permissions";
 import {
@@ -829,6 +831,8 @@ export function createServer(
      * seen. What a key may list and call is decided per request, from the verified credential.
      */
     apiKey?: boolean;
+    /** Wakeshift (wakeshift.ts): handed in by http.ts only when it is on. */
+    wakeshift?: WakeshiftHooks;
   } = {},
 ): Server {
   const hosted = options.hosted === true;
@@ -840,6 +844,12 @@ export function createServer(
   // behaviour is gated on `lean`.
   const lean = profile === "full";
   const selection: CatalogSelection = lean ? options.selection ?? FULL_SELECTION : FULL_SELECTION;
+  // Wakeshift (wakeshift.ts): handed in by http.ts only when it is on, and served only on the
+  // hosted full profile (every toolset selection of it). stdio and the ChatGPT catalog never see it.
+  const wakeshift = hosted && lean ? options.wakeshift : undefined;
+  // The watch tools Wakeshift adds read Didit and change no Didit data (wakeshift.ts): read-only.
+  const annotate = (name: string): ReturnType<typeof annotationsFor> =>
+    wakeshift?.readOnly(name) ? { ...annotationsFor(name), readOnlyHint: true, destructiveHint: false } : annotationsFor(name);
   // THE money gate of the hosted server. Every hosted endpoint hides and refuses didit_org_top_up
   // unless it passes `moneyTools: true`, and only the unlisted /mcp/payments endpoint does (http.ts).
   // It never opens on a reduced catalog profile (the ChatGPT catalog has no credit-purchase flow),
@@ -3579,7 +3589,8 @@ export function createServer(
     ...(docsMcpUrl() ? [docsSearchToolDef()] : []),
 
     ...PRIVILEGED_TOOL_DEFS,
-  ];
+    ...(wakeshift?.toolDefinitions ?? []),
+  ].map((t) => (wakeshift ? { ...t, description: wakeshift.describe(t.name, t.description) } : t));
   const inputSchemaByTool = new Map(toolDefinitions().map((t) => [t.name, t.inputSchema as InputSchema]));
 
   // ---------------------------------------------------------------------------
@@ -3619,18 +3630,18 @@ export function createServer(
     // only in enforce mode — shadow mode lists everything and just records the verdicts.
     const tokenOrg = (authInfo?.extra as Record<string, unknown> | undefined)?.organization_id as string | undefined;
     const query = { scopes: authInfo?.scopes, mode: permissionMode(), tokenOrg, targetOrg: tokenOrg };
-    catalog = catalog.filter((t) => decidePermission({ ...query, tool: t.name }) !== "deny");
+    catalog = catalog.filter((t) => decidePermission({ ...query, tool: wakeshift?.permissionAs(t.name) ?? t.name }) !== "deny");
     const visible = isPrivileged ? catalog : catalog.filter((t) => !isPrivilegedToolName(t.name));
     // A read-only connection has no use for a tool that changes data: it is neither listed nor
     // discoverable, and a call is refused below.
-    return selection.readOnly ? visible.filter((t) => annotationsFor(t.name).readOnlyHint) : visible;
+    return selection.readOnly ? visible.filter((t) => annotate(t.name).readOnlyHint) : visible;
   };
   /** Whether this connection lists the tool. The payments endpoint always lists its money tool. */
   const isListed = (name: string): boolean => selectionLists(selection, name) || (moneyTools && name === MONEY_TOOL);
   /** The usable catalog as the discovery tools read it (tools/discovery.ts). */
   const discoverable = (usable: readonly CatalogTool[], authInfo: AuthInfo | undefined): DiscoverableTool[] =>
     usable.map((tool) => {
-      const { readOnlyHint, destructiveHint } = annotationsFor(tool.name);
+      const { readOnlyHint, destructiveHint } = annotate(tool.name);
       const trimmed = definitionFor(tool, { apiKey: Boolean(apiKeyScopeOf(authInfo)) });
 
       return {
@@ -3692,8 +3703,9 @@ export function createServer(
     // through the discovery tool that runs it when it is not.
     const promptContext = {
       use: (tool: string) =>
-        isListed(tool) ? tool : `${annotationsFor(tool).readOnlyHint ? TOOL_CALL_READ : TOOL_CALL_WRITE} (name: ${tool})`,
+        isListed(tool) ? tool : `${annotate(tool).readOnlyHint ? TOOL_CALL_READ : TOOL_CALL_WRITE} (name: ${tool})`,
       docs: Boolean(docsMcpUrl()),
+      wakes: Boolean(wakeshift),
     };
     server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       const prompt = getPrompt(request.params.name, request.params.arguments, promptContext);
@@ -3734,7 +3746,7 @@ export function createServer(
       },
       annotations: {
         ...((t as { annotations?: Record<string, unknown> }).annotations ?? {}),
-        ...annotationsFor(t.name),
+        ...annotate(t.name),
       },
       _meta: {
         ...((t as { _meta?: Record<string, unknown> })._meta ?? {}),
@@ -3776,7 +3788,7 @@ export function createServer(
     // can record a shadow-mode "would_deny" and the dispatch below can refuse a "deny".
     const tokenOrg = (authInfo?.extra as Record<string, unknown> | undefined)?.organization_id as string | undefined;
     const permission = decidePermission({
-      tool: toolName,
+      tool: wakeshift?.permissionAs(toolName) ?? toolName,
       scopes: authInfo?.scopes,
       mode: permissionMode(),
       tokenOrg,
@@ -3822,7 +3834,7 @@ export function createServer(
   const refuse = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
   if (unwrapError) return refuse(unwrapError);
   // A read-only connection never changes data, whatever the client has listed or remembers.
-  if (selection.readOnly && !annotationsFor(name).readOnlyHint) {
+  if (selection.readOnly && !annotate(name).readOnlyHint) {
     return refuse(
       `'${name}' changes data and this connection is read-only. To allow changes, the person reconnects without ` +
         (hosted ? "`read_only=true` in the server URL (or the X-MCP-Readonly header)." : "--read-only (or DIDIT_READ_ONLY)."),
@@ -3835,7 +3847,7 @@ export function createServer(
     if (PERSON_ONLY_TOOLS.has(name)) return refuse(personOnlyRefusal(name));
   }
   // The read proxy is annotated read-only, so it only ever runs a tool that is.
-  if (via === TOOL_CALL_READ && !annotationsFor(name).readOnlyHint) {
+  if (via === TOOL_CALL_READ && !annotate(name).readOnlyHint) {
     return refuse(`'${name}' changes data, so ${TOOL_CALL_READ} does not run it. Use ${TOOL_CALL_WRITE} with the same name and arguments.`);
   }
   // organization_id / application_id are ROUTING, consumed above into
@@ -3853,7 +3865,7 @@ export function createServer(
   // dropped one would PATCH nothing and report success.
   const args = dropBlankOptionals(
     stripRoutingIds(toolArgs),
-    annotationsFor(name).readOnlyHint ? inputSchemaByTool.get(name) : undefined,
+    annotate(name).readOnlyHint ? inputSchemaByTool.get(name) : undefined,
   );
 
   // ...but a handful of handlers take the routing ids as EXPLICIT PARAMETERS rather than
@@ -3957,7 +3969,7 @@ export function createServer(
   try {
     // The caller's organization role lacks the permission the backend would demand for
     // this tool: refuse here with the permission named (the backend would 403 anyway).
-    if (permission === "deny") throw missingPermissionError(name);
+    if (permission === "deny") throw missingPermissionError(wakeshift?.permissionAs(name) ?? name);
 
     let result: any;
 
@@ -3972,6 +3984,8 @@ export function createServer(
       result = await dispatchInternalTool(name, args);
     } else if (isInvestigatorToolName(name)) {
       result = await dispatchInvestigatorTool(name, args);
+    } else if (wakeshift?.handles(name)) {
+      result = await wakeshift.call(name, args ?? {});
     } else if (aggregate) {
       // Scope survives the fallback: when the org resolved but the app did not, span only
       // that org's apps rather than every org the caller can reach.
@@ -4650,6 +4664,10 @@ export function createServer(
         };
     }
 
+    // Wakeshift: subscribe the conversation to what this call started (a session, an
+    // import job, a transaction). Never fails the call.
+    if (wakeshift) await wakeshift.after(name, args ?? {}, result);
+
     // Annotated here, after BOTH paths (the scoped list and the cross-app aggregate
     // fallback) have produced their rows, so the flag behaves the same either way.
     if (name === "didit_workflow_list" && args?.include_age_assurance) {
@@ -4687,6 +4705,9 @@ export function createServer(
       }),
     );
   });
+
+  // After the handlers are set: attach wraps them in place.
+  wakeshift?.attach(server);
 
   return server;
 }
