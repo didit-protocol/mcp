@@ -157,9 +157,15 @@ test("a retried notification wakes once; Not Started and In Progress wake nobody
   await r.emit(STATUS_BODY);
   await r.emit(STATUS_BODY);
   assert.equal(wake.emits.length, 1, "same event_id, one emit");
-  await r.emit({ ...STATUS_BODY, event_id: "e-2", status: "Not Started" });
-  await r.emit({ ...STATUS_BODY, event_id: "e-3", status: "In Progress" });
+  // Only final statuses wake a session's watchers.
+  for (const [i, status] of ["Not Started", "In Progress", "Resubmitted", "Awaiting User"].entries()) {
+    await r.emit({ ...STATUS_BODY, event_id: `e-q${i}`, status });
+  }
   assert.equal(wake.emits.length, 1);
+  for (const [i, status] of ["Declined", "Expired", "Abandoned", "Kyc Expired"].entries()) {
+    await r.emit({ ...STATUS_BODY, event_id: `e-f${i}`, status });
+  }
+  assert.equal(wake.emits.length, 5);
 });
 
 test("a retry whose body changed (a recomputed timestamp) counts as already emitted, not as a failure", async () => {
@@ -170,19 +176,20 @@ test("a retry whose body changed (a recomputed timestamp) counts as already emit
   assert.equal(wake.emits.length, 1);
 });
 
-test("In Review also reaches the application's review queue; IN_REVIEW the flagged transactions", async () => {
+test("In Review reaches only the application's review queue; IN_REVIEW only the flagged transactions; final statuses the watchers", async () => {
   const { wake, route } = emitter();
   await route("session-status-updated").emit({ ...STATUS_BODY, status: "In Review" });
-  assert.deepEqual(wake.emits.map((e) => [e.event, e.args]), [
-    ["session.status.updated", { session: encodeArgValue(SESSION) }],
-    ["session.in_review", { application: encodeArgValue(APP) }],
-  ]);
+  assert.deepEqual(wake.emits.map((e) => [e.event, e.args]), [["session.in_review", { application: encodeArgValue(APP) }]]);
   wake.clear();
   const txn = { event_id: "t-1", transaction_id: "7e0d…uuid", txn_id: "Order-77", application_id: APP, status: "IN_REVIEW", updated_at: "2026-11-10T19:00:00Z" };
   await route("transaction-status-updated").emit(txn);
+  assert.deepEqual(wake.emits.map((e) => [e.event, e.args]), [["transaction.in_review", { application: encodeArgValue(APP) }]]);
+  wake.clear();
+  await route("transaction-status-updated").emit({ ...txn, event_id: "t-2", status: "AWAITING_USER" });
+  assert.equal(wake.emits.length, 0);
+  await route("transaction-status-updated").emit({ ...txn, event_id: "t-3", status: "APPROVED" });
   assert.deepEqual(wake.emits.map((e) => [e.event, e.args]), [
     ["transaction.status.updated", { application: encodeArgValue(APP), transaction: encodeArgValue("Order-77") }],
-    ["transaction.in_review", { application: encodeArgValue(APP) }],
   ]);
 });
 
@@ -278,6 +285,8 @@ const call = (client, name, args) => client.callTool({ name, arguments: args });
 const subs = (wake) => wake.subscriptions.map((s) => ({ event: s.event, args: s.args, tool: s.tool, once: s.once }));
 
 test("off by default: no hooks, stdio, or the ChatGPT profile list no watch tool and no Wakeshift argument", async (t) => {
+  // Listing looks up the caller's organizations: answer it here, so nothing reaches Didit.
+  stubDidit(t, {});
   const core = parseSelection("core", false);
   const readOnly = parseSelection(undefined, true);
   for (const opts of [
@@ -314,7 +323,7 @@ test("on: the watch tools are listed as reads, and the tools that subscribe take
     assert.ok(byName.get(name).inputSchema.properties.session_key, name);
   }
   assert.equal(byName.get("didit_session_get_decision").inputSchema.properties.session_key, undefined);
-  assert.match(byName.get("didit_session_webhooks").description, /wait_seconds isn't needed/);
+  assert.doesNotMatch(byName.get("didit_session_webhooks").description, /wait_seconds isn't needed/, "Didit's description stays as written");
 });
 
 test("didit_session_create subscribes the conversation to its new session, with replay", async (t) => {
@@ -395,6 +404,14 @@ test("didit_session_webhooks still reads (and waits) as before, and watches the 
   assert.deepEqual(subs(wake), [{ event: "session.webhook_delivery.logged", args: { session: encodeArgValue(SESSION) }, tool: "didit_session_webhooks", once: false }]);
 });
 
+test("didit_session_webhooks with the agent's own wait_seconds waits as before and subscribes nothing", async (t) => {
+  stubDidit(t, { [`GET /session/${SESSION}/webhooks/`]: { body: [{ uuid: "d-1", webhook_type: "status.updated", response_status: 200 }] } });
+  const { client, wake } = await connect(t);
+  const res = await call(client, "didit_session_webhooks", { session_id: SESSION, wait_seconds: 5 });
+  assert.equal(res.structuredContent.deliveries.length, 1);
+  assert.deepEqual(wake.subscriptions, []);
+});
+
 test("didit_session_webhooks on a session the caller can't read subscribes nothing", async (t) => {
   stubDidit(t, {});
   const { client, wake } = await connect(t);
@@ -469,7 +486,7 @@ test("a selection lists the watch tools with their toolset; core keeps its list,
     assert.ok(byName.get(name).inputSchema.properties.session_key, name);
     assert.match(byName.get(name).description, /notifies you/, name);
   }
-  assert.match(byName.get("didit_session_webhooks").description, /wait_seconds isn't needed/);
+  assert.doesNotMatch(byName.get("didit_session_webhooks").description, /wait_seconds isn't needed/, "Didit's description stays as written");
   assert.equal(byName.get("didit_session_get_decision").inputSchema.properties.session_key, undefined);
 });
 
@@ -613,11 +630,12 @@ async function httpApp(t, env) {
     if (env[name] === undefined) delete process.env[name];
     else process.env[name] = env[name];
   }
-  // Only the authorization server's discovery is fetched at startup; fail it fast.
+  // The authorization server's discovery, at startup and later, is the only fetch: fail it
+  // fast, for the whole test, so nothing reaches Didit's auth service. (The test's own
+  // requests use node:http.) node:test restores the mock when the test ends.
   t.mock.method(globalThis, "fetch", async () => new Response("", { status: 503 }));
   const { createHttpApp } = require("../dist/http.js");
   const app = await createHttpApp();
-  t.mock.restoreAll();
   const server = app.listen(0, "127.0.0.1");
   await new Promise((r) => server.once("listening", r));
   t.after(() => {

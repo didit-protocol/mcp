@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import http from "node:http";
 import { createRequire } from "node:module";
 
@@ -53,10 +55,14 @@ class Inbox {
   }
 }
 
-/** Runs the command Claude Code's Monitor is given, in sh, as Monitor runs it: one JSON line per event. */
-function readLines(cmd, signal) {
+/**
+ * Runs the command Claude Code's Monitor is given, in sh, as Monitor runs it: one JSON line per
+ * event. `monitor` is monitorOf's answer: the command, and the HOME holding its link file.
+ */
+function readLines(monitor, signal) {
   const inbox = new Inbox();
-  const sh = spawn("sh", ["-c", cmd], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  const sh = spawn("sh", ["-c", monitor.cmd], { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, HOME: monitor.home } });
+  signal.addEventListener("abort", () => rmSync(monitor.home, { recursive: true, force: true }));
   signal.addEventListener("abort", () => {
     try {
       process.kill(-sh.pid, "SIGKILL");
@@ -77,19 +83,26 @@ function readLines(cmd, signal) {
   return inbox;
 }
 
+/** The connector version this test says it is (WAKESHIFT_E2E_CONNECTOR_VERSION overrides). */
+const CONNECTOR_VERSION = process.env.WAKESHIFT_E2E_CONNECTOR_VERSION || "2026.11.11.1053";
+
 /** Does what Wakeshift's connector for Codex does with a beacon: redeem it and hold the stream. */
 async function connectCodex(beacon, thread) {
   const claims = JSON.parse(Buffer.from(beacon.split(".")[1], "base64url").toString());
   assert.equal(claims.thread, thread);
   const resp = await fetch(claims.redeem, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // As the connector does: its version, so Wakeshift serves it (it refuses ones below its minimum).
+    headers: { "Content-Type": "application/json", "X-Wakeshift-Connector": `wakeshift/${CONNECTOR_VERSION} codex` },
     body: JSON.stringify({ ticket: claims.ticket, thread }),
   });
   const redeemed = await resp.json();
   assert.equal(resp.status, 200, JSON.stringify(redeemed));
   const inbox = new Inbox();
-  const sock = new WebSocket(redeemed.url);
+  // The connector's version on the stream too, and an Origin that matches it, as the connector sends.
+  const sock = new WebSocket(redeemed.url, {
+    headers: { "X-Wakeshift-Connector": `wakeshift/${CONNECTOR_VERSION} codex`, Origin: new URL(redeemed.url.replace(/^ws/, "http")).origin },
+  });
   await new Promise((resolve, reject) => {
     sock.onopen = () => resolve();
     sock.onerror = () => reject(new Error("websocket"));
@@ -104,10 +117,27 @@ async function connectCodex(beacon, thread) {
 }
 
 const text = (r) => r.content.map((c) => c.text ?? "").join("\n");
+/** A result for an assertion's message: its stream links and session keys left out. */
+const shown = (r) => text(r).replace(/link=[A-Za-z0-9._~%-]+/g, "link=<redacted>").replace(/wsc_[a-z2-7]+/g, "wsc_<redacted>");
+/**
+ * Does what Claude Code does with a subscribing result: writes the conversation's link file
+ * (in a HOME of its own, the folder 0700 and the file 0600, as the result says) and returns
+ * the Monitor command to run with that HOME. Never prints the result: it holds the link.
+ */
 const monitorOf = (r) => {
-  const m = text(r).match(/with this command: (u='https?:\/\/[^']+\/v1\/stream\/wait\?[^']+'; c=; p=\$PPID; .*?; done) \./);
-  assert.ok(m, text(r));
-  return m[1];
+  const t = text(r);
+  const file = t.match(/write it with your file-writing tool[^]*?\.wakeshift\/links\/([0-9a-f]+)/)?.[1]
+    ?? t.match(/~\/\.wakeshift\/links\/([0-9a-f]+)/)?.[1];
+  const link = t.match(/this one line: (https?:\/\/\S+\/v1\/stream\/wait\?link=[A-Za-z0-9._~%-]+)/)?.[1];
+  const cmd = t.match(/start the Monitor tool now \(timeout_ms \d+\) with this command: (f=\$HOME\/\.wakeshift\/links\/[0-9a-f]+; .*?; done; fi) \./)?.[1];
+  assert.ok(file && link && cmd, "the result has no link file and Monitor command");
+  const home = mkdtempSync(join(tmpdir(), "didit-e2e-home-"));
+  const dir = join(home, ".wakeshift", "links");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(join(home, ".wakeshift"), 0o700);
+  chmodSync(dir, 0o700);
+  writeFileSync(join(dir, file), link + "\n", { mode: 0o600 });
+  return { cmd, home };
 };
 const sessionKeyOf = (r) => text(r).match(/session_key="(wsc_[a-z2-7]+)"/)?.[1];
 
@@ -281,22 +311,25 @@ test("Claude Code and Codex are woken by the Didit backend's signed events", { s
 
   // ── Claude Code (2026-07-28): didit_session_create wakes on the session's status ──
   const created = await modernCall("tok.bob.sig", { name: "claude-code", version: "2.1.0" }, "didit_session_create", { workflow_id: "wf-1" });
-  assert.equal(created.isError, undefined, text(created));
+  assert.equal(created.isError, undefined, shown(created));
   const session = created.structuredContent.session_id;
   const bobKey = sessionKeyOf(created);
-  assert.ok(bobKey, text(created));
+  assert.ok(bobKey, shown(created));
   const bob = readLines(monitorOf(created), stop.signal);
   // Let the Monitor connect before the first event.
   await new Promise((r) => setTimeout(r, 1500));
 
   const statusBody = (status, event_id = randomUUID()) => ({ event_id, session_id: session, application_id: APP, status, updated_at: new Date().toISOString() });
-  const approved = statusBody("In Review");
+  // In Review isn't a decision: the session's watcher isn't woken (the review queue's are).
+  assert.equal((await backend("session-status-updated", statusBody("In Review"))).status, 204);
+  await bob.expectNothing();
+  const approved = statusBody("Approved");
   assert.equal((await backend("session-status-updated", approved)).status, 204);
   let line = await bob.next();
-  assert.match(line.subject, new RegExp(`session ${session} is now In Review`));
+  assert.match(line.subject, new RegExp(`session ${session} is now Approved`));
   // Monitor's line: the event's topic, its subject, and a preview of the minimal payload.
   assert.ok(line.topic.startsWith("ev/session.status.updated/"), line.topic);
-  assert.match(line.data_preview, /"status": "In Review"/);
+  assert.match(line.data_preview, /"status": "Approved"/);
   assert.doesNotMatch(JSON.stringify(line), /first_name|vendor_data|id_verification/);
 
   // A retry of the same notification (same event_id, new delivery headers) wakes nobody again.
@@ -309,7 +342,7 @@ test("Claude Code and Codex are woken by the Didit backend's signed events", { s
 
   // ── Claude Code (legacy era): webhook deliveries, then a transaction, same conversation ──
   const watched = await legacyCall("tok.bob.sig", CLAUDE_UA, "didit_session_webhooks", { session_id: session, session_key: bobKey });
-  assert.equal(watched.isError, undefined, text(watched));
+  assert.equal(watched.isError, undefined, shown(watched));
   assert.equal((await backend("session-webhook-delivery", {
     delivery_id: randomUUID(), session_id: session, webhook_type: "status.updated", destination_host: "api.acme.com", response_status: 401, attempted_at: new Date().toISOString(),
   })).status, 204);
@@ -321,7 +354,7 @@ test("Claude Code and Codex are woken by the Didit backend's signed events", { s
   const txn = await legacyCall("tok.bob.sig", CLAUDE_UA, "didit_transaction_create", {
     transaction_id: order, transaction_category: "finance", transaction_details: { amount: 10 }, subject: { vendor_data: "u1" }, session_key: bobKey,
   });
-  assert.equal(txn.isError, undefined, text(txn));
+  assert.equal(txn.isError, undefined, shown(txn));
   assert.equal((await backend("transaction-status-updated", {
     event_id: randomUUID(), transaction_id: randomUUID(), txn_id: order, application_id: APP, status: "APPROVED", updated_at: new Date().toISOString(),
   })).status, 204);
@@ -337,7 +370,7 @@ test("Claude Code and Codex are woken by the Didit backend's signed events", { s
   const thread = randomUUID();
   const codexMeta = { "x-codex-turn-metadata": { thread_id: thread } };
   const reviews = await legacyCall("tok.ada.sig", "codex_exec/0.50.0", "didit_session_watch_reviews", {}, codexMeta);
-  assert.equal(reviews.isError, undefined, text(reviews));
+  assert.equal(reviews.isError, undefined, shown(reviews));
   assert.equal(reviews.structuredContent.in_review_now, 2);
   const beacon = reviews._meta?.["wakeshift/connector"];
   assert.equal(typeof beacon, "string", JSON.stringify(reviews._meta));
@@ -351,11 +384,11 @@ test("Claude Code and Codex are woken by the Didit backend's signed events", { s
   const review = await codex.inbox.next();
   assert.match(review.subject, new RegExp(`session ${session} is In Review`));
   assert.deepEqual(review.data, { session_id: session, application_id: APP, updated_at: review.data.updated_at });
-  // bob watches that session too, so he's woken for the same change.
-  assert.match((await bob.next()).subject, /is now In Review/);
+  // bob watches that session too, but In Review isn't its decision: he isn't woken.
+  await bob.expectNothing();
 
   const imported = await legacyCall("tok.ada.sig", "codex_exec/0.50.0", "didit_session_create_import", { source_file_url: "https://files.example.com/a.csv", dry_run: true }, codexMeta);
-  assert.equal(imported.isError, undefined, text(imported));
+  assert.equal(imported.isError, undefined, shown(imported));
   const done = await codex.inbox.next();
   assert.match(done.subject, /finished its dry run/);
   assert.equal(done.data.import_id, fastImport.import_id);
@@ -380,7 +413,7 @@ test("Claude Code and Codex are woken by the Didit backend's signed events", { s
     arguments: { transaction_id: coreOrder, transaction_category: "finance", transaction_details: { amount: 10 }, subject: { vendor_data: "u1" } },
     session_key: bobKey,
   }, undefined, { query: "?toolsets=core" });
-  assert.equal(viaProxy.isError, undefined, text(viaProxy));
+  assert.equal(viaProxy.isError, undefined, shown(viaProxy));
   assert.equal((await backend("transaction-status-updated", {
     event_id: randomUUID(), transaction_id: randomUUID(), txn_id: coreOrder, application_id: APP, status: "DECLINED", updated_at: new Date().toISOString(),
   })).status, 204);
@@ -388,7 +421,7 @@ test("Claude Code and Codex are woken by the Didit backend's signed events", { s
 
   // ── An API key connection (a headless agent in Claude Code): its own subscriber, its own key ──
   const keyCreated = await legacyCall(undefined, CLAUDE_UA, "didit_session_create", { workflow_id: "wf-1" }, undefined, { apiKey: API_KEY });
-  assert.equal(keyCreated.isError, undefined, text(keyCreated));
+  assert.equal(keyCreated.isError, undefined, shown(keyCreated));
   const keySession = keyCreated.structuredContent.session_id;
   assert.equal(sessions.get(keySession), "ci");
   assert.doesNotMatch(text(keyCreated), new RegExp(API_KEY));

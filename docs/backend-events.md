@@ -22,7 +22,7 @@ hand it to a coding agent in the backend's repository as is.
 | `didit_session_create` | the session it creates | `session.status.updated` |
 | `didit_session_watch` (new) | an existing session, after reading it with the caller's credential | `session.status.updated` |
 | `didit_session_watch_reviews` (new) | one application's sessions going to In Review, after listing its sessions with the caller's credential | `session.in_review` |
-| `didit_session_webhooks` | the session's webhook deliveries, for an hour (`wait_seconds` still works) | `session.webhook_delivery.logged` |
+| `didit_session_webhooks` | the session's webhook deliveries, for an hour, when called without `wait_seconds` (with it, the call waits as before and watches nothing) | `session.webhook_delivery.logged` |
 | `didit_session_create_import`, `didit_session_manage_import` (start, resume, retry) | the import job, until it finishes | `session_import.finished` |
 | `didit_transaction_create` | the transaction it submits | `transaction.status.updated` |
 | `didit_transaction_watch_reviews` (new) | one application's transactions going to IN_REVIEW, after listing its transactions with the caller's credential | `transaction.in_review` |
@@ -129,9 +129,10 @@ expiry.
 | `updated_at` | string | When the status changed, ISO 8601 in UTC. |
 
 Send every status, `Not Started` and `In Progress` included. The server decides
-what wakes agents: today, every status except those two (one is where every
-session starts, and the other only means the person opened the link). `In
-Review` also wakes the application's review-queue watchers.
+what wakes agents: a session's watchers wake only for a final status
+(`Approved`, `Declined`, `Expired`, `Abandoned`, `Kyc Expired`), since the
+others mean the decision is still to come. `In Review` wakes only the
+application's review-queue watchers.
 
 ### Webhook delivery: `/internal/events/session-webhook-delivery`
 
@@ -225,7 +226,9 @@ those webhooks, send it for sandbox applications too.
 | `status` | string | The new status, as the API returns it: `APPROVED`, `IN_REVIEW`, `DECLINED`, `AWAITING_USER`… |
 | `updated_at` | string | When it changed, ISO 8601 in UTC. |
 
-`IN_REVIEW` also wakes the application's flagged-transaction watchers.
+A transaction's watchers wake only for a final status (`APPROVED`, `DECLINED`,
+`CANCELLED`). `IN_REVIEW` wakes only the application's flagged-transaction
+watchers.
 
 ### Limits
 
@@ -356,8 +359,15 @@ Retrying is always safe. Each event's ID comes from the body (`event_id`; the
 delivery's `delivery_id`; the job's `import_id` and `status`), so Wakeshift
 delivers a change once, however many times it's reported, for a day after the
 first report. Send the same body on a retry; one whose body changed (a
-recomputed timestamp, say) counts as already sent. Retry for a few minutes at most: an agent woken much later can
-read the current state itself.
+recomputed timestamp, say) counts as already sent.
+
+**Retry with backoff for up to an hour.** A `502` means Wakeshift couldn't take
+the emit (an outage, a deploy): the agent that's waiting is woken once a retry
+gets through, and that's the only way it learns of a change it missed, since it
+isn't polling. A few attempts over an hour (for example after 30 s, 2, 5, 15
+and 40 minutes) cover a short outage. Please document the retry policy you
+choose (the attempts, the window, and which answers count as failed), so the
+server's operators know what they can rely on.
 
 Send notifications off the request path that made the change (a queue, a
 Celery task, an `on_commit` hook), so a slow or failed notification never

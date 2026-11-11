@@ -2,7 +2,7 @@
  * Wakeshift events: wake the agent that asked when something happens in Didit,
  * instead of having it poll.
  *
- * session.status.updated          a verification session's status changed (In Review, Approved, Declined…).
+ * session.status.updated          a verification session reached a final status (Approved, Declined, Expired…).
  *                                 Subscribed by didit_session_create and didit_session_watch.
  * session.in_review               a session of an application went to In Review (the manual-review queue).
  *                                 Subscribed by didit_session_watch_reviews.
@@ -11,7 +11,7 @@
  * session_import.finished         an import job finished: a dry run ended READY, or the import COMPLETED,
  *                                 FAILED or was CANCELLED. Subscribed by didit_session_create_import and
  *                                 didit_session_manage_import (start, resume, retry).
- * transaction.status.updated      a monitored transaction's status changed. Subscribed by didit_transaction_create.
+ * transaction.status.updated      a monitored transaction reached a final status. Subscribed by didit_transaction_create.
  * transaction.in_review           a transaction of an application went to IN_REVIEW.
  *                                 Subscribed by didit_transaction_watch_reviews.
  *
@@ -69,11 +69,14 @@ const IMPORT_CATCH_UP = "1h";
 const READ_CATCH_UP = "2m";
 
 /**
- * Session statuses that wake an agent. "Not Started" is where every session
- * begins, and "In Progress" only means the person opened the link: waking an
- * agent for either would be noise.
+ * The session statuses that wake an agent watching a session: the final ones.
+ * The others (Not Started, In Progress, In Review, Resubmitted, Awaiting User)
+ * mean the decision is still to come; In Review has its own event for the
+ * review queue (session.in_review).
  */
-const QUIET_SESSION_STATUSES = new Set(["Not Started", "In Progress"]);
+const FINAL_SESSION_STATUSES = new Set(["Approved", "Declined", "Expired", "Abandoned", "Kyc Expired"]);
+/** The same for transactions; IN_REVIEW has its own event (transaction.in_review). */
+const FINAL_TRANSACTION_STATUSES = new Set(["APPROVED", "DECLINED", "CANCELLED"]);
 
 /**
  * The tools this module adds to the hosted full profile. Their names put them in the toolsets of
@@ -169,7 +172,7 @@ export function createDiditWakeshift(wake: Wakeshift) {
   const arg = (value: string) => encodeArgValue(value);
 
   const sessionStatus = wake.defineEvent("session.status.updated", {
-    description: "A Didit verification session's status changed",
+    description: "A Didit verification session reached a final status",
     args: z.object({ session: z.string() }),
     payload: z.object({
       session_id: z.string(),
@@ -232,7 +235,7 @@ export function createDiditWakeshift(wake: Wakeshift) {
   });
 
   const transactionStatus = wake.defineEvent("transaction.status.updated", {
-    description: "A monitored Didit transaction's status changed",
+    description: "A monitored Didit transaction reached a final status",
     args: z.object({ application: z.string(), transaction: z.string() }),
     payload: z.object({
       transaction_id: z.string(),
@@ -259,9 +262,10 @@ export function createDiditWakeshift(wake: Wakeshift) {
   // ── Emits, one per backend notification ─────────────────────────────
 
   async function emitSessionStatus(b: SessionStatusUpdated) {
-    if (QUIET_SESSION_STATUSES.has(b.status)) return;
-    const payload = { session_id: b.session_id, application_id: b.application_id, status: b.status, updated_at: b.updated_at };
-    await once(() => sessionStatus.emit({ session: arg(b.session_id) }, payload, { id: emitId(sessionStatus.name, b.event_id) }));
+    if (FINAL_SESSION_STATUSES.has(b.status)) {
+      const payload = { session_id: b.session_id, application_id: b.application_id, status: b.status, updated_at: b.updated_at };
+      await once(() => sessionStatus.emit({ session: arg(b.session_id) }, payload, { id: emitId(sessionStatus.name, b.event_id) }));
+    }
     if (b.status === "In Review") {
       await once(() =>
         sessionInReview.emit(
@@ -283,14 +287,16 @@ export function createDiditWakeshift(wake: Wakeshift) {
   }
 
   async function emitTransactionStatus(b: TransactionStatusUpdated) {
-    const payload = { transaction_id: b.transaction_id, txn_id: b.txn_id, application_id: b.application_id, status: b.status, updated_at: b.updated_at };
-    await once(() =>
-      transactionStatus.emit(
-        { application: arg(b.application_id), transaction: arg(b.txn_id) },
-        payload,
-        { id: emitId(transactionStatus.name, b.event_id) },
-      ),
-    );
+    if (FINAL_TRANSACTION_STATUSES.has(b.status.toUpperCase())) {
+      const payload = { transaction_id: b.transaction_id, txn_id: b.txn_id, application_id: b.application_id, status: b.status, updated_at: b.updated_at };
+      await once(() =>
+        transactionStatus.emit(
+          { application: arg(b.application_id), transaction: arg(b.txn_id) },
+          payload,
+          { id: emitId(transactionStatus.name, b.event_id) },
+        ),
+      );
+    }
     if (b.status === "IN_REVIEW") {
       await once(() =>
         transactionInReview.emit(
@@ -365,6 +371,9 @@ export function createDiditWakeshift(wake: Wakeshift) {
           return;
         }
         case "didit_session_webhooks": {
+          // The agent chose to wait for deliveries in this call (wait_seconds): respect it,
+          // and subscribe nothing. 0 (the default) asks for no wait, so a watch replaces nothing.
+          if (Number(args.wait_seconds ?? 0) > 0) return;
           // The read just checked the caller can see the session's deliveries.
           await wake.currentCall().subscribe(deliveryLogged, { session: arg(String(args.session_id)) }, {
             ttl: DELIVERY_WATCH_TTL,
@@ -417,9 +426,9 @@ export function createDiditWakeshift(wake: Wakeshift) {
     {
       name: "didit_session_watch",
       description:
-        "Watch an existing verification session, to wait for its decision without polling: you're woken when its status " +
-        "changes (In Review, Approved, Declined, " +
-        `Expired, Resubmitted, Awaiting User…), until ${STATUS_WATCH_TTL.replace("d", " days")} pass with no change. ` +
+        "Watch an existing verification session, to wait for its decision without polling: you're woken when it reaches " +
+        "a final status (Approved, Declined, " +
+        `Expired, Abandoned), until ${STATUS_WATCH_TTL.replace("d", " days")} pass with none. ` +
         "didit_session_create already watches the sessions it creates. Returns the session's current status; read the " +
         "decision with didit_session_get_decision.",
       inputSchema: {
@@ -483,14 +492,9 @@ export function createDiditWakeshift(wake: Wakeshift) {
 
   const hooks: WakeshiftHooks = {
     toolDefinitions,
-    describe(name, description) {
-      if (name !== "didit_session_webhooks") return description;
-      return (
-        description +
-        ` With notifications on, wait_seconds isn't needed: this call also watches the session's deliveries for ${DELIVERY_WATCH_TTL.replace("h", " hour")} ` +
-        "and wakes you when the next one is logged."
-      );
-    },
+    // Didit's descriptions stay as written: whether a call can be woken depends on the agent,
+    // which a description can't know (Wakeshift adds its own sentence to tools that subscribe).
+    describe: (_name, description) => description,
     handles: (name) => WAKESHIFT_TOOL_NAMES.includes(name),
     readOnly: (name) => WAKESHIFT_TOOL_NAMES.includes(name),
     permissionAs: (name) => (Object.prototype.hasOwnProperty.call(PERMISSION_AS, name) ? PERMISSION_AS[name] : undefined),
