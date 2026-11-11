@@ -7,6 +7,7 @@ import {
   startDeviceLogin,
 } from "../device-login";
 import { redactApplication, redactCollection, pathSegment, DiditError } from "../security";
+import { wholeEnvelope } from "../paging";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -122,18 +123,28 @@ export async function resendOtp(email: string): Promise<any> {
 
 // Discovery tools work in BOTH modes: hosted/OAuth (accessToken omitted → headers default to
 // the request-context user Bearer) and stdio (explicit accessToken from didit_login).
+// Both lists are paged by the API (50 a page) and both are read whole: they are what every
+// scope is resolved from, so an organization or an application on a second page would not
+// exist for the caller (paging.ts).
 export async function listOrganizations(accessToken?: string): Promise<any> {
-  return apiRequest("/organizations/me/", {
-    baseUrl: DIDIT_AUTH_BASE_URL,
-    headers: accessToken ? getAuthHeaders(accessToken) : undefined,
-  });
+  return wholeEnvelope((page) =>
+    apiRequest("/organizations/me/", {
+      baseUrl: DIDIT_AUTH_BASE_URL,
+      headers: accessToken ? getAuthHeaders(accessToken) : undefined,
+      params: page,
+    }),
+  );
 }
 
 export async function listApplications(orgId: string, accessToken?: string): Promise<any> {
-  const res = await apiRequest(`/organizations/me/${pathSegment(orgId, "organization_id")}/applications/`, {
-    baseUrl: DIDIT_AUTH_BASE_URL,
-    headers: accessToken ? getAuthHeaders(accessToken) : undefined,
-  });
+  const path = `/organizations/me/${pathSegment(orgId, "organization_id")}/applications/`;
+  const res = await wholeEnvelope((page) =>
+    apiRequest(path, {
+      baseUrl: DIDIT_AUTH_BASE_URL,
+      headers: accessToken ? getAuthHeaders(accessToken) : undefined,
+      params: page,
+    }),
+  );
   return redactCollection(res, redactApplication);
 }
 

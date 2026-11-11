@@ -2,8 +2,13 @@
 
 The official [Model Context Protocol](https://modelcontextprotocol.io) server for [Didit](https://didit.me) — bring KYC, KYB, AML screening, transaction monitoring, biometrics, and full workspace operations to Claude, Cursor, VS Code, Windsurf, Zed, and any MCP client.
 
-- **140+ tools** across sessions, workflows, vendor users/businesses, transactions, networks, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
-- **Auth is "Log in with Didit" (OAuth 2.1 + PKCE)** — the MCP acts as the signed-in **user** with their role's permissions. There is **no API-key mode**: every tool calls the user-scoped console endpoints, which only accept a Bearer token.
+- **160+ tools** across sessions, workflows, vendor users/businesses, transactions, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
+- **Load only what you need.** Add `?toolsets=core` for a short catalog of about 30 tools, about a tenth of the tokens the full list costs; the rest stays one step away through `didit_tool_search`. See [Toolsets](#toolsets).
+- **Read-only mode** for connections that must never change anything: add `?read_only=true`.
+- **Two ways to connect.**
+  "Log in with Didit" (OAuth 2.1 + PKCE): the MCP acts as the signed-in **user** with their role's permissions.
+  Or an **application API key**, for agents that run with no person present (CI, scheduled jobs, backend agents): the connection is that one application.
+  See [Authentication](#authentication).
 - Tools call Didit REST endpoints. Session PDF generation returns a temporary download URL for the original PDF.
 
 > Full documentation: **https://docs.didit.me/integration/mcp/overview**
@@ -50,13 +55,15 @@ No install, no API key — point your client at the hosted URL and sign in via t
 https://mcp.didit.me/mcp
 ```
 
-**Claude Code**
+| Client | Install |
+|---|---|
+| **Claude** (web, Desktop) | [Add Didit to Claude](https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Didit&connectorUrl=https://mcp.didit.me/mcp) |
+| **Claude Code** | `claude mcp add --transport http didit https://mcp.didit.me/mcp` |
+| **Cursor** | [Add Didit to Cursor](https://cursor.com/install-mcp?name=didit&config=eyJ1cmwiOiJodHRwczovL21jcC5kaWRpdC5tZS9tY3AifQ%3D%3D) |
+| **VS Code** (GitHub Copilot) | [Add Didit to VS Code](https://vscode.dev/redirect/mcp/install?name=didit&config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.didit.me%2Fmcp%22%7D) |
+| **OpenAI Codex** | `codex mcp add didit --url https://mcp.didit.me/mcp` |
 
-```bash
-claude mcp add --transport http didit https://mcp.didit.me/mcp
-```
-
-**Cursor** (`~/.cursor/mcp.json`)
+**Cursor** (`~/.cursor/mcp.json`), by hand
 
 ```json
 { "mcpServers": { "didit": { "url": "https://mcp.didit.me/mcp" } } }
@@ -68,7 +75,9 @@ claude mcp add --transport http didit https://mcp.didit.me/mcp
 { "mcpServers": { "didit": { "command": "npx", "args": ["-y", "mcp-remote@latest", "https://mcp.didit.me/mcp"] } } }
 ```
 
-See [per-client setup](https://docs.didit.me/integration/mcp/installation) for Claude Desktop and VS Code.
+See [per-client setup](https://docs.didit.me/integration/mcp/installation) for every client, with screenshots and troubleshooting.
+
+Once connected, ask for "my Didit context" (the model calls `didit_context_get`), or start from one of the server's prompts: `integrate_didit`, `review_queue`, `explain_session`, `build_workflow`, `verification_report`.
 
 ### Sign in without a browser (device code)
 
@@ -100,21 +109,152 @@ Approve only a code you started yourself.
 - No shell? Ask the agent to call `didit_account_device_login_start`, show you the link and code, then `didit_account_device_login_poll` once you approve.
   Both tools exist only on the local server.
 
+### Sign in with the account tools
+
+On the local server an agent can also sign in by itself, with an email address and a password: `didit_account_login` for an existing account (then `didit_account_verify_2fa` when the account has an authenticator app), or `didit_account_register` and `didit_account_verify_email` for a new one.
+The local server keeps that sign-in, so the tools that follow are authenticated with nothing passed between them.
+
+- It is kept in the same credentials file as a device-code sign-in (`~/.config/didit/mcp-credentials.json`, readable by you only) and refreshed before it expires.
+  A server started later picks it up.
+- The answer of these tools carries no refresh token: the server holds it, because a refresh token works once.
+- When the file cannot be written (a read-only home directory in a container), the sign-in is kept in memory until the server stops.
+- If you signed in both ways, the server uses the more recent sign-in.
+  `DIDIT_ACCESS_TOKEN`, when set, still takes precedence over both.
+- `npx -y @didit-protocol/mcp-server logout` removes it from the machine.
+- An account that signs in with a passkey or SSO has no password: use the device code above.
+
+These tools exist only on the local server.
+The hosted server never takes a password.
+
+### Connect with an API key (headless agents and CI)
+
+An agent that runs with no person present has no browser to sign in with.
+It connects to the hosted server with the application API key it already sends to the Didit API, in the `x-api-key` header:
+
+**Claude Code**
+
+```bash
+claude mcp add --transport http didit https://mcp.didit.me/mcp --header "x-api-key: $DIDIT_API_KEY"
+```
+
+**Cursor** (`~/.cursor/mcp.json`)
+
+```json
+{ "mcpServers": { "didit": { "url": "https://mcp.didit.me/mcp", "headers": { "x-api-key": "${env:DIDIT_API_KEY}" } } } }
+```
+
+**Any other client or your own agent:** send `x-api-key: <key>` on every request to `https://mcp.didit.me/mcp`.
+`Authorization: Bearer <key>` works too, for clients that only let you set a bearer token.
+
+What an API key connection is:
+
+- **One application.**
+  The connection acts on the application the key belongs to, so there are no ids to pass.
+  `didit_context_get` names it, says whether it is `live` or `sandbox`, and reports `connection.type: "api_key"`.
+  A call that names another organization or application is refused.
+- **The key's own access.**
+  The key is forwarded to the Didit API exactly as on a direct API call, and the API decides what it may do.
+  A full-access key reaches everything of its application; a restricted key only the resources it was given.
+  Give an agent a restricted key with an expiry, created in the Didit console under the application's API keys.
+- **Sandbox first.**
+  Connect with the sandbox application's key to build and test: every check is simulated and nothing is billed.
+- **Combines with toolsets and read-only:** `https://mcp.didit.me/mcp?toolsets=core&read_only=true` (see [Toolsets](#toolsets)).
+- **Revoked like any key.**
+  Revoke or rotate the key in the console and the connection stops within a minute.
+  Every tool call is logged with the key's id, never the key.
+
+What needs a person, and is therefore neither listed nor run on an API key connection:
+
+- members, roles and API key management;
+- the organization's plan, cards, receipts and billing details;
+- the audit log, and `didit_workflow_build_graph` (use `didit_workflow_create`, or the graph tools `didit_workflow_create_draft`, `didit_workflow_validate_graph` and `didit_workflow_set_graph`);
+- download links for session PDFs and e-signature files (request the file from the Didit API with the same key).
+
+A person does those in the Didit console, or through a connection that signs in with OAuth.
+
+Two limits to know:
+
+- A key limited to specific IP addresses is refused, because the Didit API would see this server's address and not yours.
+- `/mcp` and `/mcp/payments` take a key.
+**From nothing to a first verification, with no browser.**
+The account tools of the local server create the account: `didit_account_register`, then `didit_account_verify_email` with the code sent to the email address.
+The answer carries the new organization with its live and its sandbox application, each with its API key.
+The local server is signed in from that moment (see [Sign in with the account tools](#sign-in-with-the-account-tools)), so the same conversation goes on to create a workflow (`didit_workflow_create`) and a session (`didit_session_create`) in the sandbox application.
+For an agent that runs elsewhere, store the keys in your secret store and connect it to the hosted server with the sandbox key; switch to the live key to go live.
+`didit_org_get_balance` reads the credit balance; when credit is needed, see [Agent payments](#agent-payments-mcppayments-stdio).
+
+`GET /healthz` lists `api_key` under `features` on a server that accepts keys.
+
 ## Authentication
 
 The MCP is an OAuth 2.1 **resource server**; the Didit console (`business.didit.me`) is the **authorization server**. On first connect your client opens a browser, you **Log in with Didit** and approve the scopes, and the MCP then acts as **you** — across every organization you belong to, with your role's permissions. Tokens are short-lived and refreshed automatically.
 
 Scopes: `didit:management` (workspace operations), `didit:verification` (running checks) and `didit:staff` (Didit staff accounts only; the authorization server never issues it to anyone else). Your console **role** is enforced server-side on every call.
 
-> **There is no API-key mode.** Every tool targets the user-scoped console endpoints (`/organization/{org}/application/{app}/…`), which authorize a Bearer token with per-role privileges and reject `x-api-key`. (For raw REST access with an application API key — e.g. creating sessions from your backend — use the [REST API](https://docs.didit.me) directly, not this server.)
->
-> The one exception is the phone code pair, `didit_verify_phone_send` and `didit_verify_phone_check`: the console has no route for them, so the MCP reads the application's API key with your sign-in (a role with `create:sessions` and the `didit:management` scope, or an organization owner or admin for a local `didit_account_login` token) and calls the public phone API with it. The key is never returned, stored or logged.
+The hosted server also takes an **application API key** in place of a sign-in, for agents that run with no person present.
+Such a connection is one application with the key's own access, not a user with a role: see [Connect with an API key](#connect-with-an-api-key-headless-agents-and-ci).
+
+> The phone code pair, `didit_verify_phone_send` and `didit_verify_phone_check`, always calls the public phone API with the application's API key, because the console has no route for them.
+> On a sign-in the MCP reads that key with your sign-in (a role with `create:sessions` and the `didit:management` scope, or an organization owner or admin for a local `didit_account_login` token); on an API key connection it uses the connection's own key.
+> The key is never returned, stored or logged.
 
 See [Authentication](https://docs.didit.me/integration/mcp/authentication).
 
+## Toolsets
+
+By default a connection lists every tool your role may use, as it always has.
+Tool definitions are sent to the model with every request, so the whole catalog costs tens of thousands of tokens each time: roughly 50,000 to 115,000, depending on the model's tokenizer.
+Some clients also cap how many tools they accept.
+The short catalog trades that cost for one more step, a search for the tool: measured on a set of everyday requests, the strongest models reached the right tool a little more often with the full list, at about ten times the tokens.
+When the cost matters (a coding agent with a context budget, a client that caps the number of tools), name the toolsets you want on the server URL:
+
+```
+https://mcp.didit.me/mcp?toolsets=core
+https://mcp.didit.me/mcp?toolsets=core,workflows
+https://mcp.didit.me/mcp?toolsets=core,transactions,cases&read_only=true
+```
+
+`core` is the short catalog: about 30 tools and about a tenth of the tokens.
+It covers your organizations and applications, sessions (create, find, decide, explain, simulate in the sandbox, webhook deliveries), finding workflows, analytics and balance, the application's API key and webhooks, finding cases, users, businesses and transactions, and the documentation search.
+
+| Toolset | What it holds |
+|---|---|
+| `core` | The short list above. |
+| `account` | Organizations, applications, API keys, members and roles. |
+| `billing` | Plan, credit balance, payment methods, receipts and billing details. |
+| `sessions` | Verification sessions: create, find, decide, review, share, import, PDFs and webhook deliveries. |
+| `workflows` | Verification workflows and questionnaires: build, edit, validate and publish. |
+| `lists` | Custom lists, the blocklist and the allowlist. |
+| `vendors` | The people and companies you verify: vendor users and vendor businesses. |
+| `transactions` | Transaction monitoring: transactions, wallet screening and rules with backtesting. |
+| `cases` | Case management: create, assign, escalate and resolve cases. |
+| `investigator` | The AI Investigator: its review queue, reports, decisions, policy questions and performance. |
+| `webhooks` | Webhook destinations and alerts. |
+| `reports` | Analytics, exports and the audit log. |
+| `branding` | White-label branding of the verification flow. |
+| `verification` | Standalone verification APIs: ID document, face, AML, proof of address, phone, email, database and business checks. |
+| `docs` | Search the Didit documentation. |
+| `all` | Every tool your role may use. The default. |
+
+How it behaves:
+
+- **Toolsets are opt-in.** A URL with no `toolsets` lists everything, so an existing connection sees no difference.
+- **Naming toolsets lists exactly those.** `?toolsets=cases` lists the case tools (and `didit_context_get`); add `core` to get the short list too.
+- **A toolset decides what is listed, not what you may run.** A tool outside the selection still runs when called by name, with the same permission checks as always. Nothing is lost by loading less.
+- **The rest stays one step away.** When a connection lists only part of the catalog it also gets four discovery tools: `didit_tool_search` (find a tool by what you want to do, or list a toolset), `didit_tool_describe` (its full schema), `didit_tool_call_read` and `didit_tool_call_write` (run it). A call through them is checked exactly like a direct call.
+- **`read_only=true` is a safety boundary.** Only tools that read are listed or discoverable, and every call that would change data is refused, whatever the client lists or remembers. It works with or without `toolsets`.
+- **An unknown toolset is ignored, never an error**, and the server's instructions name it back with the valid ids.
+- **Clients that cannot edit the URL** send the `X-MCP-Toolsets` and `X-MCP-Readonly` headers instead.
+- **The local (stdio) server** takes `--toolsets=core,workflows` and `--read-only`, or the `DIDIT_TOOLSETS` and `DIDIT_READ_ONLY` environment variables.
+- **A self-hosted server** can change what a connection gets when it names nothing with `MCP_DEFAULT_TOOLSETS` (for example `core`).
+- **`GET /healthz`** lists what the server supports (`"features": ["toolsets", "read_only", ...]`), for a client that wants to check before it relies on one.
+
+The server also sends **instructions** on connect (where to start, how organization and application ids resolve, what this connection loaded) and offers **prompts** (`integrate_didit`, `review_queue`, `explain_session`, `build_workflow`, `verification_report`).
+`didit_docs_search` searches the live documentation at docs.didit.me, so questions about how Didit works are answered from the current pages; set `DIDIT_DOCS_MCP_URL` to an empty string to switch it off.
+
 ## Tools
 
-140+ tools, grouped by area. The full catalogue with read/write/destructive markers is in [`docs/TOOLS.md`](docs/TOOLS.md) and at [docs.didit.me](https://docs.didit.me/integration/mcp/tools). Highlights:
+160+ tools, grouped by toolset. The full catalogue with read/write/destructive markers is in [`docs/TOOLS.md`](docs/TOOLS.md) and at [docs.didit.me](https://docs.didit.me/integration/mcp/tools). Highlights:
 
 - **Discovery & cross-app:** `didit_context_get`, `didit_session_search`, `didit_transaction_search`, `didit_vendor_user_search`, `didit_analytics` — aggregate across every org/app in one call.
 - **Sessions:** create, list, get decision, update status, reviews, bulk import, webhook delivery log + resend (`didit_session_webhooks` waits for a sandbox session's webhook so an integration can be verified end to end), Precise Location evidence (`didit_session_get_location_evidence`: every attempt and the same person's earlier checks behind a Location verdict).
@@ -134,6 +274,7 @@ See [Authentication](https://docs.didit.me/integration/mcp/authentication).
 The directory-listed connectors (`/mcp` and `/mcp/chatgpt`) never move money: `didit_org_top_up` is not in their catalog and a call to it is refused with the console link.
 `https://mcp.didit.me/mcp/payments` is a separate, unlisted endpoint for coding agents that may top up the organization's saved card once a person turned that on.
 It uses the same OAuth sign-in and tokens as `/mcp` (its own protected-resource metadata is at `/.well-known/oauth-protected-resource/mcp/payments`), serves the full catalog plus `didit_org_top_up`, and is never submitted to a directory.
+An [API key connection](#connect-with-an-api-key-headless-agents-and-ci) gets the same tool there, under the same switch.
 The local stdio server offers the same tool.
 
 `didit_org_top_up` parameters:
@@ -175,7 +316,8 @@ Both forms enforce the same 15MB cap and magic-bytes allow-list (png/jpg/jpeg/we
 
 ## Run it yourself
 
-The hosted server above is the easy path — no install. To self-host, clone this repo and run it with **Docker** or Node. It authenticates the user the same way (OAuth, or a user Bearer token for headless runs); there is no API-key mode.
+The hosted server above is the easy path - no install. To self-host, clone this repo and run it with **Docker** or Node. It authenticates the same way: OAuth or an application API key on the hosted endpoint, or a user Bearer token (`DIDIT_ACCESS_TOKEN`) for a local headless run.
+API keys need the default token verification mode (`MCP_TOKEN_VERIFY_MODE=introspection`).
 
 ```bash
 git clone https://github.com/didit-protocol/mcp.git && cd mcp

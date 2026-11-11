@@ -204,10 +204,11 @@ export const INVESTIGATOR_TOOL_DEFS: ToolDef[] = [
     name: "didit_investigator_question_list",
     description:
       "List the Investigator's policy questions (situations its policy does not cover, or rules the team keeps " +
-      "overriding), newest first, with counts.",
+      "overriding), newest first, with counts. One page of 50 unless `limit` says otherwise: `count` is the total " +
+      "and `offset` reads the ones after.",
     inputSchema: {
       type: "object" as const,
-      properties: { ...ORG_APP_PROPS, status: { type: "string", enum: QUESTION_STATUSES } },
+      properties: { ...ORG_APP_PROPS, status: { type: "string", enum: QUESTION_STATUSES }, ...PAGE_PROPS },
     },
   },
   {
@@ -465,7 +466,7 @@ export async function dispatchInvestigatorTool(name: string, rawArgs: Record<str
     case "didit_investigator_record_get":
       return call(recordPath(args));
     case "didit_investigator_question_list":
-      return call("/investigator/questions/", { params: pick(args, ["status"]) });
+      return call("/investigator/questions/", { params: pick(args, ["status", "limit", "offset"]) });
     case "didit_investigator_question_get":
       return call(questionPath(args.question_id));
     case "didit_investigator_question_answer":

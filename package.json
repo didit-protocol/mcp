@@ -1,6 +1,6 @@
 {
   "name": "@didit-protocol/mcp-server",
-  "version": "5.1.52",
+  "version": "5.1.53",
   "description": "Didit MCP Server - AI agent integration for identity verification APIs",
   "main": "dist/index.js",
   "bin": {
@@ -18,7 +18,8 @@
     "dev": "ts-node src/index.ts",
     "dev:http": "ts-node src/http.ts",
     "schema:readme": "node scripts/update-readme-schema.mjs",
-    "schema:check": "node scripts/update-readme-schema.mjs --check"
+    "schema:check": "node scripts/update-readme-schema.mjs --check",
+    "catalog:export": "node scripts/export-tool-catalog.mjs"
   },
   "keywords": [
     "didit",
@@ -32,12 +33,16 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
+    "compression": "^1.8.2",
     "express": "^5.0.0",
-    "jose": "^6.0.0"
+    "jose": "^6.0.0",
+    "on-headers": "^1.1.0"
   },
   "devDependencies": {
+    "@types/compression": "^1.8.1",
     "@types/express": "^5.0.0",
     "@types/node": "^20.0.0",
+    "@types/on-headers": "^1.0.4",
     "ts-node": "^10.9.0",
     "typescript": "^5.3.0"
   },

@@ -222,8 +222,9 @@ export async function validateSignatures(sessionId: string, nodeId: string, sign
   });
 }
 
-export async function listSessionReviews(sessionId: string): Promise<any> {
-  return apiRequest(orgAppPath(`/sessions/${sid(sessionId)}/reviews/`));
+/** One page of a session's review history (50 unless `limit` says otherwise), newest first. */
+export async function listSessionReviews(sessionId: string, params?: Record<string, any>): Promise<any> {
+  return apiRequest(orgAppPath(`/sessions/${sid(sessionId)}/reviews/`), { params });
 }
 
 export async function addSessionReview(sessionId: string, data: Record<string, any>): Promise<any> {

@@ -99,8 +99,9 @@ function toGraphPayload(data: QuestionnaireWrite): Record<string, any> {
   };
 }
 
-export async function listQuestionnaires(): Promise<any> {
-  return apiRequest(orgAppPath("/questionnaires/"));
+/** One page of the application's questionnaires (50 unless `limit` says otherwise), newest first. */
+export async function listQuestionnaires(params?: Record<string, any>): Promise<any> {
+  return apiRequest(orgAppPath("/questionnaires/"), { params });
 }
 
 export async function createQuestionnaire(data: QuestionnaireWrite): Promise<any> {

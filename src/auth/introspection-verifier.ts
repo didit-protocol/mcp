@@ -2,6 +2,7 @@ import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/p
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { InvalidTokenError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
+import { apiKeyAuthInfo, looksLikeApiKey } from "../api-key-connection";
 import {
   MCP_OAUTH_INTROSPECT_URL,
   MCP_OAUTH_CLIENT_ID,
@@ -63,6 +64,17 @@ export class IntrospectionTokenVerifier implements OAuthTokenVerifier {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
+    // An application API key instead of a person's token (api-key-connection.ts): the auth
+    // service introspects it under `api_key`, and the answer names its application.
+    if (looksLikeApiKey(token)) {
+      const answer = await this.introspect({ api_key: token });
+      if (!answer || answer.active !== true) {
+        throw new InvalidTokenError("API key is invalid, revoked or expired");
+      }
+
+      return apiKeyAuthInfo(token, answer, new URL(MCP_RESOURCE_URI));
+    }
+
     const body: Record<string, string> = { token };
     if (MCP_DEFAULT_ORG) body.requested_org = MCP_DEFAULT_ORG;
 

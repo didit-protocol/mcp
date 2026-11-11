@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "../dist/index.js";
+import { parseSelection } from "../dist/toolsets.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
@@ -47,14 +48,37 @@ const FULL_REFERENCE_TOOLS = [
   "didit_workflow_set_graph",
 ];
 
-async function listAdvertisedTools() {
+async function withServer(options, fn) {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const server = createServer();
+  const server = createServer(options);
   await server.connect(serverTransport);
   const client = new Client({ name: "contract-test", version: "1.0.0" }, { capabilities: {} });
   await client.connect(clientTransport);
-  const { tools } = await client.listTools();
-  return tools;
+  try {
+    return await fn(client);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
+/**
+ * Every tool as a model can read it in full.
+ *
+ * A list that has both graph tools carries the graph reference once, on the tool that SAVES a
+ * graph, and the validating tool's `graph` argument points at it (index.ts, shareGraphManual).
+ * A tool shown on its own carries the reference itself, and that is the definition this test
+ * holds a FULL_REFERENCE tool to: what didit_tool_describe gives for it, which is how a model
+ * reads one tool without the rest of the list.
+ */
+async function listAdvertisedTools() {
+  const tools = await withServer(undefined, async (client) => (await client.listTools()).tools);
+  const alone = await withServer({ selection: parseSelection("core", false) }, async (client) =>
+    (await client.callTool({ name: "didit_tool_describe", arguments: { names: FULL_REFERENCE_TOOLS } })).structuredContent.tools,
+  );
+  const complete = new Map(alone.map((tool) => [tool.name, tool]));
+
+  return tools.map((tool) => (complete.has(tool.name) ? { ...tool, ...complete.get(tool.name) } : tool));
 }
 
 const toolText = (tool) => JSON.stringify(tool);

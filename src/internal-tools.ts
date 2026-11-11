@@ -15,11 +15,12 @@ export function isInternalToolName(_name: string): boolean {
   return false;
 }
 
-export const INTERNAL_GROUP_PREFIXES: [string, string][] = [];
+export const INTERNAL_TOOLSETS: { id: string; description: string; groups: [string, string][] }[] = [];
 
 export const INTERNAL_DESTRUCTIVE_TOOLS: string[] = [];
 export const INTERNAL_OPEN_WORLD_TOOLS: string[] = [];
 export const INTERNAL_READ_TOOLS: string[] = [];
+export const INTERNAL_PERSON_ONLY_TOOLS: string[] = [];
 
 export const REGULATION_GRAPH_HINT = "";
 

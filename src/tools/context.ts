@@ -1,3 +1,4 @@
+import { requestContext } from "../config";
 import { getOrgAppMap } from "../orgapp";
 
 // One-shot discovery: every organization the caller can access with its applications
@@ -23,7 +24,23 @@ export async function getContext(): Promise<any> {
   // rule, and the two must agree: a default advertised here that the resolver then refuses is
   // exactly the "application_id is required" dead end this field exists to prevent.
   const appsUnknown = map.some((o) => o.appsError);
+  // An API key connection (api-key-connection.ts): say so, because what it can do follows the
+  // key and not a person's role, and the tools that need a person are not on it.
+  const key = requestContext.getStore()?.apiKeyScope;
   return {
+    ...(key
+      ? {
+          connection: {
+            type: "api_key",
+            ...(key.keyLabel ? { key_label: key.keyLabel } : {}),
+            ...(key.keyPrefix ? { key_prefix: key.keyPrefix } : {}),
+            access: key.restricted ? "restricted" : "full",
+            note:
+              "This connection uses an application API key: it acts on this one application, with the access the key has. " +
+              "Members, roles, API key management, the plan, cards and receipts need a person's sign-in (the Didit console, or an OAuth connection).",
+          },
+        }
+      : {}),
     organizations,
     organization_count: organizations.length,
     application_count: allApps.length,

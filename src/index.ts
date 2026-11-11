@@ -4,11 +4,16 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
+  ErrorCode,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
   ListResourcesRequestSchema,
   ListResourceTemplatesRequestSchema,
   ListToolsRequestSchema,
+  McpError,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 
 import * as auth from "./tools/auth";
 import * as sessions from "./tools/sessions";
@@ -25,7 +30,6 @@ import * as lists from "./tools/lists";
 import * as standalone from "./tools/standalone";
 import {
   PRIVILEGED_TOOL_DEFS,
-  PRIVILEGED_GROUP_PREFIX,
   PRIVILEGED_READ_TOOLS,
   isPrivilegedToolName,
   isPrivilegedCaller,
@@ -35,7 +39,6 @@ import {
   internalToolDefs,
   isInternalToolName,
   dispatchInternalTool,
-  INTERNAL_GROUP_PREFIXES,
   INTERNAL_DESTRUCTIVE_TOOLS,
   INTERNAL_OPEN_WORLD_TOOLS,
   INTERNAL_READ_TOOLS,
@@ -68,15 +71,50 @@ import {
 } from "./feature-config-schema";
 import * as analytics from "./tools/analytics";
 import * as compliance from "./tools/compliance";
-import { DeviceLoginError, getStoredAccessToken } from "./device-login";
+import { DeviceLoginError } from "./device-login";
+import { keepSignIn, localSignInToken } from "./account-session";
+import {
+  PERSON_ONLY_TOOLS,
+  apiKeyApplication,
+  apiKeyOrganizations,
+  apiKeyScopeOf,
+  apiKeyScopeRefusal,
+  personOnlyRefusal,
+} from "./api-key-connection";
 import { loginCliCommand, runLoginCli } from "./login-cli";
 import { requestContext, stripRoutingIds, SERVER_VERSION, permissionMode } from "./config";
 import { dropBlankOptionals, type InputSchema } from "./blank-args";
-import { applyCatalogProfile, applyCatalogResult, catalogProfileRefusal, stdioCatalogProfile, CONSOLE_OPEN_TOOL, consoleOpenResult, listWidgetResources, profileServesWidgets, readWidgetResource, widgetToolMeta, widgetTools, type CatalogProfile } from "./chatgpt-app";
+import { applyCatalogProfile, applyCatalogResult, catalogProfileRefusal, stdioCatalogProfile, CONSOLE_OPEN_TOOL, consoleOpenResult, listWidgetResources, profileServesWidgets, readWidgetResource, widgetToolMeta, widgetTools, type CatalogProfile, type CatalogTool } from "./chatgpt-app";
 import { getOrgAppMap, ORG_APP_PROPS } from "./orgapp";
+import { PAGE_PROPS, pageParams } from "./paging";
 import { toSafeErrorShape, DiditError } from "./security";
 import { auditToolCall } from "./audit-log";
 import { decidePermission, missingPermissionError } from "./permissions";
+import {
+  FULL_SELECTION,
+  SELECTABLE_TOOLSET_IDS,
+  TOOLSETS,
+  selectionFromArgv,
+  selectionLabel,
+  selectionLists,
+  toolGroupOf,
+  toolsetOf,
+  type CatalogSelection,
+} from "./toolsets";
+import {
+  TOOL_CALL_READ,
+  TOOL_CALL_WRITE,
+  TOOL_DESCRIBE,
+  TOOL_SEARCH,
+  describeTools,
+  discoveryToolDefs,
+  isToolCallProxy,
+  searchTools,
+  unwrapToolCall,
+  type DiscoverableTool,
+} from "./tools/discovery";
+import { DOCS_SEARCH_TOOL, docsMcpUrl, docsSearchToolDef, searchDocs } from "./tools/docs";
+import { getPrompt, listPrompts, serverInstructions } from "./guidance";
 
 const SESSION_STATUSES =
   "Not Started, In Progress, In Review, Approved, Declined, Expired, Abandoned, Kyc Expired, Resubmitted, Awaiting User";
@@ -412,44 +450,9 @@ const LAST_N_DAYS_PROP = {
   },
 } as const;
 
-// Tool names are domain-first (`didit_<domain>_<action>`) so that Claude's flat
-// "Other tools" connector list sorts every domain's tools into one contiguous block
-// (there is no public API for named sub-groups within a single connector — the
-// alphabetical name sort is the only lever). The group label below is derived from the
-// name prefix and emitted per tool as _meta["anthropic/toolGroup"] (app-facing metadata
-// the model never sees) — harmless today, future-proof if the UI ever renders it.
-const TOOL_GROUP_BY_PREFIX: [string, string][] = [
-  ...(PRIVILEGED_GROUP_PREFIX ? [PRIVILEGED_GROUP_PREFIX] : []),
-  ["account_", "Account Setup"],
-  ["context_", "Account & Org"],
-  ["org_", "Account & Org"],
-  ["billing_", "Billing"],
-  ["session_", "Sessions"],
-  ["workflow_", "Workflows & Questionnaires"],
-  ["questionnaire_", "Workflows & Questionnaires"],
-  ["lists_", "Lists & Blocklist"],
-  ["blocklist_", "Lists & Blocklist"],
-  ["allowlist_", "Lists & Blocklist"],
-  ["vendor_", "Vendor Users & Businesses"],
-  ["transaction_", "Transactions (AML)"],
-  ["case_", "Cases"],
-  ["investigator_", "Investigator"],
-  ["webhook_", "Webhooks & Alerts"],
-  ["alert_", "Webhooks & Alerts"],
-  ["report_", "Reports & Audit"],
-  ["audit_", "Reports & Audit"],
-  ["analytics", "Reports & Audit"],
-  ["branding_", "Branding"],
-  ...INTERNAL_GROUP_PREFIXES,
-  ["verify_", "Verification APIs"],
-];
-function toolGroupOf(name: string): string {
-  const rest = name.replace(/^didit_/, "");
-  for (const [prefix, group] of TOOL_GROUP_BY_PREFIX) {
-    if (rest.startsWith(prefix)) return group;
-  }
-  return "Other";
-}
+// Tool names are domain-first (`didit_<domain>_<action>`). The name prefix decides both the
+// toolset a tool loads with and the group a connector's permission screen shows it under
+// (`_meta["anthropic/toolGroup"]`): see toolsets.ts.
 
 // Tools that don't operate on an org/app scope — never auto-resolve a default for them.
 const SCOPE_AGNOSTIC_TOOLS = new Set([
@@ -464,6 +467,10 @@ const SCOPE_AGNOSTIC_TOOLS = new Set([
   "didit_context_get",
   // Public pricing catalog: no org/app scope to resolve.
   "didit_workflow_get_kyb_registry_catalog",
+  // The catalog and the documentation are the same whatever the organization.
+  TOOL_SEARCH,
+  TOOL_DESCRIBE,
+  DOCS_SEARCH_TOOL,
 ]);
 
 // Account bootstrap tools accept passwords/OTP codes and are only for unauthenticated
@@ -589,6 +596,8 @@ const EXPLICIT_DESTRUCTIVE_TOOLS = new Set([
   // Investigator decisions and policy answers: human decisions behind confirm:true.
   ...INVESTIGATOR_DECISION_TOOLS,
   ...INTERNAL_DESTRUCTIVE_TOOLS,
+  // Runs any tool that changes data (tools/discovery.ts), so a client asks before each call.
+  TOOL_CALL_WRITE,
 ]);
 
 // Tools that can reach outside the current Didit workspace/account boundary by
@@ -639,7 +648,30 @@ const EXPLICIT_READ_TOOLS = new Set([
   "didit_session_explain_decision",
   // Quotes a plan change (a GET): nothing is bought, the person confirms in the console.
   "didit_billing_quote_plan",
+  // Discovery (tools/discovery.ts): describe reads the catalog, call_read refuses anything that writes.
+  TOOL_DESCRIBE,
+  TOOL_CALL_READ,
 ]);
+
+/**
+ * Every table in this file that is keyed by a tool's name, for the one test that holds them to
+ * the tool list (test/tables-name-real-tools.test.mjs).
+ *
+ * A tool is defined in one place and classified in several. Rename it in its definition and not
+ * here, and nothing fails: the entry simply stops matching. A destructive tool then reads as an
+ * ordinary write and a client no longer asks before running it; a tool kept off the hosted
+ * server is listed there again. So an entry that names no tool is an error, not dead weight.
+ */
+export const NAME_KEYED_TABLES: Readonly<Record<string, readonly string[]>> = {
+  SCOPE_AGNOSTIC_TOOLS: [...SCOPE_AGNOSTIC_TOOLS],
+  ACCOUNT_BOOTSTRAP_TOOLS: [...ACCOUNT_BOOTSTRAP_TOOLS],
+  HOSTED_APP_EXCLUDED_TOOLS: [...HOSTED_APP_EXCLUDED_TOOLS],
+  AGGREGATE_FALLBACK: Object.keys(AGGREGATE_FALLBACK),
+  EXPLICIT_DESTRUCTIVE_TOOLS: [...EXPLICIT_DESTRUCTIVE_TOOLS],
+  EXPLICIT_OPEN_WORLD_TOOLS: [...EXPLICIT_OPEN_WORLD_TOOLS],
+  EXPLICIT_WRITE_TOOLS: [...EXPLICIT_WRITE_TOOLS],
+  EXPLICIT_READ_TOOLS: [...EXPLICIT_READ_TOOLS],
+};
 
 function annotationsFor(name: string): {
   title: string;
@@ -668,6 +700,105 @@ function annotationsFor(name: string): {
   return { title, readOnlyHint: false, openWorldHint, destructiveHint: false };
 }
 
+// ---------------------------------------------------------------------------
+// Listing a tool without what a model does not need repeated
+// ---------------------------------------------------------------------------
+// Nearly every tool takes the two routing ids. A listed tool carries them in one short line
+// each; the server instructions (guidance.ts) explain once how they resolve.
+const ROUTING_ID_SUMMARY = {
+  organization_id: "Organization id (didit_context_get).",
+  application_id: "Application id (didit_context_get).",
+} as const;
+const ROUTING_ID_OPTIONAL = " Optional if you have only one.";
+
+function trimDefinition(tool: CatalogTool): CatalogTool {
+  const properties = tool.inputSchema?.properties;
+  if (!properties) return tool;
+  const required = new Set(tool.inputSchema?.required ?? []);
+  const trimmed: Record<string, unknown> = { ...properties };
+  let changed = false;
+  // Identity, not name: a tool that words its own organization_id ("REQUIRED. ...") keeps it.
+  for (const key of ["organization_id", "application_id"] as const) {
+    if (properties[key] === ORG_APP_PROPS[key]) {
+      trimmed[key] = { type: "string", description: ROUTING_ID_SUMMARY[key] + (required.has(key) ? "" : ROUTING_ID_OPTIONAL) };
+      changed = true;
+    }
+  }
+
+  return changed ? { ...tool, inputSchema: { ...tool.inputSchema, properties: trimmed } } : tool;
+}
+
+const ROUTING_IDS = ["organization_id", "application_id"] as const;
+
+/**
+ * An API key connection is one application (api-key-connection.ts): every tool acts on it, and
+ * a call that names another one is refused. Its tools therefore do not take the two routing ids
+ * at all. A model cannot get them wrong, and about 36 KB of the tool list is not sent.
+ */
+function withoutRoutingIds(tool: CatalogTool): CatalogTool {
+  const schema = tool.inputSchema;
+  const properties = schema?.properties;
+  if (!schema || !properties || !ROUTING_IDS.some((key) => key in properties)) return tool;
+  const isRoutingId = (key: string): boolean => (ROUTING_IDS as readonly string[]).includes(key);
+  const kept = Object.fromEntries(Object.entries(properties).filter(([key]) => !isRoutingId(key)));
+  const { required: declared, ...rest } = schema;
+  const required = (declared ?? []).filter((key) => !isRoutingId(key));
+
+  return { ...tool, inputSchema: { ...rest, properties: kept, ...(required.length > 0 ? { required } : {}) } };
+}
+
+/** A tool as one connection is given it, in tools/list and by the discovery tools alike. */
+function definitionFor(tool: CatalogTool, connection: { apiKey: boolean }): CatalogTool {
+  return connection.apiKey ? withoutRoutingIds(tool) : trimDefinition(tool);
+}
+
+// The workflow graph manual (WORKFLOW_GRAPH_SCHEMA: about 26 KB of text, a tenth of the whole
+// list) is the `graph` argument of the tool that saves a graph and of the tool that validates
+// one. A connection that lists both gets the manual once and a pointer to it on the other tool.
+//
+// The manual stays on the tool that SAVES. A graph built without the feature-config contract
+// and saved is the failure this manual exists to prevent (the API drops a config key it does
+// not know, and nothing fails: test/feature-config-contract.test.mjs), so the saving tool never
+// depends on another definition having been read. A graph built without it and only CHECKED
+// comes back with its errors, and the pointer says where the contract is.
+//
+// A tool shown on its own (didit_tool_describe, or a list without the saving tool, such as a
+// read-only connection) always carries the manual itself.
+const GRAPH_MANUAL_TOOL = "didit_workflow_set_graph";
+// Only the text goes: the shape itself (start_node, nodes, both required) costs 250 bytes and is
+// what lets a client check a graph before it makes the call.
+const GRAPH_MANUAL_POINTER = {
+  ...WORKFLOW_GRAPH_SCHEMA,
+  description:
+    `The graph to check, { start_node, nodes }: exactly the object the \`graph\` argument of ${GRAPH_MANUAL_TOOL} ` +
+    "describes (node shapes, branches, operators, every feature's config keys, allow-list shorthands). Read that " +
+    "description to build the graph, check it here, then save it there.",
+};
+
+function shareGraphManual(tools: CatalogTool[]): CatalogTool[] {
+  if (!tools.some((tool) => tool.name === GRAPH_MANUAL_TOOL)) return tools;
+
+  return tools.map((tool) => {
+    const properties = tool.inputSchema?.properties;
+    // Identity, not name: a tool that words its own `graph` argument keeps it.
+    if (tool.name === GRAPH_MANUAL_TOOL || properties?.graph !== WORKFLOW_GRAPH_SCHEMA) return tool;
+
+    return { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...properties, graph: GRAPH_MANUAL_POINTER } } };
+  });
+}
+
+/** What a server announces about itself, kept so the modern dispatch can answer server/discover. */
+export interface ServerDescriptor {
+  capabilities: { tools: {}; prompts?: {}; resources?: {} };
+  instructions?: string;
+}
+const serverDescriptors = new WeakMap<Server, ServerDescriptor>();
+
+/** The capabilities and instructions `createServer` gave this server. */
+export function serverDescriptorOf(server: Server): ServerDescriptor {
+  return serverDescriptors.get(server) ?? { capabilities: { tools: {} } };
+}
+
 /**
  * Build a fully-wired MCP server (tool list + dispatch). A factory rather than a
  * singleton because the stateless Streamable-HTTP transport needs a fresh server
@@ -681,10 +812,34 @@ function annotationsFor(name: string): {
  *
  * `profile` selects the catalog served (see chatgpt-app.ts): `full` (default) or `chatgpt`,
  * the reduced allow-list the hosted server exposes at /mcp/chatgpt for the ChatGPT app store.
+ *
+ * `selection` is what one connection asked to load (toolsets.ts): which toolsets tools/list
+ * returns and whether the connection is read-only. Omitted, nothing is narrowed. The entry
+ * points pass it: http.ts from the request URL and headers, the stdio main from argv and env.
  */
-export function createServer(options: { hosted?: boolean; profile?: CatalogProfile; moneyTools?: boolean } = {}): Server {
+export function createServer(
+  options: {
+    hosted?: boolean;
+    profile?: CatalogProfile;
+    moneyTools?: boolean;
+    selection?: CatalogSelection;
+    /**
+     * The connection authenticated with an application API key (api-key-connection.ts). Only what
+     * the server SAYS about itself reads this: the instructions are written before any request is
+     * seen. What a key may list and call is decided per request, from the verified credential.
+     */
+    apiKey?: boolean;
+  } = {},
+): Server {
   const hosted = options.hosted === true;
+  const describesApiKey = hosted && options.apiKey === true;
   const profile: CatalogProfile = options.profile ?? "full";
+  // The reduced ChatGPT catalog is an allow-list that was reviewed tool by tool, descriptor by
+  // descriptor. It is served exactly as it is defined: never narrowed by a selection, never
+  // trimmed, with no discovery tools, instructions or prompts. Everything below that is new
+  // behaviour is gated on `lean`.
+  const lean = profile === "full";
+  const selection: CatalogSelection = lean ? options.selection ?? FULL_SELECTION : FULL_SELECTION;
   // THE money gate of the hosted server. Every hosted endpoint hides and refuses didit_org_top_up
   // unless it passes `moneyTools: true`, and only the unlisted /mcp/payments endpoint does (http.ts).
   // It never opens on a reduced catalog profile (the ChatGPT catalog has no credit-purchase flow),
@@ -705,29 +860,13 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
   // ChatGPT profile mirrors this omission for local catalog review.
   const stdioOnlyAccessToken = (description: string) =>
     hosted || profile === "chatgpt" ? {} : { access_token: { type: "string" as const, description } };
-  const stdioTokenHint = hosted || profile === "chatgpt" ? "" : " In stdio mode pass access_token from login/verify_email.";
+  const stdioTokenHint = hosted || profile === "chatgpt" ? "" : " In stdio mode the sign-in from login/verify_email is used automatically.";
   // Call-time mirror: hosted and ChatGPT calls never process a token handed in as
   // an argument, even if a client crafted one from a memorised stdio schema. Ignoring (rather
   // than refusing) keeps every existing hosted caller working - the header Bearer that already
   // authenticated the request is the identity used either way.
   const stdioAccessTokenArg = (a?: Record<string, unknown>): string | undefined =>
     hosted || profile === "chatgpt" ? undefined : (a?.access_token as string | undefined);
-
-  // Only a profile that serves MCP Apps UI (chatgpt-app.ts) advertises `resources`; every
-  // other profile keeps exactly the capabilities it always had.
-  const servesWidgets = profileServesWidgets(profile);
-  const server = new Server(
-    { name: "didit", version: SERVER_VERSION },
-    { capabilities: servesWidgets ? { tools: {}, resources: {} } : { tools: {} } }
-  );
-
-  if (servesWidgets) {
-    // The UI templates (`ui://` resources) the tools reference. Static, identical for every
-    // caller, and behind the same Bearer gate as the rest of the endpoint (http.ts).
-    server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: listWidgetResources() }));
-    server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
-    server.setRequestHandler(ReadResourceRequestSchema, async (request) => readWidgetResource(request.params.uri));
-  }
 
   // ---------------------------------------------------------------------------
   // Tool definitions
@@ -752,7 +891,8 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     {
       name: "didit_account_verify_email",
       description:
-        "Verify email with the 6-character code. Returns access_token, refresh_token, organization, application (with client_id and api_key). " +
+        "Verify email with the 6-character code. Returns the new organization with its live application and its sandbox_application (each with client_id and api_key) and an access_token, " +
+        "and signs the local server in: the tools that follow are authenticated automatically. " +
         "If the account already has two-factor authentication it returns 2fa_required (and a temp_token when it has an authenticator) instead of tokens: finish with didit_account_verify_2fa. " +
         "If the account's organization enforces SSO it returns sso_required: no token or API key is issued here, so ask the person to sign in through their organization's SSO in the Didit console in a browser; do not retry.",
       inputSchema: {
@@ -778,7 +918,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     {
       name: "didit_account_login",
       description:
-        "Login to existing Didit account. Returns access_token and refresh_token. If the account has two-factor " +
+        "Log in to an existing Didit account. Signs the local server in, so the tools that follow are authenticated automatically, and returns access_token. If the account has two-factor " +
         "authentication it returns 2fa_required and a temp_token instead: finish with didit_account_verify_2fa. " +
         "If the account's organization enforces SSO it returns sso_required: no token is issued by password, so ask the person to sign in through SSO in the console, or use didit_account_device_login_start. " +
         "For an account that signs in with a passkey or SSO (no password), use didit_account_device_login_start instead.",
@@ -810,7 +950,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       name: "didit_account_verify_2fa",
       description:
         "Finish logging in to an account with two-factor authentication, using the temp_token from didit_account_login " +
-        "and the current 6-digit authenticator code (or an unused backup code). Returns access_token and refresh_token.",
+        "and the current 6-digit authenticator code (or an unused backup code). Signs the local server in, like didit_account_login, and returns access_token.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -828,7 +968,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       inputSchema: {
         type: "object" as const,
         properties: {
-          ...stdioOnlyAccessToken("Only for stdio mode — Bearer access token from login/verify_email. Omit in hosted OAuth mode."),
+          ...stdioOnlyAccessToken("Only for stdio mode, and only to act as another account than the one signed in: a Bearer access token from login/verify_email."),
         },
       },
     },
@@ -1249,12 +1389,13 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_session_list_reviews",
-      description: "List the review history and activity log for a session.",
+      description: "List the review history and activity log for a session, newest first. One page: 50 entries unless `limit` says otherwise, with `count` as the total and `offset` to read the ones after.",
       inputSchema: {
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
           session_id: { type: "string" },
+          ...PAGE_PROPS,
         },
         required: ["session_id"],
       },
@@ -1447,7 +1588,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     // ── Workflows (Verification Settings) ───────────────────────────────
     {
       name: "didit_workflow_list",
-      description: "List verification workflows. With multiple apps (or no scope) it auto-spans every app, each row tagged with its org/app. To find one workflow by id/label across all apps, prefer didit_workflow_search. The `features` on a row do NOT tell you whether a workflow checks age: age assurance done from the DOCUMENT (age restrictions on the OCR step) shows no feature of its own. For any question about which workflows do age assurance, pass `include_age_assurance:true` — it annotates each row with `does_age_assurance`/`methods` server-side, which is the only reliable way to find them.",
+      description: "List verification workflows. With multiple apps (or no scope) it auto-spans every app, each row tagged with its org/app. To find one workflow by id/label across all apps, prefer didit_workflow_search. The `features` on a row do NOT tell you whether a workflow checks age: age assurance done from the DOCUMENT (age restrictions on the OCR step) shows no feature of its own. For any question about which workflows do age assurance, pass `include_age_assurance:true` — it annotates each row with `does_age_assurance`/`methods` server-side, which is the only reliable way to find them. In one application the answer is ONE PAGE, most recently changed first: 20 workflows unless `limit` says otherwise, with `count` as the total and `offset` to read the ones after. Across applications it is the first 50 unless `limit` says otherwise, with `total_matched` as the total and the same `offset`. To count or filter workflows, read until you have them all.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1456,6 +1597,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
             type: "boolean",
             description: "Annotate each non-archived row with whether it does age assurance, and how. Required to find workflows that check age from the document.",
           },
+          ...PAGE_PROPS,
         },
       },
     },
@@ -1732,8 +1874,8 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     // ── Questionnaires ──────────────────────────────────────────────────
     {
       name: "didit_questionnaire_list",
-      description: "List all custom questionnaires for your application.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description: "List all custom questionnaires for your application. One page, newest first: 50 unless `limit` says otherwise, with `count` as the total and `offset` to read the ones after.",
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, ...PAGE_PROPS } },
     },
     {
       name: "didit_questionnaire_create",
@@ -2243,6 +2385,9 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         },
       },
     },
+    // install / uninstall need library_keys or bundle. That is said in the descriptions and enforced
+    // by the handlers (tools/transactions.ts), never with a top-level anyOf in the input schema:
+    // model APIs refuse a tool list that has one (test/tool-schemas-portable.test.mjs).
     {
       name: "didit_transaction_rule_install",
       description:
@@ -2260,7 +2405,6 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
           },
           bundle: { type: "string", description: "Install presets from this bundle." },
         },
-        anyOf: [{ required: ["library_keys"] }, { required: ["bundle"] }],
       },
     },
     {
@@ -2279,7 +2423,6 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
           },
           bundle: { type: "string", description: "Uninstall presets from this bundle." },
         },
-        anyOf: [{ required: ["library_keys"] }, { required: ["bundle"] }],
       },
     },
 
@@ -2946,25 +3089,77 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
 
     // ── Blocklist / Allowlist ───────────────────────────────────────────
+    // The blocklist and the allowlist are written from a SESSION: an entry is an item that session
+    // holds (its face, its document, its phone number, its email address), never a free value.
     {
       name: "didit_blocklist_get",
-      description: "List blocklist entries (blocked users/identifiers).",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description:
+        "List the application's blocklist, newest first: the faces, identity documents, phone numbers and email " +
+        "addresses that are blocked, each with the `session_id` it was blocked from (what didit_blocklist_remove " +
+        "takes). One page: 50 entries unless `limit` says otherwise, with `count` as the total and `offset` to read " +
+        "the ones after.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          item_type: { type: "string", enum: ["face", "document", "phone", "email"], description: "Only entries of this kind." },
+          ...PAGE_PROPS,
+        },
+      },
     },
     {
       name: "didit_blocklist_add",
-      description: "Add an entry to the blocklist (e.g. by vendor_data, document number, face).",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS }, required: [] },
+      description:
+        "Block what a verification session holds, so that later sessions of this application with the same item are " +
+        "caught by the blocklist check: its face, its identity document, its phone number or its email address. " +
+        "Name the session and set at least one of the four flags to true. A flag works only when the session has " +
+        "that item. Undo with didit_blocklist_remove.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "The session whose item is blocked." },
+          blocklist_face: { type: "boolean", description: "Block the session's face." },
+          blocklist_document: { type: "boolean", description: "Block the session's identity document." },
+          blocklist_phone: { type: "boolean", description: "Block the session's phone number." },
+          blocklist_email: { type: "boolean", description: "Block the session's email address." },
+        },
+        required: ["session_id"],
+      },
     },
     {
       name: "didit_blocklist_remove",
-      description: "Remove an entry from the blocklist.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description:
+        "Lift a block. Name the session the item was blocked from (the `session_id` of the entry in " +
+        "didit_blocklist_get) and set at least one of the four flags to true.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "The session the item was blocked from." },
+          unblock_face: { type: "boolean", description: "Lift the block on the session's face." },
+          unblock_document: { type: "boolean", description: "Lift the block on the session's identity document." },
+          unblock_phone: { type: "boolean", description: "Lift the block on the session's phone number." },
+          unblock_email: { type: "boolean", description: "Lift the block on the session's email address." },
+        },
+        required: ["session_id"],
+      },
     },
     {
       name: "didit_allowlist_add",
-      description: "Add an entry to the allowlist (trusted, bypasses some checks).",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description:
+        "Mark the phone number of a verification session as trusted in this application, so that phone verification " +
+        "does not turn it away as high risk. A phone number is the only thing that can be allowlisted, and a " +
+        "blocked number stays blocked. Name the session and set allowlist_phone to true.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "The session whose phone number is trusted." },
+          allowlist_phone: { type: "boolean", description: "Must be true: the phone number is what gets allowlisted." },
+        },
+        required: ["session_id", "allowlist_phone"],
+      },
     },
 
     // ── Case management ─────────────────────────────────────────────────
@@ -2980,13 +3175,73 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_case_create",
-      description: "Create a case.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description:
+        "Open a case for a compliance review. A case is about a subject (one of your users or businesses) or is " +
+        "linked to at least one session or transaction: pass `subject`, `links` or both. `subject.uuid` is the " +
+        "`didit_internal_id` of the user or the business, as didit_vendor_user_get and didit_vendor_business_get " +
+        "return it; it is not their vendor_data. Returns the case with its `uuid`. With review_duplicates true the API first looks " +
+        "for cases already open about the same subject and answers 409 case_duplicate_review_required when it finds " +
+        "one: show it to the person, and to open a separate case anyway send separate_incident_reason.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          title: { type: "string", description: "What the case is about, in one line (255 characters at most)." },
+          subject: {
+            type: "object",
+            description: "Who the case is about. Required unless `links` is given.",
+            properties: {
+              type: { type: "string", enum: ["user", "business"] },
+              uuid: { type: "string", description: "The `didit_internal_id` of that user or business." },
+            },
+            required: ["type", "uuid"],
+          },
+          links: {
+            type: "array",
+            description: "What the case is linked to, 20 at most. Required unless `subject` is given.",
+            items: {
+              type: "object",
+              properties: {
+                entity_type: { type: "string", enum: ["session", "business_session", "transaction"] },
+                entity_uuid: { type: "string", description: "The id of that session or transaction." },
+              },
+              required: ["entity_type", "entity_uuid"],
+            },
+          },
+          priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"], description: "MEDIUM when left out." },
+          assigned_to: { type: "string", description: "The reviewer to assign the case to: the `user_id` of a member (didit_org_list_members)." },
+          due_at: { type: "string", description: "The deadline, ISO 8601. Left out, the review policy's own deadline applies when it has one." },
+          tags: { type: "array", items: { type: "string" }, description: "Labels to find the case by." },
+          blueprint: { type: "string", description: "The uuid of the review policy to open the case under. It must be active." },
+          review_duplicates: { type: "boolean", description: "Look for cases already open about the same subject before creating this one." },
+          separate_incident_reason: { type: "string", description: "Why a separate case is wanted although one is already open (1,000 characters at most)." },
+        },
+        required: ["title"],
+      },
     },
     {
       name: "didit_case_statistics",
-      description: "Get case statistics (counts by status, etc.).",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description:
+        "Case analytics for a period (totals, series over time, the queue, outcomes and workload): the last 30 days " +
+        "unless both dates are given, two years at most. Every filter narrows the numbers.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          date_from: { type: "string", description: "First day, YYYY-MM-DD. Give it together with date_to." },
+          date_to: { type: "string", description: "Last day, YYYY-MM-DD." },
+          status: { type: "string", enum: ["OPEN", "AWAITING_USER", "RESOLVED"] },
+          priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
+          source: {
+            type: "string",
+            enum: ["MANUAL", "AML_SCREENING", "TRANSACTION_RULE", "WORKFLOW_BUILDER"],
+            description: "What opened the cases.",
+          },
+          scope: { type: "string", enum: ["identity", "transactions"], description: "Only identity cases, or only the ones a transaction rule opened." },
+          assigned_to: { type: "string", description: "Only cases assigned to this reviewer (a member's `user_id`)." },
+          blueprint: { type: "string", description: "Only cases under this review policy (its uuid)." },
+        },
+      },
     },
     {
       name: "didit_case_manage",
@@ -3014,8 +3269,20 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     // ── Reports (async exports) ─────────────────────────────────────────
     {
       name: "didit_report_list",
-      description: "List generated export reports.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+      description: "List the application's generated reports, newest first, with how many there are of each status (`counts`). One page: 50 unless `limit` says otherwise, with `count` as the total and `offset` to read the ones after.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          status: { type: "string", description: "Only these statuses, comma separated: PENDING, PROCESSING, READY, FAILED." },
+          report_type: {
+            type: "string",
+            description: "Only these report types, comma separated, for example SESSION_EXPORT, TRANSACTION_EXPORT, CASE_EXPORT, VENDOR_USER_EXPORT.",
+          },
+          q: { type: "string", description: "Search by any part of the report id, or of the name or email of the person who asked for it." },
+          ...PAGE_PROPS,
+        },
+      },
     },
     {
       name: "didit_report_get",
@@ -3067,15 +3334,30 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_alert_list",
-      description: "List configured alerts.",
+      description:
+        "List the application's alerts, one per channel: `alert_type` (email or slack), where it is sent (`value`) and whether it is on (`is_active`).",
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
     {
       name: "didit_alert_configure",
-      description: "Configure an alert by type.",
+      description:
+        "Set where one of the application's alerts is sent, or turn it on or off. `alert_type` is the channel. An " +
+        "alert with no destination is always off. If the API answers 409 legacy_alerts_read_only, this " +
+        "application's alerts are managed in the console's Notification settings and cannot be changed here.",
       inputSchema: {
         type: "object" as const,
-        properties: { ...ORG_APP_PROPS, alert_type: { type: "string" }, data: { type: "object" } },
+        properties: {
+          ...ORG_APP_PROPS,
+          alert_type: { type: "string", enum: ["email", "slack"], description: "The channel to change." },
+          data: {
+            type: "object",
+            description: "What to change; a field left out keeps its value.",
+            properties: {
+              value: { type: "string", description: "The destination: an email address for email, a Slack webhook URL for slack." },
+              is_active: { type: "boolean", description: "Whether the alert is on." },
+            },
+          },
+        },
         required: ["alert_type"],
       },
     },
@@ -3116,10 +3398,17 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     },
     {
       name: "didit_org_remove_member",
-      description: "Remove a member from the organization.",
+      description:
+        "Remove a member from the organization. It cannot be undone: to come back the person has to be invited again.",
       inputSchema: {
         type: "object" as const,
-        properties: { organization_id: ORG_APP_PROPS.organization_id, member_id: { type: "string" } },
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          member_id: {
+            type: "string",
+            description: "The `uuid` of the member's row in didit_org_list_members. Not `user_id`, and not the email address.",
+          },
+        },
         required: ["member_id"],
       },
     },
@@ -3286,40 +3575,152 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       },
     },
 
+    // The documentation, searched from the same connection (tools/docs.ts).
+    ...(docsMcpUrl() ? [docsSearchToolDef()] : []),
+
     ...PRIVILEGED_TOOL_DEFS,
   ];
   const inputSchemaByTool = new Map(toolDefinitions().map((t) => [t.name, t.inputSchema as InputSchema]));
 
+  // ---------------------------------------------------------------------------
+  // What a caller may use, and what a connection lists
+  // ---------------------------------------------------------------------------
+  /**
+   * Every tool this caller may use on this endpoint, before the connection's selection
+   * narrows what is LISTED. tools/list, the discovery tools and the server instructions all
+   * start from here, so they can never disagree about what exists.
+   */
+  const usableBy = (authInfo: AuthInfo | undefined): CatalogTool[] => {
+    // Privileged operational tools are emitted ONLY to privileged connections; everyone else never
+    // sees them in tools/list (and a call is rejected below). In the open-source build there are none.
+    const isPrivileged = isPrivilegedCaller(authInfo, { hosted });
+    const tools: CatalogTool[] = toolDefinitions();
+    // Hosted (Bearer-authenticated) catalogs never include the account-bootstrap /
+    // checkout / secret-reveal tools — the public app catalog must stay free of
+    // credential-collection, checkout, and secret-reveal flows. Privileged (staff)
+    // callers and local stdio setups keep the full catalog.
+    // Only a remote (HTTP) request carries authInfo. A local stdio server started with
+    // DIDIT_ACCESS_TOKEN is a local setup and keeps the full catalog, as documented; counting
+    // that env token as a remote Bearer hid didit_org_top_up and the key reveal from it.
+    const remoteBearer = Boolean(authInfo?.token);
+    let catalog =
+      remoteBearer && !isPrivileged
+        ? tools.filter((t) => !HOSTED_APP_EXCLUDED_TOOLS.has(t.name) || (moneyTools && t.name === MONEY_TOOL))
+        : tools;
+    // Remote connectors authenticate with OAuth, so account credentials must never travel
+    // through the conversation: hosted servers drop the bootstrap tools for EVERY caller
+    // (staff included), regardless of Bearer state. They remain available on stdio.
+    if (hosted) catalog = catalog.filter((t) => !ACCOUNT_BOOTSTRAP_TOOLS.has(t.name));
+    // An API key connection is one application and no person (api-key-connection.ts): the tools
+    // that act for a member of an organization are not offered to it, and a call is refused below.
+    // `describesApiKey` covers the instructions, which describe the catalog with no request at hand.
+    if (describesApiKey || apiKeyScopeOf(authInfo)) catalog = catalog.filter((t) => !PERSON_ONLY_TOOLS.has(t.name));
+    // A tool the caller's organization role could never run is not offered (permissions.ts);
+    // only in enforce mode — shadow mode lists everything and just records the verdicts.
+    const tokenOrg = (authInfo?.extra as Record<string, unknown> | undefined)?.organization_id as string | undefined;
+    const query = { scopes: authInfo?.scopes, mode: permissionMode(), tokenOrg, targetOrg: tokenOrg };
+    catalog = catalog.filter((t) => decidePermission({ ...query, tool: t.name }) !== "deny");
+    const visible = isPrivileged ? catalog : catalog.filter((t) => !isPrivilegedToolName(t.name));
+    // A read-only connection has no use for a tool that changes data: it is neither listed nor
+    // discoverable, and a call is refused below.
+    return selection.readOnly ? visible.filter((t) => annotationsFor(t.name).readOnlyHint) : visible;
+  };
+  /** Whether this connection lists the tool. The payments endpoint always lists its money tool. */
+  const isListed = (name: string): boolean => selectionLists(selection, name) || (moneyTools && name === MONEY_TOOL);
+  /** The usable catalog as the discovery tools read it (tools/discovery.ts). */
+  const discoverable = (usable: readonly CatalogTool[], authInfo: AuthInfo | undefined): DiscoverableTool[] =>
+    usable.map((tool) => {
+      const { readOnlyHint, destructiveHint } = annotationsFor(tool.name);
+      const trimmed = definitionFor(tool, { apiKey: Boolean(apiKeyScopeOf(authInfo)) });
+
+      return {
+        name: tool.name,
+        description: String(trimmed.description ?? ""),
+        inputSchema: trimmed.inputSchema ?? {},
+        access: readOnlyHint ? "read" : destructiveHint ? "destructive" : "write",
+        listed: isListed(tool.name),
+      };
+    });
+
+  // Capabilities, and what the server says about itself when a client connects (guidance.ts).
+  // The instructions describe the catalog of an ordinary (non-staff) caller: they are fixed
+  // when the server is built, before any request is seen.
+  const servesWidgets = profileServesWidgets(profile);
+  const capabilities: ServerDescriptor["capabilities"] = lean
+    ? { tools: {}, prompts: {} }
+    : servesWidgets
+      ? { tools: {}, resources: {} }
+      : { tools: {} };
+  const unloadedToolsets = (): string[] => {
+    const unloaded = new Set(
+      usableBy(undefined)
+        .filter((tool) => !isListed(tool.name))
+        .map((tool) => toolsetOf(tool.name))
+        .filter((id): id is string => Boolean(id)),
+    );
+
+    return TOOLSETS.map((toolset) => toolset.id).filter((id) => unloaded.has(id));
+  };
+  const instructions = lean
+    ? serverInstructions({
+        hosted,
+        apiKey: describesApiKey,
+        selection,
+        unloaded: unloadedToolsets(),
+        selectable: SELECTABLE_TOOLSET_IDS,
+      })
+    : undefined;
+  const server = new Server(
+    { name: "didit", version: SERVER_VERSION },
+    { capabilities, ...(instructions ? { instructions } : {}) },
+  );
+  serverDescriptors.set(server, { capabilities, ...(instructions ? { instructions } : {}) });
+
+  if (servesWidgets) {
+    // The UI templates (`ui://` resources) the tools reference. Static, identical for every
+    // caller, and behind the same Bearer gate as the rest of the endpoint (http.ts).
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: listWidgetResources() }));
+    server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => readWidgetResource(request.params.uri));
+  }
+
+  if (lean) {
+    // Starting points a person picks from the client's prompt menu (guidance.ts). Static and
+    // identical for every caller.
+    server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: listPrompts() }));
+    // A prompt names each tool the way this connection reaches it: directly when it is listed,
+    // through the discovery tool that runs it when it is not.
+    const promptContext = {
+      use: (tool: string) =>
+        isListed(tool) ? tool : `${annotationsFor(tool).readOnlyHint ? TOOL_CALL_READ : TOOL_CALL_WRITE} (name: ${tool})`,
+      docs: Boolean(docsMcpUrl()),
+    };
+    server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+      const prompt = getPrompt(request.params.name, request.params.arguments, promptContext);
+      if (!prompt) throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${request.params.name}`);
+
+      return prompt;
+    });
+  }
+
   server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
-  // Privileged operational tools are emitted ONLY to privileged connections; everyone else never
-  // sees them in tools/list (and a call is rejected below). In the open-source build there are none.
-  const isPrivileged = isPrivilegedCaller(extra?.authInfo, { hosted });
-  const tools = toolDefinitions();
-  // Hosted (Bearer-authenticated) catalogs never include the account-bootstrap /
-  // checkout / secret-reveal tools — the public app catalog must stay free of
-  // credential-collection, checkout, and secret-reveal flows. Privileged (staff)
-  // callers and local stdio setups keep the full catalog.
-  // Only a remote (HTTP) request carries authInfo. A local stdio server started with
-  // DIDIT_ACCESS_TOKEN is a local setup and keeps the full catalog, as documented; counting
-  // that env token as a remote Bearer hid didit_org_top_up and the key reveal from it.
-  const remoteBearer = Boolean(extra?.authInfo?.token);
-  let catalog =
-    remoteBearer && !isPrivileged
-      ? tools.filter((t) => !HOSTED_APP_EXCLUDED_TOOLS.has(t.name) || (moneyTools && t.name === MONEY_TOOL))
-      : tools;
-  // Remote connectors authenticate with OAuth, so account credentials must never travel
-  // through the conversation: hosted servers drop the bootstrap tools for EVERY caller
-  // (staff included), regardless of Bearer state. They remain available on stdio.
-  if (hosted) catalog = catalog.filter((t) => !ACCOUNT_BOOTSTRAP_TOOLS.has(t.name));
-  // A tool the caller's organization role could never run is not offered (permissions.ts);
-  // only in enforce mode — shadow mode lists everything and just records the verdicts.
-  const tokenOrg = (extra?.authInfo?.extra as Record<string, unknown> | undefined)?.organization_id as string | undefined;
-  const query = { scopes: extra?.authInfo?.scopes, mode: permissionMode(), tokenOrg, targetOrg: tokenOrg };
-  catalog = catalog.filter((t) => decidePermission({ ...query, tool: t.name }) !== "deny");
-  const visible = isPrivileged ? catalog : catalog.filter((t) => !isPrivilegedToolName(t.name));
+  const usable = usableBy(extra?.authInfo);
   // Endpoint catalog profile (chatgpt-app.ts): the ChatGPT endpoint offers only the
   // allow-listed tools, with restricted input properties removed from their schemas.
-  const offered = applyCatalogProfile(visible, profile);
+  const allowed = applyCatalogProfile(usable, profile);
+  // The connection's selection (toolsets.ts): list what it asked to load, trimmed of what a
+  // model does not need repeated, and keep the rest one step away through the discovery tools.
+  // They appear only when something the caller may use is left out of the list.
+  const connection = { apiKey: Boolean(apiKeyScopeOf(extra?.authInfo)) };
+  const listed = lean
+    ? shareGraphManual(allowed.filter((t) => isListed(t.name)).map((t) => definitionFor(t, connection)))
+    : allowed;
+  // Discovery reads the same profile-filtered catalog the list is cut from, so a match is always
+  // a tool this endpoint will run.
+  const offered =
+    lean && listed.length < allowed.length
+      ? [...listed, ...discoveryToolDefs(discoverable(allowed, extra?.authInfo), { readOnly: selection.readOnly })]
+      : listed;
   // Annotate each tool so the connector UI splits them into Read-only / Write / Destructive
   // groups (driven by readOnlyHint + destructiveHint) instead of one flat "Other tools"
   // bucket; also tag the logical domain group via _meta for future UI use.
@@ -3355,17 +3756,27 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
 // ---------------------------------------------------------------------------
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const authInfo = extra?.authInfo;
+    // A call through didit_tool_call_read / _write (tools/discovery.ts) names the real tool and
+    // carries its arguments. It is unwrapped HERE, before anything else looks at the request, so
+    // every check below - the hosted exclusions, the permission pre-check, read-only mode, the
+    // confirm guards, the audit line - sees the real tool, exactly as on a direct call.
+    const via = lean && isToolCallProxy(request.params.name) ? request.params.name : undefined;
+    const unwrapped = via ? unwrapToolCall(request.params.arguments as Record<string, unknown> | undefined) : undefined;
+    const unwrapError = typeof unwrapped === "string" ? unwrapped : undefined;
+    const proxied = unwrapped && typeof unwrapped !== "string" ? unwrapped : undefined;
+    const toolName = proxied?.name ?? request.params.name;
+    const toolArgs = proxied ? proxied.arguments : request.params.arguments;
     // Console (management) tools target /organization/{org}/application/{app}/... paths.
     // An explicit organization_id / application_id in the tool arguments takes precedence
     // over the token's org context; both flow into requestContext so orgAppPath() resolves.
-    const callArgs = (request.params.arguments ?? {}) as Record<string, unknown>;
+    const callArgs = (toolArgs ?? {}) as Record<string, unknown>;
     const argOrg = typeof callArgs.organization_id === "string" ? callArgs.organization_id : undefined;
     const argApp = typeof callArgs.application_id === "string" ? callArgs.application_id : undefined;
     // Permission pre-check verdict (permissions.ts): decided once here so the audit line
     // can record a shadow-mode "would_deny" and the dispatch below can refuse a "deny".
     const tokenOrg = (authInfo?.extra as Record<string, unknown> | undefined)?.organization_id as string | undefined;
     const permission = decidePermission({
-      tool: request.params.name,
+      tool: toolName,
       scopes: authInfo?.scopes,
       mode: permissionMode(),
       tokenOrg,
@@ -3375,11 +3786,24 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     // Local sign-in (device code): only a stdio server with no Bearer of its own reads the stored
     // credentials, so hosted mode and DIDIT_ACCESS_TOKEN setups are untouched.
     const storedToken =
-      !authInfo?.token && !hosted && !process.env.DIDIT_ACCESS_TOKEN && !ACCOUNT_BOOTSTRAP_TOOLS.has(request.params.name)
+      !authInfo?.token && !hosted && !process.env.DIDIT_ACCESS_TOKEN && !ACCOUNT_BOOTSTRAP_TOOLS.has(toolName)
         ? await storedDeviceLoginToken()
         : undefined;
+    // An API key connection (api-key-connection.ts) is one application: its key goes out as
+    // x-api-key and never as a Bearer, and the organization and application are the key's own.
+    // A call that names another one is refused below rather than silently redirected.
+    const keyScope = apiKeyScopeOf(authInfo);
     return requestContext.run(
-      {
+      keyScope
+        ? {
+            apiKey: authInfo?.token,
+            apiKeyScope: keyScope,
+            organizationId: keyScope.organizationId,
+            applicationId: keyScope.applicationId,
+            toolName,
+            actorVia: actorViaFromHeaders(extra?.requestInfo?.headers),
+          }
+        : {
         // Hosted mode: per-request Bearer from OAuth introspection. Stdio mode (tests/eval):
         // fall back to DIDIT_ACCESS_TOKEN + MCP_DEFAULT_ORG/APP env so the console-path tools
         // authenticate as that Bearer without the hosted layer.
@@ -3390,11 +3814,30 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
           process.env.MCP_DEFAULT_ORG ||
           undefined,
         applicationId: argApp || process.env.MCP_DEFAULT_APP || undefined,
-        toolName: request.params.name,
+        toolName,
         actorVia: actorViaFromHeaders(extra?.requestInfo?.headers),
       },
-      () => auditToolCall({ tool: request.params.name, args: callArgs, authInfo, hosted, permissionCheck }, async () => {
-  const { name } = request.params;
+      () => auditToolCall({ tool: toolName, args: callArgs, authInfo, hosted, permissionCheck, via }, async () => {
+  const name = toolName;
+  const refuse = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
+  if (unwrapError) return refuse(unwrapError);
+  // A read-only connection never changes data, whatever the client has listed or remembers.
+  if (selection.readOnly && !annotationsFor(name).readOnlyHint) {
+    return refuse(
+      `'${name}' changes data and this connection is read-only. To allow changes, the person reconnects without ` +
+        (hosted ? "`read_only=true` in the server URL (or the X-MCP-Readonly header)." : "--read-only (or DIDIT_READ_ONLY)."),
+    );
+  }
+  // Mirror of the tools/list exclusion for an API key connection, and its one-application rule.
+  if (keyScope) {
+    const outOfScope = apiKeyScopeRefusal(keyScope, argOrg, argApp);
+    if (outOfScope) return refuse(outOfScope);
+    if (PERSON_ONLY_TOOLS.has(name)) return refuse(personOnlyRefusal(name));
+  }
+  // The read proxy is annotated read-only, so it only ever runs a tool that is.
+  if (via === TOOL_CALL_READ && !annotationsFor(name).readOnlyHint) {
+    return refuse(`'${name}' changes data, so ${TOOL_CALL_READ} does not run it. Use ${TOOL_CALL_WRITE} with the same name and arguments.`);
+  }
   // organization_id / application_id are ROUTING, consumed above into
   // requestContext — they are not payload. Removing them here is what makes
   // declaring them on a tool safe: the handlers that forward their args
@@ -3409,7 +3852,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
   // tools only — on an update tool a `""` can mean "clear this field", and a
   // dropped one would PATCH nothing and report success.
   const args = dropBlankOptionals(
-    stripRoutingIds(request.params.arguments),
+    stripRoutingIds(toolArgs),
     annotationsFor(name).readOnlyHint ? inputSchemaByTool.get(name) : undefined,
   );
 
@@ -3499,6 +3942,15 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
     return consoleOpenResult(callArgs);
   }
 
+  // The discovery tools (tools/discovery.ts) answer from the caller's own catalog: no Didit call.
+  // Same catalog as tools/list: what the caller may use, cut to this endpoint's profile.
+  if (lean && (name === TOOL_SEARCH || name === TOOL_DESCRIBE)) {
+    const catalog = discoverable(applyCatalogProfile(usableBy(authInfo), profile), authInfo);
+    const found = name === TOOL_SEARCH ? searchTools(catalog, callArgs) : describeTools(catalog, callArgs);
+
+    return { content: [{ type: "text", text: JSON.stringify(found) }], structuredContent: found };
+  }
+
   // Single-org/single-app callers: fill the default scope so they needn't pass/discover ids.
   await ensureScopeDefaults(name);
 
@@ -3534,14 +3986,15 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
       case "didit_account_register":
         result = await auth.register(args!.email as string, args!.password as string);
         break;
+      // The three tools that answer with a sign-in: the local server keeps it (account-session.ts).
       case "didit_account_verify_email":
-        result = await auth.verifyEmail(args!.email as string, args!.code as string);
+        result = keepSignIn(await auth.verifyEmail(args!.email as string, args!.code as string), { hosted });
         break;
       case "didit_account_resend_otp":
         result = await auth.resendOtp(args!.email as string);
         break;
       case "didit_account_login":
-        result = await auth.login(args!.email as string, args!.password as string);
+        result = keepSignIn(await auth.login(args!.email as string, args!.password as string), { hosted });
         break;
       case "didit_account_device_login_start":
         result = await auth.deviceLoginStart();
@@ -3550,16 +4003,20 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         result = await auth.deviceLoginPoll();
         break;
       case "didit_account_verify_2fa":
-        result = await auth.verify2fa(args!.temp_token as string, args!.code as string);
+        result = keepSignIn(await auth.verify2fa(args!.temp_token as string, args!.code as string), { hosted });
         break;
+      // An API key connection answers these from the key's own application: the membership
+      // routes behind them only answer to a person (api-key-connection.ts).
       case "didit_org_list":
-        result = await auth.listOrganizations(stdioAccessTokenArg(args));
+        result = keyScope ? apiKeyOrganizations(keyScope) : await auth.listOrganizations(stdioAccessTokenArg(args));
         break;
       case "didit_org_list_applications":
-        result = await auth.listApplications(argOrg as string, stdioAccessTokenArg(args));
+        result = keyScope ? [apiKeyApplication(keyScope)] : await auth.listApplications(argOrg as string, stdioAccessTokenArg(args));
         break;
       case "didit_org_get_application":
-        result = await auth.getApplication(argOrg as string, argApp as string, stdioAccessTokenArg(args));
+        result = keyScope
+          ? apiKeyApplication(keyScope)
+          : await auth.getApplication(argOrg as string, argApp as string, stdioAccessTokenArg(args));
         break;
       case "didit_org_reveal_application_api_key":
         result = await auth.revealApplicationApiKey(argOrg, argApp, args?.confirm, stdioAccessTokenArg(args));
@@ -3644,7 +4101,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         result = await sessions.validateSignatures(args!.session_id as string, args!.node_id as string, args?.signature_id as string | undefined);
         break;
       case "didit_session_list_reviews":
-        result = await sessions.listSessionReviews(args!.session_id as string);
+        result = await sessions.listSessionReviews(args!.session_id as string, pageParams(args));
         break;
       case "didit_session_add_review": {
         const { session_id, ...data } = args as Record<string, any>;
@@ -3692,7 +4149,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
 
       // Workflows
       case "didit_workflow_list":
-        result = await settings.listWorkflows();
+        result = await settings.listWorkflows(pageParams(args));
         break;
       case "didit_workflow_create":
         result = await settings.createWorkflow(args || {});
@@ -3784,7 +4241,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
 
       // Questionnaires
       case "didit_questionnaire_list":
-        result = await questionnaires.listQuestionnaires();
+        result = await questionnaires.listQuestionnaires(pageParams(args));
         break;
       case "didit_questionnaire_create":
         result = await questionnaires.createQuestionnaire(args as Record<string, any>);
@@ -4097,7 +4554,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
 
       // Blocklist / allowlist
       case "didit_blocklist_get":
-        result = await blocklist.getBlocklist(args as Record<string, any>);
+        result = await blocklist.getBlocklist({ ...(args as Record<string, any>), ...pageParams(args) });
         break;
       case "didit_blocklist_add":
         result = await blocklist.addToBlocklist(args as Record<string, any>);
@@ -4128,7 +4585,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
 
       // Reports
       case "didit_report_list":
-        result = await reports.listReports(args as Record<string, any>);
+        result = await reports.listReports({ ...(args as Record<string, any>), ...pageParams(args) });
         break;
       case "didit_report_get":
         result = await reports.getReport(args!.report_id as string);
@@ -4181,8 +4638,16 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
         result = await compliance.buildWorkflow(args as Record<string, any>);
         break;
 
+      // Documentation search: a public corpus, no Didit credentials involved.
+      case DOCS_SEARCH_TOOL:
+        result = await searchDocs(args);
+        break;
+
       default:
-        return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+        return {
+          content: [{ type: "text", text: `Unknown tool: ${name}${lean ? `. Find the right name with ${TOOL_SEARCH}.` : ""}` }],
+          isError: true,
+        };
     }
 
     // Annotated here, after BOTH paths (the scoped list and the cross-app aggregate
@@ -4230,7 +4695,7 @@ export function createServer(options: { hosted?: boolean; profile?: CatalogProfi
 // unauthenticated call. The message carries no token.
 async function storedDeviceLoginToken(): Promise<string | undefined> {
   try {
-    return await getStoredAccessToken();
+    return await localSignInToken();
   } catch (err) {
     if (err instanceof DeviceLoginError) console.error(`Didit: ${err.message}`);
     return undefined;
@@ -4244,9 +4709,14 @@ async function main() {
     return;
   }
   const transport = new StdioServerTransport();
-  const server = createServer({ profile: stdioCatalogProfile() });
+  // A local server lists everything unless told otherwise, like the hosted one: `--toolsets` /
+  // DIDIT_TOOLSETS and `--read-only` / DIDIT_READ_ONLY change it (toolsets.ts).
+  const selection = selectionFromArgv(process.argv.slice(2), process.env);
+  const server = createServer({ profile: stdioCatalogProfile(), selection });
   await server.connect(transport);
-  console.error(`Didit MCP Server v${SERVER_VERSION} running on stdio`);
+  console.error(
+    `Didit MCP Server v${SERVER_VERSION} running on stdio (toolsets: ${selectionLabel(selection)}${selection.readOnly ? ", read-only" : ""})`,
+  );
 }
 
 // Only auto-start the stdio server when this file is run directly — when the HTTP

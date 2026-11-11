@@ -75,6 +75,19 @@ async function buildOrgAppMap(): Promise<OrgRef[]> {
 
 /** The caller's organizations with their applications nested, cached per token (60s TTL). */
 export async function getOrgAppMap(forceRefresh = false): Promise<OrgRef[]> {
+  // An API key connection is its one application (api-key-connection.ts). The auth service
+  // already named it when it accepted the key, and the membership routes a person's map is
+  // built from do not answer to a key, so nothing is fetched and nothing is cached.
+  const key = requestContext.getStore()?.apiKeyScope;
+  if (key) {
+    return [
+      {
+        orgId: key.organizationId,
+        orgName: key.organizationName ?? key.organizationId,
+        apps: [{ appId: key.applicationId, appName: key.applicationName ?? key.applicationId, ...(key.mode ? { mode: key.mode } : {}) }],
+      },
+    ];
+  }
   const token = requestContext.getStore()?.accessToken ?? "__stdio__";
   const now = Date.now();
   const cached = orgAppCache.get(token);
@@ -93,7 +106,7 @@ export async function runForScope<R>(
 ): Promise<R> {
   const ctx = requestContext.getStore();
   return requestContext.run(
-    { accessToken: ctx?.accessToken, organizationId: orgId, applicationId: appId },
+    { accessToken: ctx?.accessToken, apiKey: ctx?.apiKey, apiKeyScope: ctx?.apiKeyScope, organizationId: orgId, applicationId: appId },
     fn,
   );
 }

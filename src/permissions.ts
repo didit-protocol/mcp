@@ -33,6 +33,7 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_account_verify_2fa: null, // POST auth /2fa/verify/ — account bootstrap (login step-up)
   didit_account_verify_email: null, // POST auth /programmatic/verify-email/ — account bootstrap
   didit_context_get: null, // GET auth /organizations/me/ (+ applications) — membership-scoped
+  didit_docs_search: null, // public documentation search (tools/docs.ts): no Didit endpoint, no permission
   didit_org_get_application: null, // GET auth /organizations/me/{org}/applications/{app}/ — hardcoded owner/admin check, no decorator
   didit_org_list: null, // GET auth /organizations/me/ — membership-scoped
   didit_org_list_applications: null, // GET auth /organizations/me/{org}/applications/ — hardcoded owner/admin check, no decorator

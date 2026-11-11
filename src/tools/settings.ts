@@ -1,3 +1,4 @@
+import { everyPage, type WholeList } from "../paging";
 import { apiRequest, orgAppPath } from "../config";
 import { pathSegment } from "../security";
 import {
@@ -11,8 +12,14 @@ import {
 // org/application are resolved from the tool arguments (organization_id/application_id)
 // via the request context — see orgAppPath / the CallTool dispatch in index.ts.
 
+/** One page of the application's workflows (20 unless `limit` says otherwise), most recently changed first. */
 export async function listWorkflows(params?: Record<string, any>): Promise<any> {
   return apiRequest(orgAppPath("/verification-settings/"), { params });
+}
+
+/** Every workflow of the application, for the lookups that must not miss one (paging.ts). */
+export async function listEveryWorkflow(): Promise<WholeList> {
+  return everyPage((page) => listWorkflows(page));
 }
 
 export async function getWorkflow(uuid: string): Promise<any> {

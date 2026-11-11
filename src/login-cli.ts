@@ -2,6 +2,7 @@
 // Everything goes to stderr (stdout stays clean) and no token is ever printed.
 
 import { MCP_AUTHORIZATION_SERVER_ORIGIN } from "./config";
+import { forgetAccountSession } from "./account-session";
 import {
   DeviceLoginDeps,
   DeviceLoginError,
@@ -29,6 +30,12 @@ export async function runLoginCli(
   try {
     if (command === "logout") {
       const { hadCredentials, revoked } = await logout(deps, origin);
+      // The sign-in the account tools left (account-session.ts) goes too. Only the local copy:
+      // the auth service lets nobody but the console end such a session.
+      if (forgetAccountSession()) {
+        out(`The sign-in kept from didit_account_login was removed from ${credentialsFilePath()}.`);
+        if (!hadCredentials) return 0;
+      }
       if (!hadCredentials) {
         out(`No Didit credentials are stored for ${origin}.`);
       } else if (revoked) {

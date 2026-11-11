@@ -1,4 +1,4 @@
-import { apiRequest, getHeaders, orgPath, resolveOrganizationId, MCP_AUTHORIZATION_SERVER_ORIGIN } from "../config";
+import { apiRequest, getHeaders, orgPath, requestContext, resolveOrganizationId, MCP_AUTHORIZATION_SERVER_ORIGIN } from "../config";
 import { assertBoolean, DiditError, pathSegment } from "../security";
 
 // Billing is ORG-level on the console (no flat /billing/balance/). The org top-up endpoint
@@ -66,6 +66,15 @@ export async function getBalance(
   organizationId?: string,
   options: { links?: boolean; agentTopUp?: boolean } = {},
 ): Promise<any> {
+  // An API key connection (api-key-connection.ts): the console's organization routes only answer
+  // to a person, so the balance comes from the public API's own route for a key, which already
+  // carries the automatic top-up settings and the agent top-up switch.
+  if (requestContext.getStore()?.apiKey) {
+    const { agent_top_up: agentTopUp, ...balance } = (await apiRequest("/billing/balance/")) ?? {};
+    const result = options.agentTopUp && agentTopUp ? { ...balance, agent_top_up: agentTopUp } : balance;
+
+    return options.links ? { ...result, next_steps: { ...billingLinks(organizationId), note: PERSON_ACTS } } : result;
+  }
   const [balance, credits, agentSpending] = await Promise.all([
     apiRequest(orgPath("/top-up/", { organizationId })),
     apiRequest(orgPath("/credits/", { organizationId })).catch(() => null),
@@ -161,6 +170,20 @@ export async function topUp(
   }
   if (paymentMethod === "saved_card") return topUpWithSavedCard(amountInDollars, options.idempotency_key as string, organizationId);
 
+  // An API key connection pays through the public API's top-up route (the same Checkout page).
+  if (requestContext.getStore()?.apiKey) {
+    const checkout = await apiRequest("/billing/top-up/", { method: "POST", json: { amount_in_dollars: amountInDollars } });
+
+    return {
+      ...checkout,
+      requires_human_approval: true,
+      next_steps: {
+        checkout: "Give the person checkout_session_url; the balance updates within seconds of payment.",
+        console_top_up_url: billingLinks(organizationId, Math.round(amountInDollars)).top_up_url,
+      },
+    };
+  }
+
   // The console's Checkout route (GET with the amount). The organization's top-up route answers
   // GET/PUT only, so the POST this tool used to send was refused with 405 on every call.
   const res = await apiRequest(orgPath("/checkout-session/", { organizationId }), {
@@ -186,6 +209,16 @@ export async function topUp(
  */
 async function topUpWithSavedCard(amountInDollars: number, idempotencyKey: string, organizationId?: string): Promise<any> {
   try {
+    // An API key charges the saved card through the public API's top-up route; a person's
+    // connection through the console's agent route. Same switch, same answers, same codes.
+    if (requestContext.getStore()?.apiKey) {
+      return await apiRequest("/billing/top-up/", {
+        method: "POST",
+        json: { amount_in_dollars: amountInDollars, payment_method: "saved_card" },
+        headers: { ...getHeaders(), "Idempotency-Key": idempotencyKey },
+      });
+    }
+
     return await apiRequest(orgPath("/billing/agent-top-ups/", { organizationId }), {
       method: "POST",
       json: { amount_in_dollars: amountInDollars },

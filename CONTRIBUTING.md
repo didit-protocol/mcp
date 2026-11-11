@@ -35,6 +35,16 @@ out. Not the key list.
 Forget step 2 and the nightly **Feature-config drift check** opens an issue within a day — but a
 customer may hit it first, so do not use it as the workflow.
 
+## The documentation keeps a copy of the tool catalog
+
+The public documentation states how many tools there are and describes each one in a table.
+Both are checked against a copy of this server's catalog, because they were written by hand and drifted: the docs said 177 tools when the count was 185, and eight tools had no row.
+
+`npm run catalog:export -- <file>` writes that catalog from the server's own `tools/list` answer: every tool the hosted server lists to a signed-in person, with its type (read, write or destructive), its group, the role permission it needs and its required arguments, plus what only a local server adds.
+
+When a release adds, removes, renames or retypes a tool, or changes the permission it needs: run the export on a build of the commit being released, copy the file over the documentation repository's `data/mcp-tools.json`, and fix the rows and counts its check names.
+`test/tool-catalog-export.test.mjs` pins what the export promises.
+
 ## Tests run on every pull request
 
 `.github/workflows/pr.yml` runs `npm test` (which is `tsc` + all of `test/*.test.mjs`) and

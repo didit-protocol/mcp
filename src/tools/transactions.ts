@@ -83,10 +83,31 @@ export async function listTransactionRuleLibrary(params?: Record<string, any>): 
   return apiRequest(orgAppPath("/transactions/rules/library/"), { params });
 }
 
+/**
+ * Install and uninstall act on a selection of presets: specific library_keys, a bundle, or both.
+ * The two input schemas used to say "one of the two" with a top-level `anyOf`, which nothing
+ * enforced (the low-level MCP server does not validate arguments) and which the Claude API
+ * refuses for the whole tool list. It is said in the descriptions and enforced here instead,
+ * before anything is sent.
+ */
+function requirePresetSelector(data: Record<string, unknown>, verb: "install" | "uninstall"): void {
+  const hasKeys = Array.isArray(data?.library_keys) && data.library_keys.length > 0;
+  const hasBundle = typeof data?.bundle === "string" && data.bundle.trim() !== "";
+  if (hasKeys || hasBundle) return;
+  throw new DiditError({
+    code: "bad_request",
+    message: `Say which preset rules to ${verb}: pass library_keys, bundle or both.`,
+    field: "library_keys",
+    hint: "didit_transaction_rule_library_list returns every preset with its library_key and its bundle.",
+  });
+}
+
 export async function installTransactionRuleLibrary(data: Record<string, any>): Promise<any> {
+  requirePresetSelector(data, "install");
   return apiRequest(orgAppPath("/transactions/rules/install/"), { method: "POST", json: data });
 }
 
 export async function uninstallTransactionRuleLibrary(data: Record<string, any>): Promise<any> {
+  requirePresetSelector(data, "uninstall");
   return apiRequest(orgAppPath("/transactions/rules/install/"), { method: "DELETE", json: data });
 }

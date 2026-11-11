@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { DiditError, parseErrorBody, statusToCode, statusToHint, resolveFileSource, pathSegment } from "./security";
 import type { FileSource } from "./security";
+import type { ApiKeyScope } from "./api-key-connection";
 
 // Single source of truth for the version: package.json (falls back if unreadable).
 function readPackageVersion(): string {
@@ -72,6 +73,20 @@ function nonNegativeMs(raw: string | undefined, fallback: number): number {
 // deployment (a gateway-hosted copy, a directory listing) with MCP_PUBLIC_DISCOVERY=true.
 // tools/list and tools/call are NEVER public under this flag - the catalog stays authenticated.
 export const MCP_PUBLIC_DISCOVERY = process.env.MCP_PUBLIC_DISCOVERY === "true";
+// What this build supports, reported by GET /healthz so a client can adapt to the server it is
+// about to connect to. The console's connect screen offers a read-only connection only where
+// the server lists `read_only`: against a server that predates it the parameter is ignored,
+// and the person would believe a connection is read-only when it is not.
+// `api_key`: the hosted endpoint also takes an application API key in place of a sign-in
+// (api-key-connection.ts), so a client can offer that choice only where it works.
+// Only where tokens are introspected: a deployment that verifies JWTs locally (jwks) cannot accept a key.
+export const SERVER_FEATURES: readonly string[] = [
+  "toolsets",
+  "read_only",
+  "tool_discovery",
+  "prompts",
+  ...(MCP_TOKEN_VERIFY_MODE === "jwks" ? [] : ["api_key"]),
+];
 // Optional: default application for single-app deployments (used when a tool call
 // omits application_id and the user has no unambiguous default).
 export const MCP_DEFAULT_APP = process.env.MCP_DEFAULT_APP || "";
@@ -106,17 +121,22 @@ export const MCP_SCOPES_SUPPORTED = (
   .filter(Boolean);
 
 /**
- * Per-request credential context. The MCP always acts as a Didit USER: the OAuth
+ * Per-request credential context. The MCP normally acts as a Didit USER: the OAuth
  * resource-server layer (hosted mode) populates this with the caller's validated user
  * Bearer token (and the org it is scoped to) for the duration of a single tool dispatch,
  * so every tool authenticates as that user WITHOUT any tool-signature change. In stdio
- * mode the same Bearer is supplied via the DIDIT_ACCESS_TOKEN env var. There is NO
- * API-key mode — every tool targets the user-scoped console endpoints, which only
- * authorize a Bearer token (an x-api-key is rejected). The phone OTP pair is the one
- * exception: it reads the application's key with that Bearer (app-api-key.ts).
+ * mode the same Bearer is supplied via the DIDIT_ACCESS_TOKEN env var.
+ *
+ * A hosted connection may authenticate with an application API key instead
+ * (api-key-connection.ts). Then `apiKey` is set and `accessToken` is not: every request goes
+ * out with `x-api-key`, and the connection is the one application in `apiKeyScope`.
  */
 export interface RequestCredentials {
   accessToken?: string;
+  /** The application API key of an API key connection. Never set together with accessToken. */
+  apiKey?: string;
+  /** The application that key belongs to. */
+  apiKeyScope?: ApiKeyScope;
   organizationId?: string;
   applicationId?: string;
   /** Tool being dispatched — sent as User-Agent so the backend audit log attributes the request. */
@@ -181,13 +201,15 @@ export function orgPath(resource: string, opts: { organizationId?: string } = {}
 }
 
 /**
- * Auth headers for the Didit APIs. The MCP always authenticates as a Didit user via a
- * Bearer access token (from the OAuth flow in hosted mode, or DIDIT_ACCESS_TOKEN in stdio
- * mode). There is no API-key path — the user-scoped console endpoints reject x-api-key.
- * Only the phone OTP pair passes its own x-api-key headers (app-api-key.ts).
+ * Auth headers for the Didit APIs: the caller's Bearer access token (from the OAuth flow in
+ * hosted mode, or DIDIT_ACCESS_TOKEN in stdio mode), or the application API key of an API key
+ * connection, sent as `x-api-key` exactly as on a direct API call. The console's
+ * application routes accept the application's own key; its organization-wide routes do not,
+ * which is why those tools are not offered to such a connection (api-key-connection.ts).
  */
 function authHeaders(): Record<string, string> {
   const ctx = requestContext.getStore();
+  if (ctx?.apiKey) return { "x-api-key": ctx.apiKey };
   if (ctx?.accessToken) {
     const headers: Record<string, string> = { Authorization: `Bearer ${ctx.accessToken}` };
     // Tells the verification API which authorized org this request acts in
@@ -314,7 +336,7 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
     throw new DiditError({
       code: statusToCode(res.status),
       message: parsed.message || `Request failed with status ${res.status}.`,
-      hint: statusToHint(res.status, body),
+      hint: apiKeyRefusalHint(res.status) ?? statusToHint(res.status, body),
       field: parsed.field,
       allowed: parsed.allowed,
       status: res.status,
@@ -323,6 +345,19 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
   }
 
   return body;
+}
+
+/**
+ * A 403 on an API key connection (api-key-connection.ts) is about the key, never about a role:
+ * the generic hint ("it may require a different role") would send the agent to the wrong fix.
+ */
+function apiKeyRefusalHint(status: number): string | undefined {
+  if (status !== 403 || !requestContext.getStore()?.apiKey) return undefined;
+
+  return (
+    "This connection uses an API key. Either the key's access does not cover this action (a person widens it in the " +
+    "Didit console, under the application's API keys), or the action needs a person's sign-in (the console, or an OAuth connection)."
+  );
 }
 
 /**

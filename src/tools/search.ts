@@ -1,13 +1,14 @@
 import { getOrgAppMap, mapWithConcurrency, runForScope, OrgRef, AppRef } from "../orgapp";
 import { applyRelativeWindow } from "../dates";
-import { apiRequest, orgPath } from "../config";
+import { apiRequest, orgPath, requestContext } from "../config";
 import { listSessions } from "./sessions";
 import { listTransactions } from "./transactions";
 import { listCases } from "./cases";
 import { listUsers } from "./users";
 import { listBusinesses } from "./businesses";
-import { listWorkflows, getWorkflow } from "./settings";
+import { listEveryWorkflow, getWorkflow } from "./settings";
 import { DiditError } from "../security";
+import { pageParams } from "../paging";
 
 // Cross-org/app aggregate search in ONE tool call. Where the backend exposes an org-level
 // endpoint (sessions/transactions/cases), we query it once per org — each row already
@@ -140,7 +141,9 @@ async function aggregateSearch(
   };
 
   // Prefer the org-level endpoint: one query per org, rows already carry app/org attribution.
-  if (orgResourcePath) {
+  // Not for an API key connection: the organization-wide routes only answer to a person, and its
+  // one application is exactly what the per-app fan-out below reads.
+  if (orgResourcePath && !requestContext.getStore()?.apiKey) {
     let fellBack = 0;
     const batches = await mapWithConcurrency(orgs, FANOUT_CONCURRENCY, async (o) => {
       try {
@@ -266,23 +269,29 @@ async function probeWorkflowDirect(
  *  by `workflow_id` (matches the version uuid OR the stable workflow_id) or `search` (label
  *  substring). Each row is tagged with its org/app — so an agent can locate a workflow by id
  *  without walking dozens of apps. Workflows have no org-level endpoint → per-app fan-out. */
-export async function searchWorkflows(args: SearchArgs): Promise<any> {
+export async function searchWorkflows(args: SearchArgs & { offset?: unknown }): Promise<any> {
   const { organization_id, application_id, workflow_id, search, limit: rawLimit } = args;
   const limit = Math.max(1, Math.min(rawLimit ?? 50, MAX_LIMIT));
+  // didit_workflow_list answers from here when it spans applications, and it takes `offset`.
+  const offset = pageParams({ offset: args.offset }).offset ?? 0;
   const map = await getOrgAppMap();
   const orgs = map.filter((o) => !organization_id || o.orgId === organization_id);
   const pairs = orgs.flatMap((o) =>
     o.apps.filter((a) => !application_id || a.appId === application_id).map((a) => ({ o, a })),
   );
   let skipped = 0;
+  let unfinished = 0;
   let leafAttempts = 0;
   let deniedLeaves = 0;
   let firstDenial: DiditError | undefined;
   const batches = await mapWithConcurrency(pairs, FANOUT_CONCURRENCY, async ({ o, a }) => {
     leafAttempts++;
     try {
-      const page = await runForScope(o.orgId, a.appId, () => listWorkflows());
-      return rowsOf(page).map((r) => ({
+      // Every page: the API lists 20 workflows at a time, and a workflow this search does not
+      // see cannot be found by its id or its label.
+      const all = await runForScope(o.orgId, a.appId, () => listEveryWorkflow());
+      if (!all.complete) unfinished++;
+      return all.rows.map((r) => ({
         ...r,
         organization_id: o.orgId,
         organization_name: o.orgName,
@@ -311,13 +320,16 @@ export async function searchWorkflows(args: SearchArgs): Promise<any> {
   // when an id search misses the listed rows, probe the version endpoint directly per app
   // before reporting no matches.
   if (workflow_id && rows.length === 0) rows = await probeWorkflowDirect(pairs, String(workflow_id));
+  const results = rows.slice(offset, offset + limit);
   return {
-    results: rows.slice(0, limit),
-    returned: Math.min(rows.length, limit),
+    results,
+    returned: results.length,
     total_matched: rows.length,
+    ...(offset ? { offset } : {}),
     aggregated: true,
     scanned_apps: pairs.length,
     skipped_apps: skipped,
+    ...(unfinished ? { partly_read_apps: unfinished } : {}),
     unlistable_orgs: orgs.filter((o) => o.appsError).length,
   };
 }
@@ -333,6 +345,7 @@ export interface WorkflowScope {
 const scanGaps = (found: any): string[] =>
   [
     found.skipped_apps ? `${found.skipped_apps} application(s) returned errors and could not be scanned` : "",
+    found.partly_read_apps ? `${found.partly_read_apps} application(s) have more workflows than could be read` : "",
     found.unlistable_orgs ? `the applications of ${found.unlistable_orgs} organization(s) could not be listed` : "",
   ].filter(Boolean);
 
@@ -408,7 +421,7 @@ export async function resolveWorkflowScope(
     }
     // b) Stable workflow_id → its current/listed version.
     try {
-      const page = await runForScope(organizationId, applicationId, () => listWorkflows());
+      const page = await runForScope(organizationId, applicationId, async () => (await listEveryWorkflow()).rows);
       const row = rowsOf(page).find((w) => workflowMatchesId(w, workflowId));
       if (row) {
         return {

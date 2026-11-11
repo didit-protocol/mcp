@@ -4,7 +4,7 @@
 
 type ToolDef = { name: string; description: string; inputSchema: any };
 
-export const PRIVILEGED_GROUP_PREFIX: [string, string] | null = null;
+export const PRIVILEGED_TOOLSET: { id: string; description: string; groups: [string, string][] } | null = null;
 
 export function isPrivilegedToolName(_name: string): boolean {
   return false;

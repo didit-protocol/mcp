@@ -75,7 +75,9 @@ test("server/discover: advertises versions, capabilities and identity", async ()
   assert.equal(reply.id, 7);
   assert.deepEqual(reply.result.supportedVersions, SUPPORTED_VERSIONS);
   assert.equal(reply.result.supportedVersions[0], MODERN_VERSION);
-  assert.deepEqual(reply.result.capabilities, { tools: {} });
+  assert.deepEqual(reply.result.capabilities, { tools: {}, prompts: {} });
+  // With the handshake gone, server/discover is where a modern client reads the instructions.
+  assert.match(reply.result.instructions, /didit_context_get/);
   assert.equal(typeof reply.result.ttlMs, "number");
   assert.equal(reply.result.cacheScope, "private");
   assert.equal(reply.result.resultType, "complete");

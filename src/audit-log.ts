@@ -6,6 +6,8 @@
 import { createHash } from "node:crypto";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 
+import { apiKeyScopeOf } from "./api-key-connection";
+
 export interface ToolCallMeta {
   tool: string;
   args: Record<string, unknown>;
@@ -13,6 +15,8 @@ export interface ToolCallMeta {
   hosted: boolean;
   /** Shadow-mode verdict of the permission pre-check (permissions.ts), when it would have denied. */
   permissionCheck?: "would_deny";
+  /** The discovery tool the call came through (tools/discovery.ts); `tool` is the tool it ran. */
+  via?: string;
 }
 
 export interface ToolResultLike {
@@ -50,6 +54,17 @@ function extra(authInfo: AuthInfo | undefined, key: string): string | undefined 
   return typeof value === "string" ? value : undefined;
 }
 
+/**
+ * An API key connection (api-key-connection.ts): which key made the call, so it is traceable.
+ * A named key by its id; the application's primary key, which has no id, as such. Never the key.
+ */
+function apiKeyFields(authInfo: AuthInfo | undefined): { credential?: "api_key"; api_key_id?: string; api_key_primary?: true } {
+  const key = apiKeyScopeOf(authInfo);
+  if (!key) return {};
+
+  return { credential: "api_key", ...(key.keyId ? { api_key_id: key.keyId } : {}), ...(key.primary ? { api_key_primary: true } : {}) };
+}
+
 function record(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", errorCode?: string) {
   return {
     time: new Date().toISOString(),
@@ -63,10 +78,12 @@ function record(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", 
     sub: extra(meta.authInfo, "sub"),
     organization_id: extra(meta.authInfo, "organization_id"),
     client_id: meta.authInfo?.clientId,
+    ...apiKeyFields(meta.authInfo),
     args_digest: argsDigest(meta.args),
     arg_keys: Object.keys(meta.args).sort(),
     ...(typeof meta.args.confirm === "boolean" ? { confirm: meta.args.confirm } : {}),
     ...(meta.permissionCheck ? { permission_check: meta.permissionCheck } : {}),
+    ...(meta.via ? { via: meta.via } : {}),
   };
 }
 

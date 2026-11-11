@@ -50,6 +50,25 @@ async function withClient(options, authInfo, fn) {
 const inContext = (ctx, fn) => requestContext.run(ctx, fn);
 const call = (client, args) => client.callTool({ name: "didit_org_top_up", arguments: args });
 
+// ── toolsets ─────────────────────────────────────────────────────────────────────────────────
+
+test("the payments endpoint lists its money tool under the short catalog too; /mcp does not", async () => {
+  const { parseSelection } = require("../dist/toolsets.js");
+  const core = parseSelection(undefined, false, "core");
+  const names = (options) => withClient(options, USER, async (client) => (await client.listTools()).tools.map((tool) => tool.name));
+
+  const payments = await names({ hosted: true, moneyTools: true, selection: core });
+  assert.ok(payments.includes("didit_org_top_up"), "an agent that connects to /mcp/payments came for this tool");
+  assert.ok(payments.length <= 31, `${payments.length} tools: the core catalog plus the money tool`);
+
+  const main = await names({ hosted: true, selection: core });
+  assert.ok(!main.includes("didit_org_top_up"));
+
+  // Read-only wins: a connection that asked never to change anything is not offered a way to pay.
+  const readOnly = await names({ hosted: true, moneyTools: true, selection: parseSelection(undefined, true, "core") });
+  assert.ok(!readOnly.includes("didit_org_top_up"));
+});
+
 // ── the tool ──────────────────────────────────────────────────────────────────────────────────
 
 test("saved_card with a Bearer posts to the console agent route with Idempotency-Key and X-Didit-Agent", async () => {
@@ -320,7 +339,7 @@ test("the token introspection call carries it too", async () => {
     headers = init.headers;
     return json({ active: true, sub: "u" });
   };
-  await new IntrospectionTokenVerifier().verifyAccessToken("tok");
+  await new IntrospectionTokenVerifier().verifyAccessToken("header.payload.signature");
   assert.equal(headers["X-Didit-Agent"], "mcp");
 });
 
@@ -362,7 +381,7 @@ function stubHttpFetch() {
 
 const modernList = (path) => ({
   method: "POST",
-  headers: { Authorization: "Bearer good", "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/list" },
+  headers: { Authorization: "Bearer good.access.token", "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/list" },
   body: {
     jsonrpc: "2.0",
     id: 1,

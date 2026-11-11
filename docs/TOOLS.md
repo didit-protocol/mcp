@@ -1,6 +1,6 @@
 # Tools
 
-Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **174 tools**, grouped by domain.
+Auto-generated from `src/index.ts` by `scripts/sync-public.sh`. **179 tools**, grouped by domain.
 For the categorized reference with read/write/destructive markers, see
 https://docs.didit.me/integration/mcp/tools.
 
@@ -62,6 +62,10 @@ https://docs.didit.me/integration/mcp/tools.
 ## context
 
 - `didit_context_get`
+
+## docs
+
+- `didit_docs_search`
 
 ## investigator
 
@@ -159,6 +163,13 @@ https://docs.didit.me/integration/mcp/tools.
 - `didit_session_validate_signatures`
 - `didit_session_webhook_resend`
 - `didit_session_webhooks`
+
+## tool
+
+- `didit_tool_call_read`
+- `didit_tool_call_write`
+- `didit_tool_describe`
+- `didit_tool_search`
 
 ## transaction
 

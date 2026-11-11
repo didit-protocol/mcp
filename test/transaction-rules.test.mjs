@@ -169,13 +169,54 @@ test("all nine rule tools are advertised with safe annotations and persistence g
   assert.equal(backtest.inputSchema.properties.period_days.minimum, 1);
   assert.equal(backtest.inputSchema.properties.period_days.maximum, 365);
 
+  // "library_keys or bundle" is said in words and enforced by the handler (the test below). It is
+  // not a top-level anyOf: the Claude API refuses the whole tool list over one.
   for (const name of ["didit_transaction_rule_install", "didit_transaction_rule_uninstall"]) {
-    assert.deepEqual(byName.get(name).inputSchema.anyOf, [
-      { required: ["library_keys"] },
-      { required: ["bundle"] },
-    ]);
+    const tool = byName.get(name);
+    assert.equal(tool.inputSchema.anyOf, undefined);
+    assert.equal(tool.inputSchema.required, undefined);
+    assert.match(tool.description, /At least one selector is required/);
   }
 });
+
+for (const operation of ["install", "uninstall"]) {
+  test(`hosted rule ${operation} needs library_keys or a bundle, and says so before HTTP`, async () => {
+    const originalFetch = globalThis.fetch;
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createServer({ hosted: true });
+    const client = new Client({ name: "preset-selector-test", version: "1.0.0" }, { capabilities: {} });
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const calls = captureRequest({});
+      const call = (payload) => inApp(() => client.callTool({
+        name: `didit_transaction_rule_${operation}`,
+        arguments: { organization_id: "org-1", application_id: "app-1", ...payload },
+      }));
+      for (const nothing of [{}, { library_keys: [] }, { bundle: "" }, { bundle: "  " }, { library_keys: [], bundle: "" }, { library_keys: "structuring-inbound" }]) {
+        const result = await call(nothing);
+        assert.equal(result.isError, true, `accepted ${JSON.stringify(nothing)}`);
+        const text = result.content.map((item) => item.text).join("\n");
+        assert.match(text, /Error \[bad_request\]/);
+        assert.match(text, new RegExp(`which preset rules to ${operation}: pass library_keys, bundle or both`));
+        assert.match(text, /didit_transaction_rule_library_list/);
+        assert.equal(calls.length, 0, "a call with no selector must not make an HTTP request");
+      }
+      for (const selection of [{ library_keys: ["structuring-inbound"] }, { bundle: "aml" }, { library_keys: ["structuring-inbound"], bundle: "aml" }]) {
+        const result = await call(selection);
+        assert.notEqual(result.isError, true, JSON.stringify(result));
+        assert.equal(calls.length, 1);
+        assert.deepEqual(calls[0].body, selection);
+        assert.equal(calls[0].method, operation === "install" ? "POST" : "DELETE");
+        calls.length = 0;
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      await client.close();
+      await server.close();
+    }
+  });
+}
 
 // Exercise execution through the SDK: advertised input schemas alone do not
 // validate tools/call arguments on the low-level MCP Server.

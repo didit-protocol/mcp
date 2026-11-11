@@ -69,6 +69,11 @@ export interface StoredCredentials {
   /** Epoch milliseconds when access_token stops working. */
   expires_at?: number;
   scope?: string;
+  /**
+   * Epoch milliseconds of the sign-in itself (not of a refresh). The local server may hold two
+   * sign-ins, this one and the account tools' (account-session.ts), and uses the newer.
+   */
+  signed_in_at?: number;
 }
 
 interface CredentialsFile {
@@ -383,6 +388,7 @@ export async function pollDeviceLogin(
           refresh_token: body.refresh_token,
           expires_at: deps.now() + (Number(body.expires_in) > 0 ? Number(body.expires_in) : 3600) * 1000,
           scope,
+          signed_in_at: deps.now(),
         },
         file,
       );
@@ -446,6 +452,7 @@ async function refreshCredentials(
       refresh_token: typeof body.refresh_token === "string" && body.refresh_token ? body.refresh_token : current.refresh_token,
       expires_at: deps.now() + (Number(body.expires_in) > 0 ? Number(body.expires_in) : 3600) * 1000,
       scope: typeof body.scope === "string" ? body.scope : current.scope,
+      ...(current.signed_in_at !== undefined ? { signed_in_at: current.signed_in_at } : {}),
     };
     saveCredentials(origin, next, file);
     return next;

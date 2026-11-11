@@ -11,6 +11,9 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 import { createServer } from "./index";
+import { compressResponses } from "./compress";
+import { apiKeyScopeOf } from "./api-key-connection";
+import { defaultToolsets, selectionFromRequest } from "./toolsets";
 import { modernGate, isModernRequest, handleModernRpc } from "./mcp-modern";
 import { mountDomainChallenge, mountProfileEndpoint, mountWidgetFonts, type CatalogProfile } from "./chatgpt-app";
 import { mountInvestigatorAgentEndpoint } from "./investigator-agent";
@@ -29,7 +32,8 @@ import {MCP_PORT,
   DIDIT_OIDC_REGISTRATION_URL,
   DIDIT_JWKS_URL, SERVER_VERSION,
   MCP_PUBLIC_DISCOVERY,
-  MCP_PAYMENTS_PATH } from "./config";
+  MCP_PAYMENTS_PATH,
+  SERVER_FEATURES } from "./config";
 
 /**
  * Resolve the upstream Authorization Server (service-didit-auth) metadata that we
@@ -77,6 +81,8 @@ const PUBLIC_DISCOVERY_METHODS = new Set(["initialize", "notifications/initializ
 
 export async function createHttpApp(): Promise<express.Express> {
   const app = express();
+  // First, so every answer below can go out compressed (compress.ts).
+  app.use(...compressResponses());
   // This narrowly scoped capability URL authenticates itself; no MCP Bearer required.
   app.get(SESSION_PDF_DOWNLOAD_PATH, downloadSessionPdf);
   app.get(SESSION_SIGNATURE_DOWNLOAD_PATH, downloadSessionSignatureFile);
@@ -94,7 +100,7 @@ export async function createHttpApp(): Promise<express.Express> {
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Authorization, Content-Type, mcp-protocol-version, mcp-session-id, mcp-method, mcp-name, last-event-id",
+      "Authorization, Content-Type, mcp-protocol-version, mcp-session-id, mcp-method, mcp-name, last-event-id, x-mcp-toolsets, x-mcp-readonly, x-api-key",
     );
     res.setHeader("Access-Control-Expose-Headers", "mcp-session-id, WWW-Authenticate");
     res.setHeader("Access-Control-Max-Age", "86400");
@@ -155,7 +161,7 @@ export async function createHttpApp(): Promise<express.Express> {
   const profileEndpoint = mountProfileEndpoint(app, { oauthMetadata, resourceServerUrl, scopesSupported: MCP_SCOPES_SUPPORTED });
 
   app.get("/healthz", (_req, res) => {
-    res.json({ status: "ok", service: "didit-mcp-server", version: SERVER_VERSION });
+    res.json({ status: "ok", service: "didit-mcp-server", version: SERVER_VERSION, features: SERVER_FEATURES });
   });
 
   // Emits 401 + WWW-Authenticate (pointing at the protected-resource metadata)
@@ -209,18 +215,39 @@ export async function createHttpApp(): Promise<express.Express> {
         const method = (req.body as { method?: unknown } | undefined)?.method;
         if (typeof method === "string" && PUBLIC_DISCOVERY_METHODS.has(method)) return next();
       }
+      // An application API key (api-key-connection.ts) may come in the header the Didit API
+      // itself uses. It is verified exactly like one sent as a Bearer; an Authorization header,
+      // when both are present, wins.
+      const apiKey = req.headers["x-api-key"];
+      if (!req.headers.authorization && typeof apiKey === "string" && apiKey.trim()) {
+        req.headers.authorization = `Bearer ${apiKey.trim()}`;
+      }
 
       return bearerAuth(req, res, next);
+    };
+    // API keys connect to the full catalog only. A reduced profile is a reviewed app with its own
+    // sign-in (the ChatGPT app), and its data boundary is defined for a person's connection.
+    const keyOnlyOnFullProfile: express.RequestHandler = (req, res, next) => {
+      if (endpoint.profile === "full" || !apiKeyScopeOf(req.auth)) return next();
+      res.status(403).json({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "This endpoint takes a sign-in with Didit. Connect an API key to /mcp instead." },
+        id: null,
+      });
     };
 
     // Stateless Streamable HTTP: a fresh server + transport per request avoids
     // JSON-RPC id collisions across concurrent clients and needs no ALB affinity.
-    app.post(endpoint.path, maybeBearerAuth, async (req, res) => {
+    app.post(endpoint.path, maybeBearerAuth, keyOnlyOnFullProfile, async (req, res) => {
       // MCP 2026-07-28 dual-era dispatch: modern requests pin their protocol
       // version on every message and skip the initialize handshake; anything
       // else takes the legacy Streamable HTTP transport below, unchanged.
       const rpc = req.body ?? {};
       const gateError = modernGate(rpc, req.headers);
+      // What this connection asked to load (toolsets.ts): `?toolsets=core,transactions&read_only=true`
+      // on the server URL, or the X-MCP-Toolsets / X-MCP-Readonly headers. Read from the request on
+      // every call, because the server is stateless: there is no session to remember it in.
+      const selection = selectionFromRequest(req.query, req.headers, defaultToolsets());
 
       if (gateError) {
         res.status(400).json({ jsonrpc: "2.0", error: gateError, id: rpc.id ?? null });
@@ -228,7 +255,11 @@ export async function createHttpApp(): Promise<express.Express> {
       }
       if (isModernRequest(rpc, req.headers)) {
         try {
-          const reply = await handleModernRpc(rpc, req.auth, { profile: endpoint.profile, moneyTools: endpoint.moneyTools });
+          const reply = await handleModernRpc(rpc, req.auth, {
+            profile: endpoint.profile,
+            moneyTools: endpoint.moneyTools,
+            selection,
+          });
           if (reply) res.json(reply);
           else res.status(202).end();
         } catch (err) {
@@ -244,7 +275,14 @@ export async function createHttpApp(): Promise<express.Express> {
         return;
       }
 
-      const server = createServer({ hosted: true, profile: endpoint.profile, moneyTools: endpoint.moneyTools });
+      const server = createServer({
+        hosted: true,
+        profile: endpoint.profile,
+        moneyTools: endpoint.moneyTools,
+        selection,
+        // What the server says about itself depends on who connected (guidance.ts).
+        apiKey: Boolean(apiKeyScopeOf(req.auth)),
+      });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {
         transport.close().catch(() => {});

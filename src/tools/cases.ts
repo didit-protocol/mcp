@@ -16,6 +16,18 @@ export async function getCase(caseId: string): Promise<any> {
 }
 
 export async function createCase(data: Record<string, any>): Promise<any> {
+  // A case is about someone or about something. The API refuses one that names neither; say so
+  // here, with where the two come from, before anything is sent.
+  const hasSubject = Boolean(data?.subject && typeof data.subject === "object");
+  const hasLinks = Array.isArray(data?.links) && data.links.length > 0;
+  if (!hasSubject && !hasLinks) {
+    throw new DiditError({
+      code: "bad_request",
+      message: "A case needs a subject or at least one link: pass `subject` ({type, uuid}) or `links` ([{entity_type, entity_uuid}]).",
+      field: "subject",
+      hint: "A subject's uuid is the `didit_internal_id` that didit_vendor_user_get and didit_vendor_business_get return; a session or a transaction is linked by its own id.",
+    });
+  }
   return apiRequest(orgAppPath("/cases/"), { method: "POST", json: data });
 }
 

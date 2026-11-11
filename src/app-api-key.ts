@@ -1,4 +1,4 @@
-import { DIDIT_AUTH_BASE_URL, apiRequest, resolveApplicationId, resolveOrganizationId } from "./config";
+import { DIDIT_AUTH_BASE_URL, apiRequest, requestContext, resolveApplicationId, resolveOrganizationId } from "./config";
 import { DiditError, pathSegment } from "./security";
 
 // The application API key behind the standalone phone OTP endpoints.
@@ -48,6 +48,10 @@ export async function applicationApiKeyHeaders(): Promise<Record<string, string>
 
 /** The resolved application's API key, read fresh on every call. */
 export async function applicationApiKey(): Promise<string> {
+  // An API key connection already holds its application's key (api-key-connection.ts).
+  const own = requestContext.getStore()?.apiKey;
+  if (own) return own;
+
   const org = pathSegment(resolveOrganizationId(), "organization_id");
   const app = pathSegment(resolveApplicationId(), "application_id");
 
