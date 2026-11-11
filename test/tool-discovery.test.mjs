@@ -49,13 +49,13 @@ async function withClient(options, fn, authInfo) {
 const hosted = (fn, selection = select("core"), authInfo = HOSTED_AUTH) => withClient({ hosted: true, selection }, fn, authInfo);
 const search = async (client, args) => (await client.callTool({ name: "didit_tool_search", arguments: args })).structuredContent;
 
-/** Capture the audit lines (one JSON object per tool call, on stderr) written while `fn` runs. */
+/** Capture the audit records (one per tool call, as JSON in the `message` of a stderr line) written while `fn` runs. */
 async function auditLines(fn) {
   const original = console.error;
   const lines = [];
   console.error = (line) => {
     try {
-      const parsed = JSON.parse(line);
+      const parsed = JSON.parse(JSON.parse(line).message);
       if (parsed.event === "mcp.tool_call") lines.push(parsed);
     } catch {
       /* not an audit line */

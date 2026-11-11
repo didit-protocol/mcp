@@ -68,7 +68,6 @@ function apiKeyFields(authInfo: AuthInfo | undefined): { credential?: "api_key";
 function record(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", errorCode?: string) {
   return {
     time: new Date().toISOString(),
-    level: "info",
     event: "mcp.tool_call",
     tool: meta.tool,
     outcome,
@@ -87,10 +86,18 @@ function record(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", 
   };
 }
 
-/** stderr on purpose: over stdio, stdout is the JSON-RPC channel. Never throws. */
+/**
+ * stderr on purpose: over stdio, stdout is the JSON-RPC channel. Never throws.
+ *
+ * The record travels as a JSON string in `message`, with only `level` beside it. The log
+ * pipeline stores the `message` of a JSON line as the log line and drops a JSON line that
+ * has none, so a bare record never reached the log store. Of the other top-level keys it
+ * keeps `level` and discards the ones it does not know, and a top-level `time` in this
+ * format makes it log a parse error for every line.
+ */
 function emit(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", errorCode?: string): void {
   try {
-    console.error(JSON.stringify(record(meta, startedAt, outcome, errorCode)));
+    console.error(JSON.stringify({ level: "info", message: JSON.stringify(record(meta, startedAt, outcome, errorCode)) }));
   } catch (error) {
     console.error(`[didit-mcp] audit log failed for ${meta.tool}: ${(error as Error).message}`);
   }

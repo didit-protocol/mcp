@@ -72,6 +72,9 @@ export interface WholeList {
 /**
  * Every row of a list. `fetchPage` asks the API for one page; an answer that is a bare array is
  * a list the API does not page, and is the whole of it.
+ *
+ * The end of a list is a page with no `next`, never a number of rows: some endpoints stop
+ * counting at 100 (`count` is then a floor, not the total) while `next` goes on to the last row.
  */
 export async function everyPage(fetchPage: (page: { limit: number; offset: number }) => Promise<any>): Promise<WholeList> {
   const rows: any[] = [];
@@ -82,7 +85,7 @@ export async function everyPage(fetchPage: (page: { limit: number; offset: numbe
     const results: any[] = Array.isArray(page?.results) ? page.results : [];
     rows.push(...results);
     total = typeof page?.count === "number" ? page.count : rows.length;
-    if (!page?.next || results.length === 0 || rows.length >= total) return { rows, total: Math.max(total, rows.length), complete: true };
+    if (!page?.next || results.length === 0) return { rows, total: Math.max(total, rows.length), complete: true };
   }
 
   return { rows, total: Math.max(total, rows.length), complete: false };

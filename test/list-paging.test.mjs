@@ -268,7 +268,7 @@ test("the organizations and applications a caller can reach are read whole", asy
   }
 });
 
-test("reading every page: stops at the total, keeps a bare list bare, and says when it gave up", async () => {
+test("reading every page: stops at the last page, keeps a bare list bare, and says when it gave up", async () => {
   const rows = Array.from({ length: 5 }, (_, index) => ({ id: index }));
   const asked = [];
   const paged = await everyPage(async ({ limit, offset }) => {
@@ -286,6 +286,16 @@ test("reading every page: stops at the total, keeps a bare list bare, and says w
   // The envelope the API uses, with nothing left to page through.
   const whole = await wholeEnvelope(async ({ offset }) => ({ count: 5, next: offset === 0 ? "more" : null, results: rows.slice(offset, offset + 3) }));
   assert.deepEqual(whole, { count: 5, next: null, previous: null, results: rows });
+
+  // Some endpoints stop counting at 100: `count` is then a floor, and the list ends where `next` does.
+  const many = Array.from({ length: 450 }, (_, index) => ({ id: index }));
+  const capped = await everyPage(async ({ limit, offset }) => ({
+    count: 100,
+    next: offset + limit < many.length ? "more" : null,
+    results: many.slice(offset, offset + limit),
+  }));
+  assert.deepEqual([capped.rows.length, capped.total, capped.complete], [450, 450, true]);
+  assert.deepEqual(capped.rows.at(-1), { id: 449 });
 
   // A page with nothing in it ends the read even if the API still claims there is more.
   const stalled = await everyPage(async () => ({ count: 99, next: "more", results: [] }));

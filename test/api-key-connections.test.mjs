@@ -151,7 +151,7 @@ test("the application's primary key has no id and is marked primary, in the audi
   } finally {
     console.error = original;
   }
-  const audit = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line)).find((line) => line.event === "mcp.tool_call");
+  const audit = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(JSON.parse(line).message)).find((line) => line.event === "mcp.tool_call");
   assert.equal(audit.credential, "api_key");
   assert.equal(audit.api_key_primary, true);
   assert.equal(audit.api_key_id, undefined);
@@ -393,7 +393,7 @@ test("the audit line names the key by its id and never contains the key", async 
   } finally {
     console.error = original;
   }
-  const audit = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line)).find((line) => line.event === "mcp.tool_call");
+  const audit = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(JSON.parse(line).message)).find((line) => line.event === "mcp.tool_call");
   assert.equal(audit.credential, "api_key");
   assert.equal(audit.api_key_id, KEY_ID);
   assert.equal(audit.api_key_primary, undefined);

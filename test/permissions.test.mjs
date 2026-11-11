@@ -193,7 +193,7 @@ test("shadow mode (default): the call proceeds to the backend and the audit line
   assert.equal(res.isError, true, "the stub backend answers 404, so the call still errors");
   assert.match(textOf(res), /^Error \[not_found\]/, "shadow mode must not produce missing_scope");
   assert.ok(calls.length > 0, "shadow mode lets the backend decide");
-  const audit = lines.filter((l) => l.startsWith("{")).map((l) => JSON.parse(l));
+  const audit = lines.filter((l) => l.startsWith("{")).map((l) => JSON.parse(JSON.parse(l).message));
   assert.equal(audit.length, 1);
   assert.equal(audit[0].permission_check, "would_deny");
 });

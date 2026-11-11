@@ -602,7 +602,7 @@ test("the dispatcher reaches the public API for both tools and never leaks the k
   }
 
   // The secret travels in one request header and appears nowhere a caller or the log reads.
-  const logged = auditLines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+  const logged = auditLines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(JSON.parse(line).message));
   assert.equal(logged.length, 2, "one audit line per call");
   for (const line of auditLines) assert.ok(!line.includes(API_KEY), `the api-key reached the log: ${line}`);
   for (const record of logged) {

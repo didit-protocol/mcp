@@ -31,8 +31,8 @@ function stubFetch(routes) {
   return calls;
 }
 
-/** Capture the JSON audit lines written to stderr while `fn` runs. */
-async function captureAuditLines(fn) {
+/** Capture every line written to stderr while `fn` runs, as written. */
+async function captureStderr(fn) {
   const lines = [];
   const original = console.error;
   console.error = (line) => lines.push(String(line));
@@ -41,7 +41,12 @@ async function captureAuditLines(fn) {
   } finally {
     console.error = original;
   }
-  return lines.filter((l) => l.startsWith("{")).map((l) => JSON.parse(l));
+  return lines;
+}
+
+/** Capture the audit records written to stderr while `fn` runs: the JSON in each line's `message`. */
+async function captureAuditLines(fn) {
+  return (await captureStderr(fn)).filter((l) => l.startsWith("{")).map((l) => JSON.parse(JSON.parse(l).message));
 }
 
 const AUTH_INFO = {
@@ -77,6 +82,24 @@ test("canonicalJson ignores key order and drops undefined; the digest follows", 
   assert.equal(argsDigest(a), argsDigest(b));
   assert.notEqual(argsDigest(a), argsDigest({ ...b, b: 2 }));
   assert.equal(argsDigest(a).length, 16);
+});
+
+// The log pipeline stores the `message` of a JSON line as the log line, and drops a JSON
+// line that has none before it is stored anywhere. Of the other top-level keys it keeps
+// `level` and discards the rest, so the whole record has to travel inside `message`.
+test("the line on stderr is { level, message }, with the record as JSON in message", async () => {
+  stubFetch({ [`${AUTH}/organizations/me/`]: [] });
+
+  const jsonLines = (await captureStderr(() => callTool("didit_org_list", {}))).filter((l) => l.startsWith("{"));
+
+  assert.equal(jsonLines.length, 1, "exactly one audit line per call");
+  const line = JSON.parse(jsonLines[0]);
+  assert.deepEqual(Object.keys(line).sort(), ["level", "message"]);
+  assert.equal(line.level, "info");
+  assert.equal(typeof line.message, "string");
+  const record = JSON.parse(line.message);
+  assert.equal(record.event, "mcp.tool_call");
+  assert.equal(record.tool, "didit_org_list");
 });
 
 test("a successful call logs one line with caller, tool, digest and keys but no values", async () => {
