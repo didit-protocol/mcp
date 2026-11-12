@@ -413,6 +413,88 @@ test("a review-queue watch checks and subscribes to the application the call nam
   assert.deepEqual(subs(wake), [{ event: "session.in_review", args: { application: encodeArgValue(other) }, tool: "didit_session_watch_reviews", once: false }]);
 });
 
+/**
+ * Makes Wakeshift answer every subscribe of these calls as for an agent program it didn't
+ * recognize: subscribed, but nothing says the conversation can be woken. The test client
+ * otherwise always recognizes Claude Code.
+ */
+function unrecognized(wake) {
+  const currentCall = wake.currentCall.bind(wake);
+  wake.currentCall = () => {
+    const c = currentCall();
+    return new Proxy(c, {
+      get(target, prop) {
+        if (prop === "subscribe") {
+          return async (...a) => ({ ...(await target.subscribe(...a)), recognized: { harness: null, via: null, claimed: null } });
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+  };
+}
+
+const WATCH_ROUTES = {
+  [`GET /session/${SESSION}/decision/`]: { body: { session_id: SESSION, status: "In Review" } },
+  [`GET /organization/${ORG}/application/${APP}/sessions/`]: { body: { count: 2, results: [{}] } },
+  [`GET /organization/${ORG}/application/${APP}/transactions/`]: { body: { count: 0, results: [] } },
+};
+const WATCHES = [
+  ["didit_session_watch", { session_id: SESSION }, { session_id: SESSION, status: "In Review" }],
+  ["didit_session_watch_reviews", {}, { application_id: APP, in_review_now: 2 }],
+  ["didit_transaction_watch_reviews", {}, { application_id: APP }],
+];
+
+test("the watch tools answer watching true only when Wakeshift confirms the conversation will be woken", async (t) => {
+  stubDidit(t, WATCH_ROUTES);
+  const { client, wake } = await connect(t);
+  for (const [name, args, read] of WATCHES) {
+    const res = await call(client, name, args);
+    assert.equal(res.isError, undefined, name);
+    for (const [k, v] of Object.entries(read)) assert.equal(res.structuredContent[k], v, `${name} ${k}`);
+    assert.equal(res.structuredContent.watching, true, name);
+  }
+  assert.deepEqual(subs(wake).map((s) => s.tool), WATCHES.map(([name]) => name));
+  assert.deepEqual(wake.unsubscribes, []);
+});
+
+test("an agent Wakeshift didn't recognize: the watch is ended, and the tool answers its read with watching false", async (t) => {
+  stubDidit(t, WATCH_ROUTES);
+  const { client, wake } = await connect(t);
+  unrecognized(wake);
+  for (const [name, args, read] of WATCHES) {
+    const res = await call(client, name, args);
+    assert.equal(res.isError, undefined, name);
+    for (const [k, v] of Object.entries(read)) assert.equal(res.structuredContent[k], v, `${name} ${k}`);
+    assert.equal(res.structuredContent.watching, false, name);
+    // Nothing asks the agent to call a tool again (to watch, or to wait).
+    const text = res.content.map((c) => c.text ?? "").join("\n");
+    assert.doesNotMatch(text, /didit_session_watch|didit_transaction_watch|wakeshift_wait|subscribe_events|try again|call .* again/i, name);
+  }
+  // Each subscription made was ended: none is left.
+  assert.deepEqual(
+    wake.unsubscribes.map((u) => ({ event: u.event, ended: u.ended })),
+    [
+      { event: "session.status.updated", ended: true },
+      { event: "session.in_review", ended: true },
+      { event: "transaction.in_review", ended: true },
+    ],
+  );
+});
+
+test("a watch tool whose subscribe fails answers its read with watching false, not an error", async (t) => {
+  stubDidit(t, WATCH_ROUTES);
+  const { client, wake } = await connect(t);
+  for (const [name, args, read] of WATCHES) {
+    wake.failNext("subscribe", "unreachable");
+    const res = await call(client, name, args);
+    assert.equal(res.isError, undefined, name);
+    for (const [k, v] of Object.entries(read)) assert.equal(res.structuredContent[k], v, `${name} ${k}`);
+    assert.equal(res.structuredContent.watching, false, name);
+  }
+  assert.deepEqual(wake.subscriptions, []);
+});
+
 test("didit_session_webhooks still reads (and waits) as before, and watches the session's deliveries", async (t) => {
   stubDidit(t, { [`GET /session/${SESSION}/webhooks/`]: { body: [] } });
   const { client, wake } = await connect(t);

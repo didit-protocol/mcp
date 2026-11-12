@@ -28,7 +28,7 @@
 
 import { createHash } from "node:crypto";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { Wakeshift, encodeArgValue, isWakeshiftError, type AnyEvent } from "@wakeshift/sdk";
+import { Wakeshift, encodeArgValue, isWakeshiftError, type AnyEvent, type SubscribeOptions, type Subscription } from "@wakeshift/sdk";
 import { z } from "zod";
 import * as sessions from "./tools/sessions";
 import * as transactions from "./tools/transactions";
@@ -170,6 +170,15 @@ async function once(event: string, emit: () => Promise<{ matched?: number; dupli
     }
     throw err;
   }
+}
+
+/**
+ * Whether a subscribe will wake the calling conversation: a subscription created or renewed, for
+ * an agent program Wakeshift recognized. A native (MCP Events) client's, one for an agent
+ * Wakeshift didn't recognize, and every unavailable or disabled state are not.
+ */
+export function wakeConfirmed(sub: Subscription): boolean {
+  return (sub.state === "created" || sub.state === "renewed") && !!sub.recognized?.harness;
 }
 
 /** Defines Didit's events on a Wakeshift client, and everything that subscribes and emits them. */
@@ -463,6 +472,30 @@ export function createDiditWakeshift(wake: Wakeshift) {
     },
   ];
 
+  /**
+   * A watch tool's subscribe, after its access check: whether Wakeshift will wake the calling
+   * conversation (wakeConfirmed). When it won't, the subscription made (if any) is ended and the
+   * tool answers with what it read and watching false, as a read without Wakeshift would. A
+   * Wakeshift failure is logged and answers the same: the read already succeeded.
+   */
+  async function watch<E extends AnyEvent>(name: string, event: E, args: Record<string, string>, opts: SubscribeOptions): Promise<boolean> {
+    const current = wake.currentCall();
+    let sub: Subscription;
+    try {
+      sub = await current.subscribe(event, args as any, opts);
+    } catch (err) {
+      console.error(`[didit-mcp] wakeshift: ${name} could not subscribe: ${err instanceof Error ? err.name : typeof err}`);
+      return false;
+    }
+    if (wakeConfirmed(sub)) return true;
+    if (sub.state === "created" || sub.state === "renewed" || sub.state === "native") {
+      await current.unsubscribe(event, args as any).catch((err: unknown) => {
+        console.error(`[didit-mcp] wakeshift: ${name} could not end a watch that won't wake: ${err instanceof Error ? err.name : typeof err}`);
+      });
+    }
+    return false;
+  }
+
   async function call(name: string, args: Record<string, any>): Promise<unknown> {
     switch (name) {
       case "didit_session_watch": {
@@ -470,30 +503,34 @@ export function createDiditWakeshift(wake: Wakeshift) {
         // The access check: the caller's own credential must read the session.
         // Only its status is returned; the decision stays unread by the agent.
         const decision = await sessions.getSessionDecision(sessionId);
-        await watchSession(sessionId, READ_CATCH_UP);
-        return { session_id: sessionId, status: typeof decision?.status === "string" ? decision.status : null, watching: true };
+        const watching = await watch(name, sessionStatus, { session: arg(sessionId) }, {
+          ttl: STATUS_WATCH_TTL,
+          replay: READ_CATCH_UP,
+          reason: `Watching Didit session ${sessionId}`,
+        });
+        return { session_id: sessionId, status: typeof decision?.status === "string" ? decision.status : null, watching };
       }
       case "didit_session_watch_reviews": {
         // The access check: the caller's own credential must list the application's sessions.
         const page = await sessions.listSessions({ status: "In Review", limit: "1" });
         const application = resolveApplicationId();
-        await wake.currentCall().subscribe(sessionInReview, { application: arg(application) }, {
+        const watching = await watch(name, sessionInReview, { application: arg(application) }, {
           ttl: REVIEW_WATCH_TTL,
           replay: READ_CATCH_UP,
           reason: `Watching the review queue of Didit application ${application}`,
         });
-        return { application_id: application, in_review_now: page?.total_count ?? page?.count ?? null, watching: true };
+        return { application_id: application, in_review_now: page?.total_count ?? page?.count ?? null, watching };
       }
       case "didit_transaction_watch_reviews": {
         // The access check: the caller's own credential must list the application's transactions.
         await transactions.listTransactions({ limit: "1" });
         const application = resolveApplicationId();
-        await wake.currentCall().subscribe(transactionInReview, { application: arg(application) }, {
+        const watching = await watch(name, transactionInReview, { application: arg(application) }, {
           ttl: REVIEW_WATCH_TTL,
           replay: READ_CATCH_UP,
           reason: `Watching flagged transactions of Didit application ${application}`,
         });
-        return { application_id: application, watching: true };
+        return { application_id: application, watching };
       }
     }
     throw new Error(`Unknown tool: ${name}`);
