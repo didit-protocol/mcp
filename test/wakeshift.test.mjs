@@ -168,6 +168,23 @@ test("a retried notification wakes once; Not Started and In Progress wake nobody
   assert.equal(wake.emits.length, 5);
 });
 
+test("each emit logs how many conversations it reached, and never an ID or the payload", async (t) => {
+  const lines = [];
+  t.mock.method(console, "error", (...args) => void lines.push(args.join(" ")));
+  const { route } = emitter();
+  const r = route("session-status-updated");
+  await r.emit(STATUS_BODY);
+  await r.emit(STATUS_BODY);
+  await r.emit({ ...STATUS_BODY, event_id: "e-quiet", status: "In Progress" });
+  const ours = lines.filter((l) => l.includes("[didit-mcp] wakeshift:"));
+  assert.match(ours[0], /session\.status\.updated emitted, matched \d+$/);
+  assert.match(ours[1], /session\.status\.updated (duplicate|already emitted)/);
+  assert.match(ours[2], /session\.status\.updated not emitted, status not final$/);
+  for (const l of ours) {
+    assert.ok(!l.includes(STATUS_BODY.session_id) && !l.includes(STATUS_BODY.event_id) && !l.includes(APP), l);
+  }
+});
+
 test("a retry whose body changed (a recomputed timestamp) counts as already emitted, not as a failure", async () => {
   const { wake, route } = emitter();
   const r = route("session-status-updated");

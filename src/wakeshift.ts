@@ -157,11 +157,17 @@ export function emitId(event: string, ...ids: string[]): string {
  * whose body changed, say a recomputed timestamp) means this change was already
  * emitted: it counts as done, not as a failure the backend should retry forever.
  */
-async function once(emit: () => Promise<unknown>): Promise<void> {
+async function once(event: string, emit: () => Promise<{ matched?: number; duplicate?: boolean } | unknown>): Promise<void> {
   try {
-    await emit();
+    const out = (await emit()) as { matched?: number; duplicate?: boolean } | undefined;
+    // One line per emit, so a 204 can be read later: how many conversations it reached.
+    // The event's name and counts only, never its arguments or payload.
+    console.error(`[didit-mcp] wakeshift: ${event} ${out?.duplicate ? "duplicate (already emitted)" : `emitted, matched ${out?.matched ?? 0}`}`);
   } catch (err) {
-    if (isWakeshiftError(err, "id_reused")) return;
+    if (isWakeshiftError(err, "id_reused")) {
+      console.error(`[didit-mcp] wakeshift: ${event} already emitted`);
+      return;
+    }
     throw err;
   }
 }
@@ -262,12 +268,15 @@ export function createDiditWakeshift(wake: Wakeshift) {
   // ── Emits, one per backend notification ─────────────────────────────
 
   async function emitSessionStatus(b: SessionStatusUpdated) {
+    if (!FINAL_SESSION_STATUSES.has(b.status) && b.status !== "In Review") {
+      console.error(`[didit-mcp] wakeshift: ${sessionStatus.name} not emitted, status not final`);
+    }
     if (FINAL_SESSION_STATUSES.has(b.status)) {
       const payload = { session_id: b.session_id, application_id: b.application_id, status: b.status, updated_at: b.updated_at };
-      await once(() => sessionStatus.emit({ session: arg(b.session_id) }, payload, { id: emitId(sessionStatus.name, b.event_id) }));
+      await once(sessionStatus.name, () => sessionStatus.emit({ session: arg(b.session_id) }, payload, { id: emitId(sessionStatus.name, b.event_id) }));
     }
     if (b.status === "In Review") {
-      await once(() =>
+      await once(sessionInReview.name, () =>
         sessionInReview.emit(
           { application: arg(b.application_id) },
           { session_id: b.session_id, application_id: b.application_id, updated_at: b.updated_at },
@@ -278,18 +287,18 @@ export function createDiditWakeshift(wake: Wakeshift) {
   }
 
   async function emitDelivery(b: SessionWebhookDelivery) {
-    await once(() => deliveryLogged.emit({ session: arg(b.session_id) }, b, { id: emitId(deliveryLogged.name, b.session_id, b.delivery_id) }));
+    await once(deliveryLogged.name, () => deliveryLogged.emit({ session: arg(b.session_id) }, b, { id: emitId(deliveryLogged.name, b.session_id, b.delivery_id) }));
   }
 
   async function emitImportFinished(b: SessionImportFinished) {
     const run = b.status === "READY" ? "dry_run" : "import";
-    await once(() => importFinished.emit({ import: arg(b.import_id), run }, b, { id: emitId(importFinished.name, b.import_id, b.status) }));
+    await once(importFinished.name, () => importFinished.emit({ import: arg(b.import_id), run }, b, { id: emitId(importFinished.name, b.import_id, b.status) }));
   }
 
   async function emitTransactionStatus(b: TransactionStatusUpdated) {
     if (FINAL_TRANSACTION_STATUSES.has(b.status.toUpperCase())) {
       const payload = { transaction_id: b.transaction_id, txn_id: b.txn_id, application_id: b.application_id, status: b.status, updated_at: b.updated_at };
-      await once(() =>
+      await once(transactionStatus.name, () =>
         transactionStatus.emit(
           { application: arg(b.application_id), transaction: arg(b.txn_id) },
           payload,
@@ -298,7 +307,7 @@ export function createDiditWakeshift(wake: Wakeshift) {
       );
     }
     if (b.status === "IN_REVIEW") {
-      await once(() =>
+      await once(transactionInReview.name, () =>
         transactionInReview.emit(
           { application: arg(b.application_id) },
           { transaction_id: b.transaction_id, txn_id: b.txn_id, application_id: b.application_id, updated_at: b.updated_at },
