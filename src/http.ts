@@ -20,6 +20,8 @@ import { mountInvestigatorAgentEndpoint } from "./investigator-agent";
 import { DiditTokenVerifier } from "./auth/verifier";
 import { IntrospectionTokenVerifier } from "./auth/introspection-verifier";
 import { CachingTokenVerifier } from "./auth/cached-verifier";
+import { MAX_EVENT_BODY_BYTES, handleBackendEvent, signingKey } from "./backend-events";
+import type { DiditWakeshift } from "./wakeshift";
 import {MCP_PORT,
   MCP_RESOURCE_URI,
   MCP_SCOPES_SUPPORTED,
@@ -79,6 +81,56 @@ async function resolveAuthorizationServerMetadata(): Promise<OAuthMetadata> {
  */
 const PUBLIC_DISCOVERY_METHODS = new Set(["initialize", "notifications/initialized", "server/discover"]);
 
+/**
+ * Wakeshift (wakeshift.ts): on only with both WAKESHIFT_KEY and DIDIT_EVENTS_SECRET set.
+ * Then the Didit backend reports changes to POST /internal/events/*, signed with the secret,
+ * and /mcp and /mcp/payments (any toolsets, read-only or not) offer the watch tools. Otherwise
+ * nothing is mounted or loaded, and @wakeshift/sdk is never required. See docs/backend-events.md.
+ */
+function mountWakeshift(app: express.Express): DiditWakeshift | undefined {
+  const secret = process.env.DIDIT_EVENTS_SECRET?.trim();
+  const key = process.env.WAKESHIFT_KEY?.trim();
+  if (secret && !key) {
+    console.error("[didit-mcp] DIDIT_EVENTS_SECRET is set but WAKESHIFT_KEY is not; Wakeshift is off.");
+  } else if (key && !secret) {
+    console.error("[didit-mcp] WAKESHIFT_KEY is set but DIDIT_EVENTS_SECRET is not; Wakeshift is off (its wakes need backend events).");
+  }
+  if (!secret || !key) return undefined;
+
+  const signing = signingKey(secret); // throws at startup on a malformed secret
+  // Loaded here so a server with Wakeshift off never loads the SDK (an ES module, required from CommonJS).
+  const { createWakeshiftFromEnv } = require("./wakeshift") as typeof import("./wakeshift");
+  const wakeshift = createWakeshiftFromEnv();
+  // The raw body is what's signed, so these routes read it themselves, before express.json.
+  const readBody = express.text({ type: () => true, limit: MAX_EVENT_BODY_BYTES });
+  for (const route of wakeshift.routes) {
+    app.post(route.path, (req, res) => {
+      readBody(req, res, async (err?: any) => {
+        if (err) {
+          const tooLarge = err?.type === "entity.too.large";
+          res.status(tooLarge ? 413 : 400).json({ error: tooLarge ? "body_too_large" : "unreadable_body" });
+          return;
+        }
+        const result = await handleBackendEvent(
+          signing,
+          {
+            id: req.header("webhook-id"),
+            timestamp: req.header("webhook-timestamp"),
+            signature: req.header("webhook-signature"),
+          },
+          typeof req.body === "string" ? req.body : "",
+          route.schema as any,
+          route.emit as (body: unknown) => Promise<unknown>,
+        );
+        if (result.body) res.status(result.status).json(result.body);
+        else res.status(result.status).end();
+      });
+    });
+  }
+  console.error(`[didit-mcp] Wakeshift on: backend events at POST /internal/events/*; watch tools offered on /mcp and /mcp/payments.`);
+  return wakeshift;
+}
+
 export async function createHttpApp(): Promise<express.Express> {
   const app = express();
   // First, so every answer below can go out compressed (compress.ts).
@@ -86,6 +138,8 @@ export async function createHttpApp(): Promise<express.Express> {
   // This narrowly scoped capability URL authenticates itself; no MCP Bearer required.
   app.get(SESSION_PDF_DOWNLOAD_PATH, downloadSessionPdf);
   app.get(SESSION_SIGNATURE_DOWNLOAD_PATH, downloadSessionSignatureFile);
+  // Signed by the Didit backend, not by an MCP Bearer; before express.json, which would consume the body.
+  const wakeshift = mountWakeshift(app);
   // Base64 file inputs (*_base64 tool params, 15MB decoded cap + ~33% base64
   // overhead) must fit in the JSON-RPC body. Overridable per environment.
   app.use(express.json({ limit: process.env.MCP_JSON_BODY_LIMIT || "25mb" }));
@@ -259,6 +313,7 @@ export async function createHttpApp(): Promise<express.Express> {
             profile: endpoint.profile,
             moneyTools: endpoint.moneyTools,
             selection,
+            wakeshift: wakeshift?.hooks,
           });
           if (reply) res.json(reply);
           else res.status(202).end();
@@ -282,6 +337,7 @@ export async function createHttpApp(): Promise<express.Express> {
         selection,
         // What the server says about itself depends on who connected (guidance.ts).
         apiKey: Boolean(apiKeyScopeOf(req.auth)),
+        wakeshift: wakeshift?.hooks,
       });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {

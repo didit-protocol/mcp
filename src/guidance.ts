@@ -24,6 +24,8 @@ export interface PromptContext {
   use: (tool: string) => string;
   /** Whether the documentation search is available. */
   docs: boolean;
+  /** Whether agents can be woken instead of polling (Wakeshift on, wakeshift.ts). */
+  wakes?: boolean;
 }
 
 export interface GuidanceContext {
@@ -158,13 +160,16 @@ const PROMPTS: readonly PromptDef[] = [
     title: "Work the review queue",
     description: "Go through the sessions waiting for a manual decision, one at a time.",
     arguments: [{ name: "limit", description: "How many sessions to go through (default 5)." }],
-    text: ({ limit }, { use }) =>
+    text: ({ limit }, { use, wakes }) =>
       [
         `Go through my verification sessions that are waiting for review, up to ${limit || "5"} of them, oldest first.`,
         `1. Find them with ${use("didit_session_search")} (status In Review).`,
         `2. For each one, call ${use("didit_session_explain_decision")} and tell me in two or three lines why it stopped and what the evidence says.`,
         "3. Recommend approve, decline or resubmission, with the reason.",
         `4. Change nothing until I answer. When I decide, apply it with ${use("didit_session_update_status")} and confirm: true, then move to the next one.`,
+        ...(wakes
+          ? [`5. When none are left, offer to watch the queue with ${use("didit_session_watch_reviews")}, so you are woken when the next session needs review.`]
+          : []),
       ].join("\n"),
   },
   {
