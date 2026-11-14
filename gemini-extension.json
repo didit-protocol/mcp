@@ -1,0 +1,11 @@
+{
+  "name": "didit-mcp",
+  "version": "0.1.0",
+  "description": "Identity verification and fraud workflows for AI agents",
+  "mcpServers": {
+    "didit": {
+      "httpUrl": "https://mcp.didit.me/mcp",
+      "trust": false
+    }
+  }
+}
