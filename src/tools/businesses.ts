@@ -1,4 +1,8 @@
 import { apiRequest, orgAppPath } from "../config";
+import type { RegisteredTool } from "./registry";
+import { searchVendorBusinesses } from "./search";
+import { ENTITY_STATUSES } from "./shared-schema";
+import { ORG_APP_PROPS } from "../orgapp";
 import { assertBoolean, DiditError, MAX_BATCH_IDS, pathSegment } from "../security";
 
 // Vendor businesses — the console resource is `vendor-businesses`, org/app-scoped (these are
@@ -56,3 +60,130 @@ export async function deleteBusinesses(
     },
   });
 }
+
+// ── The vendor business tools (tools/registry.ts) ──────────────────────────────────
+// Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
+// The definitions are listed where these tools always were, so the tool list does not change.
+export const VENDOR_BUSINESS_TOOLS: readonly RegisteredTool[] = [
+  {
+    def: {
+      name: "didit_vendor_business_list",
+      description: "List verified businesses (KYB, grouped by vendor_data) for ONE app; with multiple apps (or no scope) it auto-spans all your apps. For a cross-app lookup prefer didit_vendor_business_search. Supports limit/offset pagination.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          limit: { type: "string" },
+          offset: { type: "string" },
+        },
+      },
+    },
+    access: "read",
+    permission: "list:businesses", // GET …/vendor-businesses/ → vendor_business.py:150
+    run: (args) => listBusinesses(args),
+    spanAllApplications: (args) => searchVendorBusinesses(args),
+  },
+  {
+    def: {
+      name: "didit_vendor_business_create",
+      description: "Create a business record manually (KYB).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          vendor_data: { type: "string", description: "Your unique identifier for the business" },
+          display_name: { type: "string" },
+          legal_name: { type: "string" },
+          registration_number: { type: "string" },
+          country_code: { type: "string", description: "ISO 3166-1 alpha-2 country code" },
+          status: { type: "string", enum: ENTITY_STATUSES },
+          metadata: { type: "object" },
+        },
+      },
+    },
+    access: "write",
+    permission: "create:businesses", // POST …/vendor-businesses/ → vendor_business.py:154
+    run: (args) => createBusiness(args),
+  },
+  {
+    def: {
+      name: "didit_vendor_business_get",
+      description: "Get details of a specific business by its vendor_data identifier.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          vendor_data: { type: "string", description: "The vendor_data value that identifies the business" },
+        },
+        required: ["vendor_data"],
+      },
+    },
+    access: "read",
+    permission: "read:businesses", // GET …/vendor-businesses/{vendor_data}/ → vendor_business.py:197
+    run: (args) => getBusiness(args.vendor_data),
+  },
+  {
+    def: {
+      name: "didit_vendor_business_update",
+      description: "Update a business's profile fields. Only send the fields you want to change.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          vendor_data: { type: "string" },
+          display_name: { type: "string" },
+          legal_name: { type: "string" },
+          registration_number: { type: "string" },
+          country_code: { type: "string", description: "ISO 3166-1 alpha-2 country code" },
+          status: { type: "string", enum: ENTITY_STATUSES },
+          metadata: { type: "object" },
+        },
+        required: ["vendor_data"],
+      },
+    },
+    access: "write",
+    permission: null, // PATCH …/vendor-businesses/{vendor_data}/update/ — route does not exist as coded (only by-id/)
+    run: ({ vendor_data, ...data }) => updateBusiness(vendor_data, data),
+  },
+  {
+    def: {
+      name: "didit_vendor_business_update_status",
+      description: "Set a business's monitoring status (ACTIVE, FLAGGED, or BLOCKED).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          vendor_data: { type: "string" },
+          status: { type: "string", enum: ENTITY_STATUSES, description: "New status" },
+        },
+        required: ["vendor_data", "status"],
+      },
+    },
+    access: "write",
+    permission: "write:businesses", // POST …/vendor-businesses/bulk-status/ → vendor_business.py:965
+    run: (args) => updateBusinessStatus(args.vendor_data, args.status),
+  },
+  {
+    def: {
+      name: "didit_vendor_business_delete",
+      description: "Batch delete businesses by vendor_data list and/or didit_internal_id list, or delete all businesses. Deletion is permanent. If the API answers 409 (in_filed_report or subject_deletion_in_progress), nothing is deleted: repeat the request once the other deletion has finished.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          vendor_data_list: { type: "array", items: { type: "string" } },
+          didit_internal_id_list: { type: "array", items: { type: "string" } },
+          delete_all: { type: "boolean", description: "Set true to delete ALL businesses" },
+          confirm: {
+            type: "boolean",
+            description:
+              "REQUIRED when delete_all is true - permanently removes EVERY vendor business. Only set after explicit user confirmation of this exact action.",
+          },
+        },
+      },
+    },
+    access: "destructive",
+    permission: "delete:businesses", // DELETE …/vendor-businesses/delete/ → vendor_business.py:935
+    run: (args) => deleteBusinesses(args.vendor_data_list, args.didit_internal_id_list, args.delete_all, args.confirm),
+  },
+];

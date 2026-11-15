@@ -13,9 +13,11 @@ import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { createServer } from "./index";
 import { compressResponses } from "./compress";
 import { apiKeyScopeOf } from "./api-key-connection";
+import { noteRequestCredentials, watchHostedRequest } from "./auth/refusal-log";
+import { answerFormatFor, isBrowserNavigation, namesMcpMediaType } from "./accept";
 import { defaultToolsets, selectionFromRequest } from "./toolsets";
 import { modernGate, isModernRequest, handleModernRpc } from "./mcp-modern";
-import { mountDomainChallenge, mountProfileEndpoint, mountWidgetFonts, type CatalogProfile } from "./chatgpt-app";
+import { mountDomainChallenge, mountProfileEndpoint, mountWidgetFonts, profileEndpointPaths, type CatalogProfile } from "./chatgpt-app";
 import { mountInvestigatorAgentEndpoint } from "./investigator-agent";
 import { DiditTokenVerifier } from "./auth/verifier";
 import { IntrospectionTokenVerifier } from "./auth/introspection-verifier";
@@ -30,10 +32,13 @@ import {MCP_PORT,
   DIDIT_OIDC_AUTHORIZE_URL,
   DIDIT_OIDC_TOKEN_URL,
   DIDIT_OIDC_REGISTRATION_URL,
-  DIDIT_JWKS_URL, SERVER_VERSION,
+  DIDIT_JWKS_URL, SERVER_VERSION, setServerVersion,
   MCP_PUBLIC_DISCOVERY,
   MCP_PAYMENTS_PATH,
   SERVER_FEATURES } from "./config";
+import { connectPage } from "./connect-page";
+import { holdIdleConnections } from "./connection-timeouts";
+import { LATE_RELEASE_LOOKUP, resolveReleaseVersion } from "./release-version";
 
 /**
  * Resolve the upstream Authorization Server (service-didit-auth) metadata that we
@@ -71,6 +76,9 @@ async function resolveAuthorizationServerMetadata(): Promise<OAuthMetadata> {
   return fallback;
 }
 
+/** The server's address without a path: `https://mcp.didit.me`. It answers as `/mcp` does (see `endpoints`). */
+const BARE_ADDRESS = "/";
+
 /**
  * The only JSON-RPC methods MCP_PUBLIC_DISCOVERY exposes without a Bearer: protocol
  * negotiation and its acknowledgement. Deliberately NOT `tools/list` - the catalog is the
@@ -83,6 +91,21 @@ export async function createHttpApp(): Promise<express.Express> {
   const app = express();
   // First, so every answer below can go out compressed (compress.ts).
   app.use(...compressResponses());
+  // Before the body parser: a body it rejects never reaches a route, and that refusal is exactly the
+  // kind a connector's failure leaves behind (auth/refusal-log.ts). Only these exact paths, so every
+  // request is logged once, under the path it was sent to.
+  const hostedPaths = new Set(["/mcp", MCP_PAYMENTS_PATH, ...profileEndpointPaths()]);
+  // The bare address is also a page: a request there is a connector's unless it is a page view.
+  const isConnectorRequest = (req: express.Request): boolean =>
+    hostedPaths.has(req.path) ||
+    (req.path === BARE_ADDRESS && (req.method !== "GET" || namesMcpMediaType(req.headers.accept)));
+  app.use((req, res, next) => {
+    if (isConnectorRequest(req)) {
+      noteRequestCredentials(req);
+      watchHostedRequest(req, res, req.path);
+    }
+    next();
+  });
   // This narrowly scoped capability URL authenticates itself; no MCP Bearer required.
   app.get(SESSION_PDF_DOWNLOAD_PATH, downloadSessionPdf);
   app.get(SESSION_SIGNATURE_DOWNLOAD_PATH, downloadSessionSignatureFile);
@@ -160,6 +183,10 @@ export async function createHttpApp(): Promise<express.Express> {
   // A reduced catalog profile may be a second protected resource on the same server (see chatgpt-app.ts).
   const profileEndpoint = mountProfileEndpoint(app, { oauthMetadata, resourceServerUrl, scopesSupported: MCP_SCOPES_SUPPORTED });
 
+  // A person who opens the server's address in a browser gets the page that says how to connect
+  // (connect-page.ts; the open-source build has none). The routes below decide who that is.
+  const sendConnectPage = connectPage({ mcpUrl: MCP_RESOURCE_URI, chatgpt: profileEndpoint !== undefined });
+
   app.get("/healthz", (_req, res) => {
     res.json({ status: "ok", service: "didit-mcp-server", version: SERVER_VERSION, features: SERVER_FEATURES });
   });
@@ -180,8 +207,14 @@ export async function createHttpApp(): Promise<express.Express> {
   // resource indicator. The dispatch is identical apart from the profile handed to the server.
   // `moneyTools` is the one explicit money gate (index.ts createServer): false everywhere except
   // the unlisted payments endpoint, so the directory-listed /mcp and /mcp/chatgpt never move money.
-  const endpoints: Array<{ path: string; profile: CatalogProfile; resourceUrl: URL; moneyTools: boolean }> = [
-    { path: "/mcp", profile: "full", resourceUrl: resourceServerUrl, moneyTools: false },
+  //
+  // The bare address (`https://mcp.didit.me`) is `/mcp` under a second address, not another resource:
+  // the same catalog, the same sign-in, the same challenge. It is what a person has in the address bar
+  // after opening the server in a browser, so connectors get registered with it, and the discovery
+  // documents are served at the origin, so the sign-in then SUCCEEDS. Until this answered, such a
+  // connector signed in and was told "no MCP server was found at the provided URL" (13 Nov 2026).
+  const endpoints: Array<{ path: string; also?: string; profile: CatalogProfile; resourceUrl: URL; moneyTools: boolean }> = [
+    { path: "/mcp", also: BARE_ADDRESS, profile: "full", resourceUrl: resourceServerUrl, moneyTools: false },
     ...(profileEndpoint ? [{ ...profileEndpoint, moneyTools: false }] : []),
     { path: MCP_PAYMENTS_PATH, profile: "full", resourceUrl: paymentsResourceUrl, moneyTools: true },
   ];
@@ -236,9 +269,11 @@ export async function createHttpApp(): Promise<express.Express> {
       });
     };
 
+    const addresses = endpoint.also === undefined ? [endpoint.path] : [endpoint.path, endpoint.also];
+
     // Stateless Streamable HTTP: a fresh server + transport per request avoids
     // JSON-RPC id collisions across concurrent clients and needs no ALB affinity.
-    app.post(endpoint.path, maybeBearerAuth, keyOnlyOnFullProfile, async (req, res) => {
+    app.post(addresses, maybeBearerAuth, keyOnlyOnFullProfile, async (req, res) => {
       // MCP 2026-07-28 dual-era dispatch: modern requests pin their protocol
       // version on every message and skip the initialize handshake; anything
       // else takes the legacy Streamable HTTP transport below, unchanged.
@@ -283,7 +318,18 @@ export async function createHttpApp(): Promise<express.Express> {
         // What the server says about itself depends on who connected (guidance.ts).
         apiKey: Boolean(apiKeyScopeOf(req.auth)),
       });
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      // Answer in the shape the caller named (accept.ts): an event stream when it named one,
+      // which is the stream every current client gets, JSON when it only accepts JSON — a format the
+      // protocol allows — instead of the transport's 406 at the handshake. The transport's own Accept
+      // check is a substring test that demands both media types, so such a request is presented as
+      // accepting both; one that accepts neither is left alone and keeps the 406.
+      const answerFormat = answerFormatFor(req.headers.accept);
+      if (answerFormat) req.headers.accept = "application/json, text/event-stream";
+
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: answerFormat === "json",
+      });
       res.on("close", () => {
         transport.close().catch(() => {});
         server.close().catch(() => {});
@@ -305,8 +351,35 @@ export async function createHttpApp(): Promise<express.Express> {
       }
     });
 
-    app.get(endpoint.path, methodNotAllowed(endpoint.path));
-    app.delete(endpoint.path, methodNotAllowed(endpoint.path));
+    // A browser that opens the endpoint itself is a person looking for the server, not a client
+    // asking for a stream (a client asks for text/event-stream): it gets the page that says how to
+    // connect. Everything else gets the protocol's answer, as before.
+    //
+    // The page is served in place. A redirect to the bare address left that address in the address
+    // bar, which is where a person copies the server URL from.
+    app.get(endpoint.path, (req, res) => {
+      res.vary("Accept");
+      if (sendConnectPage && isBrowserNavigation(req.headers.accept)) {
+        sendConnectPage(res);
+        return;
+      }
+      methodNotAllowed(endpoint.path)(req, res);
+    });
+    app.delete(addresses, methodNotAllowed(endpoint.path));
+
+    // The bare address is the page's own address, so the page is the answer to everyone who does not
+    // ask for an MCP answer (a crawler and `curl` name no media type). A client that does ask gets
+    // the protocol's answer, never HTML: handed the page, it reports a server that cannot be reached.
+    if (endpoint.also !== undefined) {
+      app.get(endpoint.also, (req, res) => {
+        res.vary("Accept");
+        if (sendConnectPage && !namesMcpMediaType(req.headers.accept)) {
+          sendConnectPage(res);
+          return;
+        }
+        methodNotAllowed(endpoint.path)(req, res);
+      });
+    }
   }
 
   // Body-parser failures happen before any MCP route runs, and Express's default handler
@@ -344,11 +417,31 @@ export async function createHttpApp(): Promise<express.Express> {
 }
 
 async function main(): Promise<void> {
+  // Before anything answers: /healthz and the MCP handshake both state the version. One quick read
+  // here; when it fails, the reads go on in the background, so a slow task metadata endpoint never
+  // holds the health check, and the release is stated from the moment it is known.
+  const release = await resolveReleaseVersion(process.env, fetch, { attempts: 1 });
+  if (release) setServerVersion(release);
+  else if (process.env.ECS_CONTAINER_METADATA_URI_V4 && !process.env.MCP_SERVER_VERSION?.trim()) {
+    // The read that keeps going: a task that starts before its metadata endpoint answers names its
+    // release minutes later instead of never (LATE_RELEASE_LOOKUP), so every task reports the same
+    // release as the one that was deployed.
+    void resolveReleaseVersion(process.env, fetch, {
+      ...LATE_RELEASE_LOOKUP,
+      onGiveUp: (reason) => console.error(`Release version unknown: ${reason}. /healthz states ${SERVER_VERSION}.`),
+    }).then((later) => {
+      if (!later) return;
+      setServerVersion(later);
+      console.error(`Didit MCP Server release ${later} (named after start)`);
+    });
+  }
   const app = await createHttpApp();
 
-  app.listen(MCP_PORT, () => {
-    console.error(`Didit MCP Server v${SERVER_VERSION} (HTTP/OAuth) on :${MCP_PORT}, resource=${MCP_RESOURCE_URI}`);
-  });
+  holdIdleConnections(
+    app.listen(MCP_PORT, () => {
+      console.error(`Didit MCP Server v${SERVER_VERSION} (HTTP/OAuth) on :${MCP_PORT}, resource=${MCP_RESOURCE_URI}`);
+    }),
+  );
 }
 
 if (require.main === module) {

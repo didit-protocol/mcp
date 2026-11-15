@@ -1,4 +1,7 @@
 import { apiRequest, orgAppPath } from "../config";
+import type { RegisteredTool } from "./registry";
+import { PAGE_PROPS, pageParams } from "../paging";
+import { ORG_APP_PROPS } from "../orgapp";
 import { DiditError, pathSegment } from "../security";
 
 // Async export reports — org/app-scoped console resource.
@@ -85,3 +88,66 @@ export async function exportReport(kind: string, data: Record<string, any> = {})
     throw error;
   }
 }
+
+// ── The report tools (tools/registry.ts) ──────────────────────────────────
+// Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
+// The definitions are listed where these tools always were, so the tool list does not change.
+export const REPORT_TOOLS: readonly RegisteredTool[] = [
+  {
+    def: {
+      name: "didit_report_list",
+      description: "List the application's generated reports, newest first, with how many there are of each status (`counts`). One page: 50 unless `limit` says otherwise, with `count` as the total and `offset` to read the ones after.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          status: { type: "string", description: "Only these statuses, comma separated: PENDING, PROCESSING, READY, FAILED." },
+          report_type: {
+            type: "string",
+            description: "Only these report types, comma separated, for example SESSION_EXPORT, TRANSACTION_EXPORT, CASE_EXPORT, VENDOR_USER_EXPORT.",
+          },
+          q: { type: "string", description: "Search by any part of the report id, or of the name or email of the person who asked for it." },
+          ...PAGE_PROPS,
+        },
+      },
+    },
+    access: "read",
+    permission: null, // GET …/reports/ → reports.py:100, same
+    run: (args) => listReports({ ...args, ...pageParams(args) }),
+  },
+  {
+    def: {
+      name: "didit_report_get",
+      description: "Get a report's status/details.",
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, report_id: { type: "string" } }, required: ["report_id"] },
+    },
+    access: "read",
+    permission: null, // GET …/reports/{id}/ → reports.py:129, @has_privileges([]) + row-level check
+    run: (args) => getReport(args.report_id),
+  },
+  {
+    def: {
+      name: "didit_report_get_download_url",
+      description: "Get a signed download URL for a finished report.",
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, report_id: { type: "string" } }, required: ["report_id"] },
+    },
+    access: "read",
+    permission: null, // GET …/reports/{id}/download-url/ → reports.py:153, same
+    run: (args) => getReportDownloadUrl(args.report_id),
+  },
+  {
+    def: {
+      name: "didit_report_export",
+      description: "Start an export report. kind ∈ sessions | transactions | businesses | vendor-users | vendor-businesses. `data.columns` is a kind-specific schema — for sessions/vendor-users/vendor-businesses an unknown column 400s with `Invalid columns`, and that error's `allowed` field carries the full valid-column list for that kind, so retry from the error alone rather than guessing names like `date`/`status`/`total_price`.",
+      inputSchema: {
+        type: "object" as const,
+        properties: { ...ORG_APP_PROPS, kind: { type: "string" }, data: { type: "object", description: "Filters for the export" } },
+        required: ["kind"],
+      },
+    },
+    // Its name reads like a read, but it starts an export job that writes a file.
+    access: "write",
+    permission: null, // POST …/reports/{kind}/ — permission varies by kind (read:sessions|transactions|businesses|users)
+    run: (args) => exportReport(args.kind, args.data || {}),
+  },
+];

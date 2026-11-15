@@ -12,7 +12,14 @@ function readPackageVersion(): string {
     return "5.0.0";
   }
 }
-export const SERVER_VERSION = readPackageVersion();
+// `let`, because the hosted server learns which release it is when it starts (release-version.ts).
+// Every reader takes it at the time it answers, so they all see the release once it is known.
+export let SERVER_VERSION = readPackageVersion();
+
+/** Name the release this process is: before the hosted server listens, or soon after when the first read failed. */
+export function setServerVersion(version: string): void {
+  SERVER_VERSION = version;
+}
 
 /**
  * Per-tool permission pre-check (permissions.ts): `shadow` (default) only records what
@@ -144,6 +151,21 @@ export interface RequestCredentials {
   /** Where the user acted from, sent to the Investigator as X-Didit-Actor-Via: "copilot" when the
    *  console assistant said so on the MCP request, otherwise "mcp". */
   actorVia?: "copilot" | "mcp";
+  /** The applications a call could have meant, when it named none and the caller has several
+   *  (set by the dispatcher). The scope error lists them, so the retry needs no lookup first. */
+  scopeChoices?: ScopeChoice[];
+  /** An organization's applications could not be listed, so `scopeChoices` may not be all of them. */
+  scopeChoicesPartial?: boolean;
+}
+
+/** One application of the caller, with the two ids a console path needs. */
+export interface ScopeChoice {
+  organizationId: string;
+  organizationName?: string;
+  applicationId: string;
+  applicationName?: string;
+  /** "live" | "sandbox", when the auth API says. */
+  mode?: string;
 }
 export const requestContext = new AsyncLocalStorage<RequestCredentials>();
 
@@ -165,26 +187,72 @@ export interface OrgAppArgs {
   applicationId?: string;
 }
 
+/** How many applications a scope error lists before it points to didit_context_get for the rest. */
+const MAX_SCOPE_CHOICES = 12;
+
+/**
+ * The error for a call that needs an organization or an application and names none.
+ *
+ * It opens with the sentence clients already recognise ("<field> is required for this
+ * operation"), and when the dispatcher knows which applications the caller has, it lists them
+ * with both ids: the retry is then the very next call. Before, the error only said to call
+ * didit_context_get, and that lookup plus the retry were two more round trips for every such
+ * call (in production, 18 of 100 didit_webhook_list calls on 11 and 12 November 2026).
+ *
+ * A code of its own, because this is the caller's argument missing and not a fault: under the
+ * generic `error` code the two could not be told apart in the tool-call log.
+ */
+function scopeRequired(field: "organization_id" | "application_id"): DiditError {
+  const code = field === "organization_id" ? "organization_required" : "application_required";
+  const store = requestContext.getStore();
+  const choices = store?.scopeChoices ?? [];
+  if (choices.length === 0) {
+    return new DiditError({
+      code,
+      field,
+      message:
+        field === "organization_id"
+          ? "organization_id is required for this operation. Call didit_context_get to discover " +
+            "your organizations and applications in one call, then pass organization_id " +
+            "(or use a *_search tool to span all of them at once)."
+          : "application_id is required for this operation. Call didit_context_get to list your " +
+            "applications, then pass application_id (or use a *_search tool to span all apps at once).",
+    });
+  }
+  const severalOrganizations = new Set(choices.map((choice) => choice.organizationId)).size > 1;
+  const lines = choices.slice(0, MAX_SCOPE_CHOICES).map((choice) => {
+    const name = choice.applicationName && choice.applicationName !== choice.applicationId ? choice.applicationName : "(no name)";
+    const mode = choice.mode ? ` (${choice.mode})` : "";
+    const organization = severalOrganizations && choice.organizationName ? ` (${choice.organizationName})` : "";
+
+    return `- ${name}${mode}: application_id ${choice.applicationId}, organization_id ${choice.organizationId}${organization}`;
+  });
+  const rest = choices.length - lines.length;
+  const count = choices.length === 1 ? "1 application was found" : `this account has ${choices.length} applications`;
+
+  return new DiditError({
+    code,
+    field,
+    message:
+      `${field} is required for this operation: ${count} and the call named none. ` +
+      "Retry the SAME call with the application_id and organization_id of the one meant. " +
+      "If nothing in the conversation says which, ask the person.\n" +
+      lines.join("\n") +
+      (rest > 0 ? `\n- and ${rest} more: call didit_context_get for all of them.` : "") +
+      (store?.scopeChoicesPartial ? "\nThe applications of at least one organization could not be listed, so this may not be all of them." : "") +
+      "\ndidit_context_get returns the same list; a *_search tool spans every application at once.",
+  });
+}
+
 export function resolveOrganizationId(explicit?: string): string {
   const org = explicit || requestContext.getStore()?.organizationId || MCP_DEFAULT_ORG;
-  if (!org) {
-    throw new Error(
-      "organization_id is required for this operation. Call didit_context_get to discover " +
-        "your organizations and applications in one call, then pass organization_id " +
-        "(or use a *_search tool to span all of them at once).",
-    );
-  }
+  if (!org) throw scopeRequired("organization_id");
   return org;
 }
 
 export function resolveApplicationId(explicit?: string): string {
   const app = explicit || requestContext.getStore()?.applicationId || MCP_DEFAULT_APP;
-  if (!app) {
-    throw new Error(
-      "application_id is required for this operation. Call didit_context_get to list your " +
-        "applications, then pass application_id (or use a *_search tool to span all apps at once).",
-    );
-  }
+  if (!app) throw scopeRequired("application_id");
   return app;
 }
 

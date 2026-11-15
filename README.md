@@ -55,6 +55,9 @@ No install, no API key — point your client at the hosted URL and sign in via t
 https://mcp.didit.me/mcp
 ```
 
+Opening [mcp.didit.me](https://mcp.didit.me/) in a browser shows the same links as one-step buttons for each client.
+A client that was given the address without the path, `https://mcp.didit.me`, reaches the same server: the bare address answers MCP requests exactly as `/mcp` does.
+
 | Client | Install |
 |---|---|
 | **Claude** (web, Desktop) | [Add Didit to Claude](https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Didit&connectorUrl=https://mcp.didit.me/mcp) |
@@ -331,6 +334,9 @@ node dist/http.js                                          # hosted HTTP/OAuth
 DIDIT_ACCESS_TOKEN=<user-access-token> node dist/index.js  # stdio (headless)
 ```
 
+Behind a load balancer, the server has to keep an idle connection open for longer than the balancer does, or the balancer answers `502` for requests it sent down a connection the server was closing.
+The server keeps one for 65 seconds, which fits a balancer that closes idle connections after 60; set `MCP_KEEP_ALIVE_TIMEOUT_MS` above your balancer's idle timeout when that one is longer.
+
 All Didit base URLs and OAuth endpoints are environment variables with public defaults (`verification.didit.me`, `apx.didit.me`, `business.didit.me`) — override them for a private deployment. See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`.env.example`](.env.example) for the full reference.
 
 ## Workflow feature configuration
@@ -344,7 +350,7 @@ A key that is not listed here is not part of the contract and is dropped silentl
 
 <!-- BEGIN GENERATED FEATURE CONFIG REFERENCE -->
 
-_Generated from `schema/feature-config-schema.json` (contract `sha256:76c4acb7cff69ae13d13d71e61bb7fa0d6b29f04d834a58558d458cd2806bb02`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
+_Generated from `schema/feature-config-schema.json` (contract `sha256:3df917c2503102db29867d1aabd2f78d78b440163e47b4044fc85aaf0c7de26a`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
 
 ### AGE_ESTIMATION
 
@@ -377,7 +383,7 @@ Configuration for Age Estimation feature.
 | `face_quality_decline_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_quality_review_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_search_enabled` | boolean \| null | boolean | Run the 1:N Face Search on the selfie: match it against previously verified users, the face blocklist and allowlist, and store its biometric template for later matching. On by default. Off skips the search, keeps no face template, and leaves the duplicate-face actions with nothing to act on. |
-| `frame_injection_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when injected video frames are detected. |
+| `frame_injection_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the camera that captured the selfie shows signs of injected frames (FRAME_INJECTION_SUSPECTED, and INJECTION_ATTACK_DETECTED when the injection is proven). Defaults to NO_ACTION. |
 | `minimum_age_threshold` | integer \| null | integer >=1 <=100 |  |
 | `screen_capture_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the selfie is a photo of a screen. |
 | `status_rules` | array | array |  |
@@ -556,6 +562,7 @@ Configuration for Face Match feature.
 | --- | --- | --- | --- |
 | `face_match_eyes_covered_action` | string | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when calibrated evidence says the eyes region is covered in the selfie. NO_ACTION records evidence without changing Face Match; REVIEW sends Face Match to review; DECLINE declines it. The signal remains shadow-only until the region reports calibrated=true. |
 | `face_match_face_covered_action` | string | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when calibrated evidence says the face region is covered in the selfie. NO_ACTION records evidence without changing Face Match; REVIEW sends Face Match to review; DECLINE declines it. The signal remains shadow-only until the region reports calibrated=true. |
+| `face_match_frame_injection_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the camera that captured this step's selfie shows signs of injected frames (FRAME_INJECTION_SUSPECTED, and INJECTION_ATTACK_DETECTED when the injection is proven). It applies when the Face Match step captures the selfie itself; a selfie taken by a Liveness step follows that step's frame_injection_action. Defaults to NO_ACTION. |
 | `face_match_max_attempts` | integer \| null | integer >=1 <=3 |  |
 | `face_match_mouth_covered_action` | string | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when calibrated evidence says the mouth region is covered in the selfie. NO_ACTION records evidence without changing Face Match; REVIEW sends Face Match to review; DECLINE declines it. The signal remains shadow-only until the region reports calibrated=true. |
 | `face_match_not_computed_action` | string \| null | 'REVIEW'\|'DECLINE' | Verdict when no face-match score could be produced (missing portrait or selfie). |
@@ -666,8 +673,10 @@ Configuration for Device & IP Analysis feature.
 | Key | Type | Accepts | Meaning |
 | --- | --- | --- | --- |
 | `kyb_corporate_ubo_verification_workflow` | uuid \| null | uuid |  |
+| `kyb_key_people_allow_listed_company_declaration` | boolean \| null | boolean | Let the company declare it is listed on a stock exchange, or owned by a listed company, instead of naming a beneficial owner. It must still name at least one director or other senior managing official. Off by default: without it a beneficial owner is required. |
 | `kyb_key_people_company_fields` | json \| null | [{"key": "<field key>", "label": "<label>", "type": "text"\|"number"\|"date"\|"phone"\|"email", "required": true\|false, "custom": true\|false}] | Which company details are collected for a CORPORATE key person. Same list-of-descriptors shape and same rules as `kyb_key_people_person_fields`. |
 | `kyb_key_people_document_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when a key person's document disagrees with the details declared for them. |
+| `kyb_key_people_listed_company_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the company makes the listed-company declaration (`KYB_LISTED_COMPANY_DECLARED`). REVIEW (the default) sends the session to an analyst to confirm the listing, NO_ACTION leaves the Key People outcome unchanged, DECLINE declines it. Only applies while `kyb_key_people_allow_listed_company_declaration` is on. |
 | `kyb_key_people_ownership_required` | boolean \| null | boolean |  |
 | `kyb_key_people_person_fields` | json \| null | [{"key": "<field key>", "label": "<label>", "type": "text"\|"number"\|"date"\|"phone"\|"email", "required": true\|false, "custom": true\|false}] | Which personal details are collected for an individual key person, as an ORDERED LIST of field descriptors (not a map). `key` is required and non-empty; `type` must be one of text, number, date, phone or email; `custom` marks a field the customer added rather than one of the built-ins. |
 | `kyb_key_people_prefill_from_registry` | boolean \| null | boolean | Pre-fill the key-people list from the company registry result, so the customer confirms and corrects rather than typing every officer and shareholder in. |
@@ -730,7 +739,7 @@ Configuration for Liveness feature.
 | `face_quality_decline_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_quality_review_threshold` | integer \| null | integer >=0 <=100 |  |
 | `face_search_enabled` | boolean \| null | boolean | Run the 1:N Face Search on the selfie: match it against previously verified users, the face blocklist and allowlist, and store its biometric template for later matching. On by default. Off skips the search, keeps no face template, and leaves the duplicate-face actions with nothing to act on. |
-| `frame_injection_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when injected video frames are detected. |
+| `frame_injection_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the camera that captured the selfie shows signs of injected frames (FRAME_INJECTION_SUSPECTED, and INJECTION_ATTACK_DETECTED when the injection is proven). Defaults to NO_ACTION. |
 | `race_map_similarity_thresholds` | json | {"<race>": {"possible": 0-100, "high": 0-100}} | Per-demographic overrides of the face-similarity bands used against the allow-list and duplicate-face sets, so match rates stay even across groups. `possible` is the lower band (defaults to 62) and `high` the upper (68); a group with no entry uses those defaults. |
 | `screen_capture_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the selfie is a photo of a screen. |
 | `status_rules` | array | array |  |
@@ -787,7 +796,8 @@ Configuration for OCR/ID Verification feature.
 | `expected_details_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the extracted identity contradicts the `expected_details` sent with the session. |
 | `expiration_date_not_detected_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when no expiry date could be read from the document. |
 | `id_document_quality_threshold` | integer \| null | integer >=0 <=100 |  |
-| `id_verification_injection_attack_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the document (or the ID-lookup selfie) was injected rather than captured by the device's own camera (INJECTION_ATTACK_DETECTED): a software virtual camera, a camera feed generated by the page or by browser automation, a hooked camera, or an instrumentation tool attached to the app. Defaults to DECLINE: each of these proves the frames did not come from the device's own camera. Heuristic capture signals (FRAME_INJECTION_SUSPECTED and the others) are not covered and stay information. |
+| `id_verification_frame_injection_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the camera that captured the document (or the ID-lookup selfie) shows signs of injected frames (FRAME_INJECTION_SUSPECTED). It covers every capture-integrity signal the client reports, including ones a genuine person can produce (a camera the browser does not list, replaced capture functions, an emulator, an external camera), so it defaults to NO_ACTION and the risk is logged as information. Set DECLINE or REVIEW to act on any sign of injection; the proven cases keep id_verification_injection_attack_action. |
+| `id_verification_injection_attack_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the document (or the ID-lookup selfie) was injected rather than captured by the device's own camera (INJECTION_ATTACK_DETECTED): a software virtual camera, a camera feed generated by the page or by browser automation, a hooked camera, or an instrumentation tool attached to the app. Defaults to DECLINE: each of these proves the frames did not come from the device's own camera. Heuristic capture signals (FRAME_INJECTION_SUSPECTED and the others) are not covered here: id_verification_frame_injection_action decides those. |
 | `id_verification_max_retry_attempts` | integer \| null | integer >=2 <=5 |  |
 | `id_verification_name_match_score_threshold` | integer \| null | integer >=0 <=100 |  |
 | `image_capture_methods_allowed` | array \| null | ["CAMERA_SCAN" \| "UPLOAD", ...] | Capture methods the end user may use for the document photo. Declared as a list of free strings, so the vocabulary is not in the field itself: CAMERA_SCAN (live capture) and UPLOAD (pick an existing file). An empty list falls back to the account default. |

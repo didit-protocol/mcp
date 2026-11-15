@@ -231,3 +231,105 @@ test("didit_session_search narrows to the organization it was given", async () =
     `search must not reach into an org it was not scoped to:\n${calls.join("\n")}`,
   );
 });
+
+// Production, 11 and 12 November 2026 (the first day the tool-call lines reached the log store):
+// every failure with the generic code but one was this error, from people with several
+// applications whose call named none (didit_webhook_list 18 of 100 calls). The error told the model
+// to call didit_context_get and retry: two more round trips. It now names the applications, so the
+// retry is the next call, and it has a code of its own so the log can tell it from a real fault.
+
+const UUID = (n) => `${String(n).padStart(8, "0")}-0000-4000-8000-000000000000`;
+
+test("an ambiguous call is told which applications it could mean, with their ids", async () => {
+  withToken("tok-choices");
+  const calls = stubFetch({
+    [`${AUTH}/organizations/me/`]: [{ uuid: UUID(1), name: "Acme" }],
+    [`${AUTH}/organizations/me/${UUID(1)}/applications/`]: [
+      { uuid: UUID(11), name: "Acme Trading", mode: "live" },
+      { uuid: UUID(12), name: "Acme Trading (sandbox)", mode: "sandbox" },
+      { uuid: UUID(13), name: "Acme Pay" },
+    ],
+  });
+
+  const res = await callTool("didit_webhook_list", {});
+  const text = textOf(res);
+
+  assert.equal(res.isError, true);
+  // The opening is the sentence clients already recognise (the console assistant quotes it).
+  assert.match(text, /^Error \[application_required\]: application_id is required for this operation/);
+  assert.match(text, /3 applications/);
+  for (const [id, name] of [[UUID(11), "Acme Trading"], [UUID(12), "Acme Trading (sandbox)"], [UUID(13), "Acme Pay"]]) {
+    assert.ok(text.includes(`application_id ${id}`), `names the id of ${name}`);
+    assert.ok(text.includes(name), `names ${name}`);
+  }
+  assert.ok(text.includes(`organization_id ${UUID(1)}`));
+  // Live and sandbox are told apart: one bills, the other does not.
+  assert.match(text, /Acme Trading \(live\)/);
+  assert.match(text, /Acme Trading \(sandbox\) \(sandbox\)/);
+  assert.match(text, /\nField: application_id/);
+  // Nothing was asked of the backend for a call that could not be placed.
+  assert.ok(!calls.some((url) => url.includes("/webhook/")), calls.join("\n"));
+
+  // The retry the error asks for works as it is.
+  stubFetch({ [`${API}/organization/${UUID(1)}/application/${UUID(12)}/webhook/destinations/`]: { count: 0, results: [] } });
+  const retry = await callTool("didit_webhook_list", { organization_id: UUID(1), application_id: UUID(12) });
+  assert.equal(retry.isError, undefined, textOf(retry));
+});
+
+test("applications in several organizations are listed with the organization they belong to", async () => {
+  withToken("tok-choices-orgs");
+  stubFetch({
+    [`${AUTH}/organizations/me/`]: [{ uuid: UUID(1), name: "Acme" }, { uuid: UUID(2), name: "Globex" }],
+    [`${AUTH}/organizations/me/${UUID(1)}/applications/`]: [{ uuid: UUID(11), name: "Main", mode: "live" }],
+    [`${AUTH}/organizations/me/${UUID(2)}/applications/`]: [{ uuid: UUID(21), name: "Main", mode: "live" }],
+  });
+
+  const text = textOf(await callTool("didit_branding_get", {}));
+
+  // No organization is pinned, so the first id the path needs is the organization's.
+  assert.match(text, /^Error \[organization_required\]: organization_id is required for this operation/);
+  assert.ok(text.includes(`application_id ${UUID(11)}, organization_id ${UUID(1)} (Acme)`), text);
+  assert.ok(text.includes(`application_id ${UUID(21)}, organization_id ${UUID(2)} (Globex)`), text);
+});
+
+test("a long list of applications is cut, and says where the rest is", async () => {
+  withToken("tok-choices-many");
+  stubFetch({
+    [`${AUTH}/organizations/me/`]: [{ uuid: UUID(1), name: "Acme" }],
+    [`${AUTH}/organizations/me/${UUID(1)}/applications/`]: Array.from({ length: 30 }, (_, i) => ({ uuid: UUID(100 + i), name: `App ${i + 1}` })),
+  });
+
+  const text = textOf(await callTool("didit_webhook_list", {}));
+
+  assert.match(text, /30 applications/);
+  assert.ok(text.includes(UUID(100)) && text.includes(UUID(111)), "the first twelve are listed");
+  assert.ok(!text.includes(UUID(112)), "the thirteenth is not");
+  assert.match(text, /18 more: call didit_context_get/);
+});
+
+test("when the applications cannot be read, the error still says how to find them", async () => {
+  withToken("tok-choices-blind");
+  stubFetch({});
+
+  const text = textOf(await callTool("didit_webhook_list", {}));
+
+  assert.match(text, /^Error \[organization_required\]: organization_id is required for this operation/);
+  assert.match(text, /didit_context_get/);
+});
+
+test("an organization whose applications could not be listed makes the choices incomplete, and the error says so", async () => {
+  withToken("tok-choices-partial");
+  globalThis.fetch = async (url) => {
+    const path = String(url).split("?")[0];
+    if (path === `${AUTH}/organizations/me/`) return json([{ uuid: UUID(1), name: "Acme" }, { uuid: UUID(2), name: "Globex" }]);
+    if (path === `${AUTH}/organizations/me/${UUID(1)}/applications/`) return json([{ uuid: UUID(11), name: "Main" }]);
+    return json({ detail: "Forbidden." }, 403);
+  };
+
+  const text = textOf(await callTool("didit_webhook_list", {}));
+
+  // One application is known, but it is not safe to assume it is the only one.
+  assert.match(text, /required for this operation/);
+  assert.ok(text.includes(UUID(11)));
+  assert.match(text, /could not be listed/);
+});

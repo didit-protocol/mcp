@@ -66,6 +66,10 @@ export function mountDomainChallenge(_app: Express): void {}
 
 export function mountWidgetFonts(_app: Express): void {}
 
+export function profileEndpointPaths(): string[] {
+  return [];
+}
+
 export interface ProfileEndpoint {
   path: string;
   profile: CatalogProfile;

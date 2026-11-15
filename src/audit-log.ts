@@ -48,6 +48,16 @@ function errorCodeOf(result: ToolResultLike): string | undefined {
   return /^Error \[([a-z_]+)\]/.exec(text)?.[1] ?? "tool_error";
 }
 
+/**
+ * The field an error names (`Field: workflow_id` in our error text): a schema name, never a value.
+ * Without it the log said only `bad_request`, and what callers got wrong could not be read from it.
+ */
+function errorFieldOf(result: ToolResultLike): string | undefined {
+  const text = result.content?.find((c) => c.type === "text")?.text ?? "";
+
+  return /^Field: ([A-Za-z0-9_.[\]-]{1,64})$/m.exec(text)?.[1];
+}
+
 function extra(authInfo: AuthInfo | undefined, key: string): string | undefined {
   const value = (authInfo?.extra as Record<string, unknown> | undefined)?.[key];
 
@@ -65,13 +75,14 @@ function apiKeyFields(authInfo: AuthInfo | undefined): { credential?: "api_key";
   return { credential: "api_key", ...(key.keyId ? { api_key_id: key.keyId } : {}), ...(key.primary ? { api_key_primary: true } : {}) };
 }
 
-function record(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", errorCode?: string) {
+function record(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", errorCode?: string, errorField?: string) {
   return {
     time: new Date().toISOString(),
     event: "mcp.tool_call",
     tool: meta.tool,
     outcome,
     ...(errorCode ? { error_code: errorCode } : {}),
+    ...(errorField ? { error_field: errorField } : {}),
     duration_ms: Date.now() - startedAt,
     transport: meta.hosted ? "hosted" : "stdio",
     sub: extra(meta.authInfo, "sub"),
@@ -95,9 +106,9 @@ function record(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", 
  * keeps `level` and discards the ones it does not know, and a top-level `time` in this
  * format makes it log a parse error for every line.
  */
-function emit(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", errorCode?: string): void {
+function emit(meta: ToolCallMeta, startedAt: number, outcome: "ok" | "error", errorCode?: string, errorField?: string): void {
   try {
-    console.error(JSON.stringify({ level: "info", message: JSON.stringify(record(meta, startedAt, outcome, errorCode)) }));
+    console.error(JSON.stringify({ level: "info", message: JSON.stringify(record(meta, startedAt, outcome, errorCode, errorField)) }));
   } catch (error) {
     console.error(`[didit-mcp] audit log failed for ${meta.tool}: ${(error as Error).message}`);
   }
@@ -110,7 +121,7 @@ export async function auditToolCall<T extends ToolResultLike>(meta: ToolCallMeta
   try {
     const result = await run();
 
-    emit(meta, startedAt, result.isError ? "error" : "ok", result.isError ? errorCodeOf(result) : undefined);
+    emit(meta, startedAt, result.isError ? "error" : "ok", result.isError ? errorCodeOf(result) : undefined, result.isError ? errorFieldOf(result) : undefined);
 
     return result;
   } catch (error) {

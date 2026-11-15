@@ -75,7 +75,8 @@ async function everyTool() {
 test("every name in a name-keyed table of the server is a tool", async () => {
   const tools = await everyTool();
   assert.ok(tools.size > 100);
-  assert.ok(Object.keys(NAME_KEYED_TABLES).length >= 8, "the tables are exported for this test");
+  // Seven since the aggregate fallback table left: a tool that spans applications declares it (tools/registry.ts).
+  assert.ok(Object.keys(NAME_KEYED_TABLES).length >= 7, "the tables are exported for this test");
   const strays = Object.entries(NAME_KEYED_TABLES).flatMap(([table, entries]) =>
     entries.filter((name) => !tools.has(name)).map((name) => `${table}: ${name}`),
   );

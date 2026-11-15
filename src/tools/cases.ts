@@ -1,4 +1,7 @@
 import { apiRequest, orgAppPath } from "../config";
+import type { RegisteredTool } from "./registry";
+import { searchCases } from "./search";
+import { ORG_APP_PROPS } from "../orgapp";
 import { pathSegment, DiditError } from "../security";
 
 // Case management — org/app-scoped console resource. Read/create are dedicated tools;
@@ -78,3 +81,135 @@ export async function manageCase(
   }
   return apiRequest(orgAppPath(`/cases/${cid(caseId)}/${pathSegment(action, "action")}/`), { method: "POST", json: data });
 }
+
+// ── The case tools (tools/registry.ts) ──────────────────────────────────
+// Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
+// The definitions are listed where these tools always were, so the tool list does not change.
+export const CASE_TOOLS: readonly RegisteredTool[] = [
+  {
+    def: {
+      name: "didit_case_list",
+      description: "List investigation/compliance cases for ONE app; with multiple apps (or no scope) it auto-spans all your apps. For a cross-app query prefer didit_case_search.",
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, status: { type: "string" }, cursor: { type: "string" } } },
+    },
+    access: "read",
+    permission: "list:cases", // GET …/cases/ → case_management.py:264
+    run: (args) => listCases(args),
+    spanAllApplications: (args) => searchCases(args),
+  },
+  {
+    def: {
+      name: "didit_case_get",
+      description: "Get a case with its details.",
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, case_id: { type: "string" } }, required: ["case_id"] },
+    },
+    access: "read",
+    permission: "read:cases", // GET …/cases/{id}/ → case_management.py:353
+    run: (args) => getCase(args.case_id),
+  },
+  {
+    def: {
+      name: "didit_case_create",
+      description:
+        "Open a case for a compliance review. A case is about a subject (one of your users or businesses) or is " +
+        "linked to at least one session or transaction: pass `subject`, `links` or both. `subject.uuid` is the " +
+        "`didit_internal_id` of the user or the business, as didit_vendor_user_get and didit_vendor_business_get " +
+        "return it; it is not their vendor_data. Returns the case with its `uuid`. With review_duplicates true the API first looks " +
+        "for cases already open about the same subject and answers 409 case_duplicate_review_required when it finds " +
+        "one: show it to the person, and to open a separate case anyway send separate_incident_reason.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          title: { type: "string", description: "What the case is about, in one line (255 characters at most)." },
+          subject: {
+            type: "object",
+            description: "Who the case is about. Required unless `links` is given.",
+            properties: {
+              type: { type: "string", enum: ["user", "business"] },
+              uuid: { type: "string", description: "The `didit_internal_id` of that user or business." },
+            },
+            required: ["type", "uuid"],
+          },
+          links: {
+            type: "array",
+            description: "What the case is linked to, 20 at most. Required unless `subject` is given.",
+            items: {
+              type: "object",
+              properties: {
+                entity_type: { type: "string", enum: ["session", "business_session", "transaction"] },
+                entity_uuid: { type: "string", description: "The id of that session or transaction." },
+              },
+              required: ["entity_type", "entity_uuid"],
+            },
+          },
+          priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"], description: "MEDIUM when left out." },
+          assigned_to: { type: "string", description: "The reviewer to assign the case to: the `user_id` of a member (didit_org_list_members)." },
+          due_at: { type: "string", description: "The deadline, ISO 8601. Left out, the review policy's own deadline applies when it has one." },
+          tags: { type: "array", items: { type: "string" }, description: "Labels to find the case by." },
+          blueprint: { type: "string", description: "The uuid of the review policy to open the case under. It must be active." },
+          review_duplicates: { type: "boolean", description: "Look for cases already open about the same subject before creating this one." },
+          separate_incident_reason: { type: "string", description: "Why a separate case is wanted although one is already open (1,000 characters at most)." },
+        },
+        required: ["title"],
+      },
+    },
+    access: "write",
+    permission: "write:cases", // POST …/cases/ → case_management.py:292
+    run: (args) => createCase(args),
+  },
+  {
+    def: {
+      name: "didit_case_statistics",
+      description:
+        "Case analytics for a period (totals, series over time, the queue, outcomes and workload): the last 30 days " +
+        "unless both dates are given, two years at most. Every filter narrows the numbers.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          date_from: { type: "string", description: "First day, YYYY-MM-DD. Give it together with date_to." },
+          date_to: { type: "string", description: "Last day, YYYY-MM-DD." },
+          status: { type: "string", enum: ["OPEN", "AWAITING_USER", "RESOLVED"] },
+          priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
+          source: {
+            type: "string",
+            enum: ["MANUAL", "AML_SCREENING", "TRANSACTION_RULE", "WORKFLOW_BUILDER"],
+            description: "What opened the cases.",
+          },
+          scope: { type: "string", enum: ["identity", "transactions"], description: "Only identity cases, or only the ones a transaction rule opened." },
+          assigned_to: { type: "string", description: "Only cases assigned to this reviewer (a member's `user_id`)." },
+          blueprint: { type: "string", description: "Only cases under this review policy (its uuid)." },
+        },
+      },
+    },
+    access: "read",
+    permission: "list:cases", // GET …/cases/statistics/ → case_management.py:910
+    run: (args) => caseStatistics(args),
+  },
+  {
+    def: {
+      name: "didit_case_manage",
+      description: "Act on a case: assign, resolve, reopen, escalate, comment, or update.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          case_id: { type: "string" },
+          action: { type: "string", enum: ["assign", "resolve", "reopen", "escalate", "comment", "update"] },
+          data: { type: "object", description: "Action payload (e.g. {assignee_id}, {comment}, or fields to update)" },
+          confirm: {
+            type: "boolean",
+            description:
+              "REQUIRED when filing a SAR (action 'sar'/'file_sar', or any action whose data.status is 'SAR_FILED') - a high-impact regulatory action. Only set after explicit user confirmation of this exact action.",
+          },
+        },
+        required: ["case_id", "action"],
+      },
+    },
+    // Resolves, reopens, escalates or reassigns a case: a client asks before running it.
+    access: "destructive",
+    permission: "write:cases", // POST …/cases/{id}/{resolve|assign|reopen|escalate}/, PATCH …/cases/{id}/ → case_management.py
+    run: (args) => manageCase(args.case_id, args.action, args.data || {}, args.confirm),
+  },
+];

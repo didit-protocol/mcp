@@ -16,6 +16,7 @@
 import { DiditError } from "./security";
 import { INTERNAL_TOOL_PERMISSIONS } from "./internal-tools";
 import { INVESTIGATOR_TOOL_PERMISSIONS } from "./tools/investigator";
+import { REGISTERED_TOOL_PERMISSIONS } from "./tools/registered";
 
 export type PermissionMode = "shadow" | "enforce" | "off";
 
@@ -38,173 +39,22 @@ export const TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_org_list: null, // GET auth /organizations/me/ — membership-scoped
   didit_org_list_applications: null, // GET auth /organizations/me/{org}/applications/ — hardcoded owner/admin check, no decorator
   didit_org_reveal_application_api_key: null, // same endpoint as didit_org_get_application
-  didit_org_invite_member: "write:members", // POST auth /organizations/{org}/members/invite/ → member.py:394
-  didit_org_create_api_key: "write:api-keys", // POST auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py (agent rules: services/agent_api_keys.py)
-  didit_org_list_api_keys: "read:applications", // GET auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py:24
-  didit_org_list_members: "list:members", // GET auth /organizations/{org}/members/ → member.py:141
-  didit_org_list_roles: "list:roles", // GET auth /organizations/{org}/roles/ → roles.py:55
-  didit_org_remove_member: "delete:members", // DELETE auth /organizations/{org}/members/{id}/ → member.py:109
-  didit_org_update_member: "write:members", // PATCH auth /organizations/{org}/members/{id}/ → member.py:76
   // ── Billing ──
   didit_org_get_balance: "read:subscription", // GET /organization/{org}/top-up/ → stripe.py:498
   didit_org_top_up: "write:subscription", // checkout: GET /organization/{org}/checkout-session/ → stripe.py CreateCheckoutSessionView; saved_card: POST /organization/{org}/billing/agent-top-ups/ (or POST /v3/billing/top-up/ with an API key), both write:subscription
-  didit_billing_get_plan: "read:subscription", // GET /organization/{org}/billing/plans/ → billing/views.py PlanBillingView
-  didit_billing_quote_plan: "read:subscription", // GET …/billing/plans/quote/ → PlanQuoteView
-  didit_billing_list_payment_methods: "read:subscription", // GET …/billing/payment-methods/ → PaymentMethodsView
-  didit_billing_list_receipts: "read:subscription", // GET …/billing/receipts/ → ReceiptsView
-  didit_billing_get_details: "read:subscription", // GET …/billing/details/ → BillingDetailsView
-  didit_billing_update_details: "write:subscription", // PUT …/billing/details/ → BillingDetailsView (+ step-up)
   // ── Alerts, analytics, audit ──
-  didit_alert_configure: "write:applications", // PATCH …/alerts/{type}/ → alerts.py:42
-  didit_alert_list: "read:applications", // GET …/alerts/ → alerts.py:62
   didit_analytics: "read:analytics", // GET …/analytics/ → analytics.py:196
-  didit_audit_log_list: "read:audit-logs", // GET /audit/{org}/audit-logs/ → audit/views/audit_log.py:292
-  // ── Blocklist / allowlist ──
-  didit_allowlist_add: "write:blocklist", // POST …/allowlist/add/ → allowlist.py:33
-  didit_blocklist_add: "write:blocklist", // POST …/blocklist/add/ → blocklist.py:47
-  didit_blocklist_get: "read:blocklist", // GET …/blocklist/ → blocklist.py:178
-  didit_blocklist_remove: "write:blocklist", // POST …/blocklist/remove/ → blocklist.py:76
-  // ── Branding ──
-  didit_branding_get: "read:customization", // GET …/white-label-customization/ → white_label_customization.py:66
-  didit_branding_update: "write:customization", // PATCH …/white-label-customization/ → white_label_customization.py:73
-  // ── Cases ──
-  didit_case_create: "write:cases", // POST …/cases/ → case_management.py:292
-  didit_case_get: "read:cases", // GET …/cases/{id}/ → case_management.py:353
-  didit_case_list: "list:cases", // GET …/cases/ → case_management.py:264
-  didit_case_manage: "write:cases", // POST …/cases/{id}/{resolve|assign|reopen|escalate}/, PATCH …/cases/{id}/ → case_management.py
-  didit_case_search: "list:cases", // GET /organization/{org}/cases/ → case_management.py:264
-  didit_case_statistics: "list:cases", // GET …/cases/statistics/ → case_management.py:910
-  // ── Lists ──
-  didit_lists_create: "create:lists", // POST …/lists/ → lists.py:69
-  didit_lists_delete: "delete:lists", // DELETE …/lists/{uuid}/ → lists.py:122
-  didit_lists_entries_list: "read:lists", // GET …/lists/{uuid}/entries/ → lists.py:153
-  didit_lists_entry_create: "create:lists", // POST …/lists/{uuid}/entries/ → lists.py:197
-  didit_lists_entry_delete: "delete:lists", // DELETE …/lists/{uuid}/entries/{entry}/ → lists.py:233
-  didit_lists_entry_upload_face: "create:lists", // POST …/lists/{uuid}/entries/face-upload/ → list_face_upload.py:126
-  didit_lists_get: "read:lists", // GET …/lists/{uuid}/ → lists.py:110
-  didit_lists_list: "read:lists", // GET …/lists/ → lists.py:40
-  didit_lists_update: "write:lists", // PATCH …/lists/{uuid}/ → lists.py:114
-  // ── Questionnaires (delete reuses write) ──
-  didit_questionnaire_append_choices: "write:questionnaires", // PATCH …/questionnaires/{uuid}/ → questionnaire.py:208
-  didit_questionnaire_create: "write:questionnaires", // POST …/questionnaires/ → questionnaire.py:149
-  didit_questionnaire_delete: "write:questionnaires", // DELETE …/questionnaires/{uuid}/ → questionnaire.py:227
-  didit_questionnaire_get: "read:questionnaires", // GET …/questionnaires/{uuid}/ → questionnaire.py:204
-  didit_questionnaire_list: "read:questionnaires", // GET …/questionnaires/ → questionnaire.py:96
-  didit_questionnaire_update: "write:questionnaires", // PATCH …/questionnaires/{uuid}/ → questionnaire.py:208
-  // ── Reports (row-level access, @has_privileges([]) or per-kind) ──
-  didit_report_export: null, // POST …/reports/{kind}/ — permission varies by kind (read:sessions|transactions|businesses|users)
-  didit_report_get: null, // GET …/reports/{id}/ → reports.py:129, @has_privileges([]) + row-level check
-  didit_report_get_download_url: null, // GET …/reports/{id}/download-url/ → reports.py:153, same
-  didit_report_list: null, // GET …/reports/ → reports.py:100, same
-  // ── Sessions ──
-  didit_session_add_review: "write:sessions", // POST …/sessions/{id}/reviews/ → activity.py:97
-  didit_session_batch_delete: "delete:sessions", // DELETE …/sessions/delete/ → application.py:529
-  didit_session_create: null, // POST /session/ → session.py:152 — permission classes only, no decorator
-  didit_session_create_import: null, // POST /session/imports/ → imports.py:77 — no decorator
-  didit_session_delete: "delete:sessions", // DELETE /session/{id}/delete/ → session.py:1406
-  didit_session_generate_pdf: "read:sessions", // GET /session/{id}/generate-pdf/ → pdf.py:86
-  didit_session_get_signature_evidence: "read:sessions", // GET /session/{id}/signatures/{node}/evidence/ → signatures/downloads.py:78
-  didit_session_get_signature_field_image: "read:sessions", // GET …/signatures/{node}/fields/{field}/image/ → same view
-  didit_session_get_signed_document: "read:sessions", // GET …/signatures/{node}/documents/{doc}/file/ → same view
-  didit_session_validate_signatures: "write:sessions", // POST …/signatures/{node}/validate/ → signatures/downloads.py:99
-  didit_session_list_import_providers: null, // GET /session/imports/providers/ → import_jobs.py:99 — no decorator
-  didit_session_check_import_provider: null, // POST /session/imports/providers/check/ → import_jobs.py:120 — no decorator
-  didit_session_manage_import: null, // POST /session/imports/{id}/{start|pause|resume|cancel|retry}/ → import_jobs.py — no decorator
-  didit_session_get_decision: "read:sessions", // GET /session/{id}/decision/ → session.py:536
-  didit_session_get_location_evidence: "read:sessions", // GET /geolocation/sessions/{id}/evidence/ → geolocation/views/console.py:53
-  didit_session_get_import: null, // GET /session/imports/{id}/ → imports.py:170 — no decorator
-  didit_session_get_import_errors: null, // GET /session/imports/{id}/errors/ → imports.py:182 — no decorator
-  didit_session_get_import_template: null, // GET /session/imports/template/ → imports.py:197 — no decorator
-  didit_session_import_shared: null, // POST /session/import-shared/ → shared_session.py:78 — no decorator
-  didit_session_list: "list:sessions", // GET …/sessions/ → application.py:123
-  didit_session_list_reviews: "read:sessions", // GET …/sessions/{id}/reviews/ → activity.py:77
-  didit_session_search: "list:sessions", // GET /organization/{org}/sessions/ → application.py:448
-  didit_session_share: "write:sessions", // POST /session/{id}/share/ → shared_session.py:44
-  didit_session_update_data: "write:sessions", // PATCH /session/{id}/update-data/ → session.py:1238
-  didit_session_update_poa_data: "write:sessions", // PATCH /session/{id}/update-poa-data/ → session.py:1461
-  didit_session_simulate: "write:sessions", // POST /session/{id}/simulate/ → sandbox simulate (sandbox sessions only)
-  didit_session_update_status: "write:sessions", // PATCH /session/{id}/update-status/ → session.py:1033
-  didit_session_explain_decision: "read:sessions", // GET /session/{id}/decision/ folded into its trace
-  didit_session_webhooks: "read:sessions", // GET /session/{id}/webhooks/ → webhooks.py:38
-  didit_session_webhook_resend: "create:sessions", // POST /session/{id}/webhook/{uuid}/resend → webhooks.py:109
-  // ── Transactions (reads are gated by list:transactions) ──
-  didit_transaction_create: "create:transactions", // POST …/transactions/ → transactions.py:331
-  didit_transaction_get: "list:transactions", // GET …/transactions/{id}/ → transactions.py:479
-  didit_transaction_list: "list:transactions", // GET …/transactions/ → transactions.py:278
-  didit_transaction_rule_backtest: "list:transactions", // POST …/transactions/rules/backtest/ → transactions.py:816
-  didit_transaction_rule_create: "write:transactions", // POST …/transactions/rules/ → transactions.py:766
-  didit_transaction_rule_delete: "write:transactions", // DELETE …/transactions/rules/{uuid}/ → transactions.py:801
-  didit_transaction_rule_get: "list:transactions", // GET …/transactions/rules/{uuid}/ → transactions.py:785
-  didit_transaction_rule_install: "write:transactions", // POST …/transactions/rules/install/ → transactions.py:914
-  didit_transaction_rule_library_list: "list:transactions", // GET …/transactions/rules/library/ → transactions.py:895
-  didit_transaction_rule_list: "list:transactions", // GET …/transactions/rules/ → transactions.py:754
-  didit_transaction_rule_uninstall: "write:transactions", // DELETE …/transactions/rules/install/ → transactions.py:926
-  didit_transaction_rule_update: "write:transactions", // PATCH …/transactions/rules/{uuid}/ → transactions.py:790
-  didit_transaction_screen_wallet: "create:transactions", // POST …/transactions/screen-wallet/ → transactions.py:371
-  didit_transaction_search: "list:transactions", // GET /organization/{org}/transactions/ → transactions.py:278
-  // ── Vendor businesses (KYB) ──
-  didit_vendor_business_create: "create:businesses", // POST …/vendor-businesses/ → vendor_business.py:154
-  didit_vendor_business_delete: "delete:businesses", // DELETE …/vendor-businesses/delete/ → vendor_business.py:935
-  didit_vendor_business_get: "read:businesses", // GET …/vendor-businesses/{vendor_data}/ → vendor_business.py:197
-  didit_vendor_business_list: "list:businesses", // GET …/vendor-businesses/ → vendor_business.py:150
-  didit_vendor_business_search: "list:businesses", // per-app fan-out over the list endpoint
-  didit_vendor_business_update: null, // PATCH …/vendor-businesses/{vendor_data}/update/ — route does not exist as coded (only by-id/)
-  didit_vendor_business_update_status: "write:businesses", // POST …/vendor-businesses/bulk-status/ → vendor_business.py:965
-  // ── Vendor users ──
-  didit_vendor_user_create: "create:users", // POST …/vendor-users/ → vendor_user.py:330
-  didit_vendor_user_delete: "delete:users", // DELETE …/vendor-users/delete/ → vendor_user.py:1139
-  didit_vendor_user_get: "read:users", // GET …/vendor-users/{vendor_data}/ → vendor_user.py:763
-  didit_vendor_user_list: "list:users", // GET …/vendor-users/ → vendor_user.py:283
-  didit_vendor_user_search: "list:users", // per-app fan-out over the list endpoint
-  didit_vendor_user_update: "write:users", // PATCH …/vendor-users/{vendor_data}/update/ → vendor_user.py:1098
-  didit_vendor_user_update_status: "write:users", // POST …/vendor-users/bulk-status/ → vendor_user.py:1169
   // ── Standalone verification APIs (proxy.py:36 gates every …/apis/* POST on create:sessions) ──
   // The phone OTP pair does not go through that proxy (it registers no phone/send or
   // phone/check route): it calls the public APIs with the application api-key, which the
   // console application read only shows to a role holding create:sessions (app-api-key.ts).
-  didit_verify_age: "create:sessions",
-  didit_verify_aml: "create:sessions",
-  didit_verify_account_check: "create:sessions", // POST /bank/account-check/ (api-key) after the same application read as the phone pair
-  didit_verify_database: "create:sessions",
-  didit_verify_email_check: null, // …/apis/email/check/ — route does not exist as coded (only /apis/email-risk/)
-  didit_verify_email_send: null, // …/apis/email/send/ — route does not exist as coded
-  didit_verify_face_match: "create:sessions",
-  didit_verify_face_search: "create:sessions",
-  didit_verify_id: "create:sessions",
-  didit_verify_kyb_search: "create:sessions",
-  didit_verify_kyb_select: "create:sessions",
-  didit_verify_passive_liveness: "create:sessions",
-  didit_verify_phone_check: "create:sessions", // POST /phone/check/ (api-key) after GET auth /organizations/{org}/applications/{app} → serializers/applications.py:100 blanks the key without it
-  didit_verify_phone_send: "create:sessions", // POST /phone/send/ (api-key) after the same application read
-  didit_verify_poa: "create:sessions",
-  // ── Webhooks (delete reuses write) ──
-  didit_webhook_create: "write:webhooks", // POST …/webhook/destinations/ → webhook_destinations.py:112
-  didit_webhook_delete: "write:webhooks", // DELETE …/webhook/destinations/{uuid}/ → webhook_destinations.py:181
-  didit_webhook_get: "read:webhooks", // GET …/webhook/destinations/{uuid}/ → webhook_destinations.py:151
-  didit_webhook_list: "read:webhooks", // GET …/webhook/destinations/ → webhook_destinations.py:106
-  didit_webhook_update: "write:webhooks", // PATCH …/webhook/destinations/{uuid}/ → webhook_destinations.py:160
   // ── Workflows (delete reuses write; graph helpers are read-gated POSTs) ──
   didit_workflow_build_graph: "read:workflows", // POST …/compliance/build-workflow/ → compliance.py:137
-  didit_workflow_create: "write:workflows", // POST …/verification-settings/ → verification_settings.py:146
-  didit_workflow_create_draft: "write:workflows", // POST …/verification-settings/{uuid}/create-draft/ → verification_settings.py:328
-  didit_workflow_delete: "write:workflows", // DELETE …/verification-settings/{uuid}/ → verification_settings.py:224
-  didit_workflow_edit_graph: "write:workflows", // PUT …/verification-settings/{uuid}/workflow-graph/ → workflow_graph.py:63
-  didit_workflow_get: "read:workflows", // GET …/verification-settings/{uuid}/ → verification_settings.py:214
-  didit_workflow_get_branch_fields: "read:workflows", // POST …/workflow-graph/branch-fields/ → workflow_graph.py:202
-  didit_workflow_get_feature_config_schema: null, // no backend call — bundled artifact
-  didit_workflow_get_field_definitions: "read:workflows", // GET …/workflow-graph/field-definitions/ → workflow_graph.py:451
-  didit_workflow_get_id_verification_methods_catalog: "read:workflows", // GET …/workflow-graph/id-verification-methods-catalog/ → workflow_graph.py
-  didit_workflow_get_kyb_registry_catalog: null, // GET /organization/kyb-registry-pricing/ → application.py KYBRegistryPricingView (anonymous, no privilege)
-  didit_workflow_get_graph: "read:workflows", // GET …/verification-settings/{uuid}/workflow-graph/ → workflow_graph.py:44
-  didit_workflow_list: "read:workflows", // GET …/verification-settings/ → verification_settings.py:74
-  didit_workflow_publish: "write:workflows", // PATCH …/verification-settings/{uuid}/ → verification_settings.py:219
-  didit_workflow_search: "read:workflows", // per-app fan-out over the list endpoint
-  didit_workflow_set_graph: "write:workflows", // PUT …/verification-settings/{uuid}/workflow-graph/ → workflow_graph.py:63
-  didit_workflow_update: "write:workflows", // PATCH …/verification-settings/{uuid}/ → verification_settings.py:219
-  didit_workflow_validate_graph: "read:workflows", // POST …/workflow-graph/validate/ → workflow_graph.py:142
   // Internal-only families (compliance, travel rule, marketplace, networks, SDK token): empty in the public build.
   // ── Investigator (/v3/investigator/*): see tools/investigator.ts ──
   ...INVESTIGATOR_TOOL_PERMISSIONS,
+  // ── Tools declared one object per tool (webhooks, branding, ...): see tools/registered.ts ──
+  ...REGISTERED_TOOL_PERMISSIONS,
   ...INTERNAL_TOOL_PERMISSIONS,
 };
 

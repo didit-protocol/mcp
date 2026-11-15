@@ -1,4 +1,6 @@
-import { getOrgAppMap, mapWithConcurrency, runForScope, OrgRef, AppRef } from "../orgapp";
+import { getOrgAppMap, mapWithConcurrency, ORG_APP_PROPS, runForScope, OrgRef, AppRef } from "../orgapp";
+import type { RegisteredTool } from "./registry";
+import { LAST_N_DAYS_PROP, SESSION_STATUSES } from "./shared-schema";
 import { applyRelativeWindow } from "../dates";
 import { apiRequest, orgPath, requestContext } from "../config";
 import { listSessions } from "./sessions";
@@ -6,7 +8,7 @@ import { listTransactions } from "./transactions";
 import { listCases } from "./cases";
 import { listUsers } from "./users";
 import { listBusinesses } from "./businesses";
-import { listEveryWorkflow, getWorkflow } from "./settings";
+import { listEveryWorkflow, getWorkflow, isPublishedVersion, labelWorkflowVersion, WORKFLOW_IDS_NOTE } from "./settings";
 import { DiditError } from "../security";
 import { pageParams } from "../paging";
 
@@ -265,6 +267,14 @@ async function probeWorkflowDirect(
   return hits.filter((h) => h !== null);
 }
 
+/** The list shows one row per workflow: its live (latest published) version, or its draft when
+ *  nothing is published. undefined when that workflow's row was not listed. */
+function liveListedVersion(listed: any[], wf: any): any {
+  const row = listed.find((r) => Boolean(wf.workflow_id) && r.workflow_id === wf.workflow_id && r.application_id === wf.application_id);
+
+  return row && (isPublishedVersion(row) ? row : null);
+}
+
 /** Find workflows (verification-settings) ACROSS every (org, app) in one call. Optionally filter
  *  by `workflow_id` (matches the version uuid OR the stable workflow_id) or `search` (label
  *  substring). Each row is tagged with its org/app — so an agent can locate a workflow by id
@@ -310,7 +320,8 @@ export async function searchWorkflows(args: SearchArgs & { offset?: unknown }): 
   });
   // Every application refused this role: say so instead of reporting "no workflows".
   if (firstDenial && deniedLeaves === leafAttempts) throw allDeniedError(leafAttempts, firstDenial);
-  let rows = batches.flat();
+  const listed = batches.flat();
+  let rows = listed.map((r) => labelWorkflowVersion(r, isPublishedVersion(r) ? r : null));
   if (workflow_id) rows = rows.filter((r) => workflowMatchesId(r, String(workflow_id)));
   if (search) {
     const q = String(search).toLowerCase();
@@ -319,10 +330,13 @@ export async function searchWorkflows(args: SearchArgs & { offset?: unknown }): 
   // The list endpoint doesn't surface every version uuid (drafts, superseded versions), so
   // when an id search misses the listed rows, probe the version endpoint directly per app
   // before reporting no matches.
-  if (workflow_id && rows.length === 0) rows = await probeWorkflowDirect(pairs, String(workflow_id));
+  if (workflow_id && rows.length === 0) {
+    rows = (await probeWorkflowDirect(pairs, String(workflow_id))).map((wf) => labelWorkflowVersion(wf, liveListedVersion(listed, wf)));
+  }
   const results = rows.slice(offset, offset + limit);
   return {
     results,
+    ids_note: WORKFLOW_IDS_NOTE,
     returned: results.length,
     total_matched: rows.length,
     ...(offset ? { offset } : {}),
@@ -444,3 +458,127 @@ export async function resolveWorkflowScope(
   }
   return { organizationId: exact.organization_id, applicationId: exact.application_id, workflow: exact };
 }
+
+// ── The search tools (tools/registry.ts) ──────────────────────────────────
+// Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
+// The definitions are listed where these tools always were, so the tool list does not change.
+export const SEARCH_TOOLS: readonly RegisteredTool[] = [
+  {
+    def: {
+      name: "didit_session_search",
+      description: `Search verification sessions ACROSS ALL your apps and organizations in a single call — the efficient way to answer "the last 5 in-review sessions across my apps". Aggregates server-side and returns newest matches first, each tagged with its organization/application. Omit organization_id/application_id to span everything; pass them to narrow scope. status accepts: ${SESSION_STATUSES}.`,
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          status: { type: "string", description: `Filter by session status (${SESSION_STATUSES}). Several statuses separated by commas match any of them, e.g. "Not Started,In Progress".` },
+          session_kind: { type: "string", enum: ["user", "business", "all"], description: "KYC (user), KYB (business), or all" },
+          workflow_id: { type: "string", description: "Filter by workflow UUID" },
+          search: { type: "string", description: "Free-text search" },
+          date_from: { type: "string", description: "ISO date lower bound" },
+          date_to: { type: "string", description: "ISO date upper bound" },
+          ...LAST_N_DAYS_PROP,
+          limit: { type: "number", description: "Max results after merging across apps (default 20, max 200)" },
+          ...ORG_APP_PROPS,
+        },
+      },
+    },
+    access: "read",
+    permission: "list:sessions", // GET /organization/{org}/sessions/ → application.py:448
+    routingIds: true,
+    run: (args) => searchSessions(args),
+  },
+  {
+    def: {
+      name: "didit_transaction_search",
+      description:
+        "Search transaction-monitoring (AML) transactions ACROSS ALL your apps and organizations in one call. Omit organization_id/application_id to span everything; pass them to narrow. Returns newest first, each tagged with its org/app.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          status: { type: "string", description: "Filter by transaction status" },
+          search: { type: "string", description: "Free-text search" },
+          date_from: { type: "string", description: "ISO date lower bound" },
+          date_to: { type: "string", description: "ISO date upper bound" },
+          ...LAST_N_DAYS_PROP,
+          limit: { type: "number", description: "Max results after merging (default 20, max 200)" },
+          ...ORG_APP_PROPS,
+        },
+      },
+    },
+    access: "read",
+    permission: "list:transactions", // GET /organization/{org}/transactions/ → transactions.py:278
+    routingIds: true,
+    run: (args) => searchTransactions(args),
+  },
+  {
+    def: {
+      name: "didit_case_search",
+      description:
+        "Search case-management cases ACROSS ALL your apps and organizations in one call. Omit organization_id/application_id to span everything; pass them to narrow. Returns newest first, each tagged with its org/app.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          status: { type: "string", description: "Filter by case status" },
+          search: { type: "string", description: "Free-text search" },
+          date_from: { type: "string", description: "ISO date lower bound" },
+          date_to: { type: "string", description: "ISO date upper bound" },
+          ...LAST_N_DAYS_PROP,
+          limit: { type: "number", description: "Max results after merging (default 20, max 200)" },
+          ...ORG_APP_PROPS,
+        },
+      },
+    },
+    access: "read",
+    permission: "list:cases", // GET /organization/{org}/cases/ → case_management.py:264
+    routingIds: true,
+    run: (args) => searchCases(args),
+  },
+  {
+    def: {
+      name: "didit_vendor_user_search",
+      description:
+        "Find vendor users (your end customers) ACROSS ALL your apps and organizations in one call — e.g. locate a customer by vendor_data/email/name without knowing which app they're in. Omit organization_id/application_id to span everything; pass them to narrow. Each hit is tagged with its org/app.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          search: { type: "string", description: "Free-text search (name, email, vendor_data)" },
+          vendor_data: { type: "string", description: "Filter by your customer identifier" },
+          status: { type: "string", description: "Filter by vendor-user status" },
+          date_from: { type: "string", description: "ISO date lower bound" },
+          date_to: { type: "string", description: "ISO date upper bound" },
+          ...LAST_N_DAYS_PROP,
+          limit: { type: "number", description: "Max results after merging (default 20, max 200)" },
+          ...ORG_APP_PROPS,
+        },
+      },
+    },
+    access: "read",
+    permission: "list:users", // per-app fan-out over the list endpoint
+    routingIds: true,
+    run: (args) => searchVendorUsers(args),
+  },
+  {
+    def: {
+      name: "didit_vendor_business_search",
+      description:
+        "Find vendor businesses (KYB companies) ACROSS ALL your apps and organizations in one call. Omit organization_id/application_id to span everything; pass them to narrow. Each hit is tagged with its org/app.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          search: { type: "string", description: "Free-text search (company name, registration number, vendor_data)" },
+          vendor_data: { type: "string", description: "Filter by your business identifier" },
+          status: { type: "string", description: "Filter by vendor-business status" },
+          date_from: { type: "string", description: "ISO date lower bound" },
+          date_to: { type: "string", description: "ISO date upper bound" },
+          ...LAST_N_DAYS_PROP,
+          limit: { type: "number", description: "Max results after merging (default 20, max 200)" },
+          ...ORG_APP_PROPS,
+        },
+      },
+    },
+    access: "read",
+    permission: "list:businesses", // per-app fan-out over the list endpoint
+    routingIds: true,
+    run: (args) => searchVendorBusinesses(args),
+  },
+];

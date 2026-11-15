@@ -172,8 +172,14 @@ test("the tool list stays within its budget", async () => {
   // already told, and raise the number here in the same change. If nothing was added, something
   // that was sent once is being sent again.
   const budgets = [
-    // Raised by 9 KB when seven tools that declared no arguments got theirs and five lists got paging.
-    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 270_000],
+    // Raised by 9 KB when seven tools that declared no arguments got theirs and five lists got paging,
+    // by 500 bytes for the workflow setting is_session_reference_enabled (create and update), and by
+    // 1.5 KB when the seven session import tools declared the organization and application they act
+    // in: without them every import call a person made was refused. By 200 bytes when
+    // merge_node_config said that a config map merges by entry, and by 300 when the workflow and
+    // session tools said which id an integration uses (the stable workflow_id; a version uuid pins
+    // one version).
+    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 272_500],
     ["an API key connection", { hosted: true, apiKey: true }, KEY, 207_000],
     ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 31_500],
   ];

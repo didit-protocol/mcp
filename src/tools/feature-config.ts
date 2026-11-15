@@ -1,3 +1,4 @@
+import { FEATURE_CONFIG_SCHEMA } from "../feature-config-schema";
 // Feature-config normalization.
 //
 // The backend stores a feature node's allow-lists in strict, non-obvious shapes:
@@ -430,5 +431,108 @@ export function assertKycKybSegregation(graph: unknown): void {
       `officers, shareholders), build a SEPARATE KYC workflow and reference it from the KYB Key ` +
       `People node via kyb_ubo_verification_workflow / kyb_officer_verification_workflow / ` +
       `kyb_shareholder_verification_workflow.`,
+  );
+}
+
+/** Settings of a graph that are not in the graph the API gave back for it. */
+export interface LostSettings {
+  /** `<node id>.config.<key>`: sent, not returned, and not a key the feature's contract has. */
+  dropped: string[];
+  /** Sent and not returned, but a key the contract has: the API may hold it elsewhere. */
+  unconfirmed: string[];
+  /** The features the dropped keys belong to, for the pointer to the settings tool. */
+  features: string[];
+}
+
+/**
+ * Compare the settings a graph was sent with against the graph the API returned for it (the
+ * validation answer, or the stored graph read back after a save).
+ *
+ * The API runs a node's `config` through the feature's serializer and keeps what the serializer
+ * knows. A key it does not know is left out without an error, so a save can succeed and a
+ * workflow can go live without a setting the request asked for. What was kept is in what comes
+ * back, so the loss is visible there and nowhere else.
+ *
+ * A key counts as dropped only when it is also absent from the contract this server ships: a
+ * key the contract has may be held by the API somewhere other than the node's config, and that
+ * is reported as unconfirmed, not as lost. A value the API changed is a stored setting. A key
+ * sent as null asks for nothing. A node the API did not return cannot be compared.
+ */
+export function lostSettings(sent: unknown, returned: unknown): LostSettings {
+  const lost: LostSettings = { dropped: [], unconfirmed: [], features: [] };
+  const sentNodes = (sent as { nodes?: Record<string, any> } | undefined)?.nodes;
+  const returnedNodes = (returned as { nodes?: Record<string, any> } | undefined)?.nodes;
+  if (!sentNodes || typeof sentNodes !== "object" || !returnedNodes || typeof returnedNodes !== "object") return lost;
+  for (const [id, node] of Object.entries(sentNodes)) {
+    const config = node?.config;
+    const back = returnedNodes[id];
+    if (!config || typeof config !== "object" || Array.isArray(config) || !back) continue;
+    const kept = back.config && typeof back.config === "object" ? back.config : {};
+    const feature = String(node.feature ?? back.feature ?? "").toUpperCase();
+    const known = FEATURE_CONFIG_SCHEMA.features[feature]?.fields ?? {};
+    for (const [key, value] of Object.entries(config)) {
+      if (value === null || value === undefined || key in kept) continue;
+      if (key in known || key === "status_rules") {
+        lost.unconfirmed.push(`${id}.config.${key}`);
+      } else {
+        lost.dropped.push(`${id}.config.${key}`);
+        if (feature && !lost.features.includes(feature)) lost.features.push(feature);
+      }
+    }
+  }
+
+  return lost;
+}
+
+/** Whether a config holds a setting at all: a key with a value in it. */
+function holdsSettings(config: unknown): boolean {
+  return Boolean(config) && typeof config === "object" && !Array.isArray(config) && Object.values(config as object).some((value) => value !== null && value !== undefined);
+}
+
+/** Whether a graph carries any setting: without one there is nothing a save could lose. */
+export function carriesSettings(graph: unknown): boolean {
+  const nodes = (graph as { nodes?: Record<string, any> } | undefined)?.nodes;
+
+  return Boolean(nodes) && typeof nodes === "object" && Object.values(nodes as object).some((node: any) => holdsSettings(node?.config));
+}
+
+/** Whether a graph edit carries a setting: a config merge, or a node added or replaced with one. */
+export function operationCarriesSettings(operation: { config?: unknown; node?: { config?: unknown } }): boolean {
+  return holdsSettings(operation?.config) || holdsSettings(operation?.node?.config);
+}
+
+/**
+ * What to say when settings were sent and what the API kept could not be read: the comparison
+ * that would catch a dropped setting was not possible, so nothing is claimed and nothing goes live.
+ */
+export const UNVERIFIED_SETTINGS_NOTE =
+  "The settings that were sent could not be compared with what the API stored, because the stored graph could not be read. " +
+  "Read it with didit_workflow_get_graph (include_config: true) and check the settings before publishing.";
+
+/**
+ * What to tell the model about dropped settings: which, why, and what to do next. `when` is
+ * "dry run" where nothing has been saved yet. Empty when nothing was dropped.
+ */
+export function droppedSettingsNote(lost: LostSettings, when: "saved" | "dry run" = "saved"): string {
+  if (lost.dropped.length === 0) return "";
+  const many = lost.dropped.length > 1;
+  const features = lost.features.length > 0 ? ` (${lost.features.join(", ")})` : "";
+
+  return (
+    `${lost.dropped.length} setting${many ? "s" : ""} ${when === "dry run" ? "would NOT be saved" : many ? "were NOT saved" : "was NOT saved"}: ${lost.dropped.join(", ")}. ` +
+    `The API does not know ${many ? "these keys" : "this key"} and leaves out an unknown setting without an error. ` +
+    `Call didit_workflow_get_feature_config_schema with the feature${features} for the real keys and set them with ` +
+    "didit_workflow_edit_graph (op merge_node_config). If no key does what was asked, tell the person it cannot be " +
+    "configured, rather than publishing without it."
+  );
+}
+
+/** The softer line for settings the contract knows and the API did not return. Empty when there are none. */
+export function unconfirmedSettingsNote(lost: LostSettings): string {
+  if (lost.unconfirmed.length === 0) return "";
+
+  return (
+    `The API did not return ${lost.unconfirmed.join(", ")}. Re-read ${lost.unconfirmed.length > 1 ? "them" : "it"} ` +
+    "with didit_workflow_get_graph before telling the person it is set."
   );
 }

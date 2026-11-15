@@ -1,4 +1,6 @@
 import { apiRequest, resolveOrganizationId, DIDIT_AUTH_BASE_URL } from "../config";
+import type { RegisteredTool } from "./registry";
+import { ORG_APP_PROPS } from "../orgapp";
 import { assertBoolean, DiditError, redactApiKey, redactCollection, pathSegment } from "../security";
 
 // Org members / roles / API keys — served by service-didit-auth (apx/auth/v2), org-level,
@@ -131,3 +133,146 @@ export async function createApiKey(
       "revoke this key in the Didit console under the application's API keys and with this connected app.",
   };
 }
+
+// ── The organization member and API key tools (tools/registry.ts) ──────────────────────────────────
+// Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
+// The definitions are listed where these tools always were, so the tool list does not change.
+export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
+  {
+    def: {
+      name: "didit_org_list_members",
+      description: "List the organization's members.",
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+    },
+    // The auth service path is built from the organization the caller sent; the ids never reach the request body.
+    access: "read",
+    permission: "list:members", // GET auth /organizations/{org}/members/ → member.py:141
+    routingIds: true,
+    run: ({ organization_id, application_id: _app, ...params }) => listMembers(organization_id, params),
+  },
+  {
+    def: {
+      name: "didit_org_invite_member",
+      description: "Invite up to 5 members to the organization (emails + role + the applications they may access).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          emails: { type: "array", items: { type: "string" }, description: "Email addresses to invite (1-5)." },
+          role: { type: "string", description: "Role UUID (from didit_org_list_roles)." },
+          app_ids: { type: "array", items: { type: "string" }, description: "Application UUIDs the invitee may access (from didit_org_list_applications)." },
+        },
+        required: ["emails", "role", "app_ids"],
+      },
+    },
+    access: "write",
+    openWorld: true,
+    permission: "write:members", // POST auth /organizations/{org}/members/invite/ → member.py:394
+    routingIds: true,
+    run: ({ organization_id, application_id: _app, ...data }) => inviteMember(data, organization_id),
+  },
+  {
+    def: {
+      name: "didit_org_update_member",
+      description: "Update a member's role and the applications they may access.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          member_id: { type: "string", description: "Member UUID (from didit_org_list_members)." },
+          role: { type: "string", description: "Role UUID (from didit_org_list_roles)." },
+          accessible_applications: { type: "array", items: { type: "string" }, description: "Application UUIDs the member may access (from didit_org_list_applications)." },
+        },
+        required: ["member_id", "role", "accessible_applications"],
+      },
+    },
+    access: "write",
+    permission: "write:members", // PATCH auth /organizations/{org}/members/{id}/ → member.py:76
+    routingIds: true,
+    run: ({ organization_id, application_id: _app, ...data }) => updateMember(data.member_id, data, organization_id),
+  },
+  {
+    def: {
+      name: "didit_org_remove_member",
+      description:
+        "Remove a member from the organization. It cannot be undone: to come back the person has to be invited again.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          member_id: {
+            type: "string",
+            description: "The `uuid` of the member's row in didit_org_list_members. Not `user_id`, and not the email address.",
+          },
+        },
+        required: ["member_id"],
+      },
+    },
+    access: "destructive",
+    permission: "delete:members", // DELETE auth /organizations/{org}/members/{id}/ → member.py:109
+    routingIds: true,
+    run: (args) => removeMember(args.member_id, args.organization_id),
+  },
+  {
+    def: {
+      name: "didit_org_list_roles",
+      description: "List the roles available in the organization.",
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+    },
+    access: "read",
+    permission: "list:roles", // GET auth /organizations/{org}/roles/ → roles.py:55
+    routingIds: true,
+    run: (args) => listRoles(args.organization_id),
+  },
+  {
+    def: {
+      name: "didit_org_create_api_key",
+      description:
+        "Create the API key the integration you are building needs (sent as x-api-key to the verification API), " +
+        "for one application. Didit allows ONE live key per connected app and application, scoped to what the " +
+        "signed-in person can do (never full access, never API key management), rate-limited and audit-logged; " +
+        "the person sees it with this connected app in the console and can revoke it there. The secret is returned " +
+        "ONCE: write it straight to the project's secret store or .env and never repeat it in the chat. Pick the " +
+        "application by its mode in didit_context_get: a sandbox key to build and test for free, a live key to go " +
+        "live. Requires confirm:true after the person agreed.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: { type: "string", description: "REQUIRED. The organization (from didit_context_get)." },
+          application_id: { type: "string", description: "REQUIRED. The application the key is for (from didit_context_get)." },
+          label: { type: "string", description: "Name shown in the console, e.g. 'Acme backend (Codex)'." },
+          scopes: {
+            type: "object",
+            description:
+              "Optional narrower access: resource -> 'read' | 'write' (sessions, decisions, media, users, businesses, " +
+              "transactions, workflows, webhooks, applications, analytics). Omit it for everything the person can do.",
+            additionalProperties: { type: "string", enum: ["read", "write"] },
+          },
+          workflow_ids: { type: "array", items: { type: "string" }, description: "Optional: only these workflows' sessions (needs scopes)." },
+          expires_at: { type: "string", description: "Optional ISO 8601 expiry." },
+          confirm: {
+            type: "boolean",
+            description: "REQUIRED. Must be true - issues a credential shown once. Only set after explicit user confirmation of this exact action.",
+          },
+        },
+        required: ["organization_id", "application_id", "confirm"],
+      },
+    },
+    // Issues a credential: a client asks before running it.
+    access: "destructive",
+    permission: "write:api-keys", // POST auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py (agent rules: services/agent_api_keys.py)
+    routingIds: true,
+    run: ({ organization_id, application_id, ...data }) => createApiKey(organization_id, application_id, data),
+  },
+  {
+    def: {
+      name: "didit_org_list_api_keys",
+      description: "List one application's API key metadata with raw key values redacted. API keys belong to an application, so application_id is required: read it from didit_context_get.",
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS }, required: ["application_id"] },
+    },
+    access: "read",
+    permission: "read:applications", // GET auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py:24
+    routingIds: true,
+    run: (args) => listApiKeys(args.organization_id, args.application_id),
+  },
+];

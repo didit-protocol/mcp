@@ -3,7 +3,18 @@ import { apiRequest, orgAppPath } from "../config";
 import { mapWithConcurrency, runForScope } from "../orgapp";
 import { resolveWorkflowScope, withWorkflowResolution } from "./search";
 import { DiditError, pathSegment } from "../security";
-import { assertKycKybSegregation, normalizeFeatureConfigs, resolveBranchRuleNodeIds } from "./feature-config";
+import {
+  assertKycKybSegregation,
+  carriesSettings,
+  droppedSettingsNote,
+  lostSettings,
+  normalizeFeatureConfigs,
+  operationCarriesSettings,
+  resolveBranchRuleNodeIds,
+  unconfirmedSettingsNote,
+  UNVERIFIED_SETTINGS_NOTE,
+} from "./feature-config";
+import { storedWorkflowGraph, WORKFLOW_IDS_NOTE } from "./settings";
 
 // Node/graph ("branching") workflows. The console drives these through dedicated endpoints on
 // the verification-settings resource — the flat `features: [...]` list the older workflow tools
@@ -72,6 +83,24 @@ interface GraphOp {
   branches?: any[];
   start_node?: string;
   config?: Record<string, any>;
+  replace?: boolean;
+}
+
+const isPlainObject = (value: unknown): value is Record<string, any> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+/** A map-valued config key (age_restrictions_by_country, documents_allowed, …) merges by entry:
+ *  the entries sent update or add, the others are kept. Replacing the whole map is what turned
+ *  `{GBR: 21}` into a 1-country age table that had held 237. Arrays and scalars replace, and so
+ *  does any value when the op says `replace`. */
+function mergeConfigValue(current: unknown, value: unknown, replace = false): unknown {
+  return !replace && isPlainObject(current) && isPlainObject(value) ? { ...current, ...value } : value;
+}
+
+function mergeConfig(config: Record<string, any>, op: GraphOp): Record<string, any> {
+  const merged = Object.entries(op.config || {}).map(([key, value]) => [key, mergeConfigValue(config[key], value, op.replace)]);
+
+  return { ...config, ...Object.fromEntries(merged) };
 }
 
 function requireNode(graph: any, id: string | undefined): void {
@@ -118,7 +147,7 @@ function applyGraphOps(graph: any, operations: GraphOp[]): { graph: any; changes
         break;
       case "merge_node_config":
         requireNode(g, op.node_id);
-        g.nodes[op.node_id!].config = { ...(g.nodes[op.node_id!].config || {}), ...(op.config || {}) };
+        g.nodes[op.node_id!].config = mergeConfig(g.nodes[op.node_id!].config || {}, op);
         changes.push(`${op.node_id}.config merged (${Object.keys(op.config || {}).join(", ")})`);
         break;
       default:
@@ -555,9 +584,16 @@ export async function validateWorkflowGraph(
       method: "POST",
       json: { graph, ...identity },
     });
-    if (includeConfig || !result?.graph) return result;
-    return {
+    // The graph in the answer is the graph as the API accepted it: a setting that was sent and is
+    // not in it would be left out of a save without an error. Said here, before anything is saved.
+    const lost = lostSettings(graph, result?.graph);
+    const checked = {
       ...result,
+      ...(lost.dropped.length > 0 ? { dropped_config_keys: lost.dropped, note: droppedSettingsNote(lost, "dry run") } : {}),
+    };
+    if (includeConfig || !result?.graph) return checked;
+    return {
+      ...checked,
       graph: summarizeGraph(result.graph),
       config_summarized: true,
       hint: "Large feature config values are summarized. Pass include_config:true to return them verbatim.",
@@ -574,31 +610,29 @@ export async function createWorkflowDraft(workflowId: string, scope: Scope = {})
   );
 }
 
-/** The graph as the backend STORED it, or null when it could not be re-read. Deliberately has no
- *  fallback to the graph we sent: returning the intent as if it were the result is how "I removed
- *  those fields" survived a save that kept them. */
-async function persistedGraph(uuid: string): Promise<any | null> {
-  try {
-    const res = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/workflow-graph/`));
+/** Whether a stored config value holds what a merge asked for. A merged map must keep every entry
+ *  of the map that was submitted, the ones the edit did not mention included (extra entries the API
+ *  adds are fine); any other value must equal the op's. */
+function holdsRequested(stored: unknown, submitted: unknown, op: GraphOp, key: string): boolean {
+  const requested = op.config![key];
 
-    return res?.graph ?? res ?? null;
-  } catch {
-    return null;
-  }
+  if (op.replace || !isPlainObject(requested) || !isPlainObject(submitted)) return isDeepStrictEqual(stored, requested);
+
+  return isPlainObject(stored) && Object.entries(submitted).every(([entry, value]) => isDeepStrictEqual(stored[entry], value));
 }
 
 /** Config keys a merge_node_config op asked for that the STORED graph does not match. Reported as
  *  UNCONFIRMED rather than dropped: the backend may legitimately normalise a value it accepted, so
  *  the honest claim is "re-read this before telling the user it changed" — which is the check that
  *  was missing when seven registry fields were reported removed and were still being collected. */
-function unconfirmedConfigKeys(stored: any, operations: GraphOp[]): string[] {
+function unconfirmedConfigKeys(stored: any, operations: GraphOp[], submitted: any): string[] {
   const nodes = stored?.nodes ?? {};
 
   return operations.flatMap((op) =>
     op.op !== "merge_node_config" || !op.config || !op.node_id
       ? []
       : Object.keys(op.config)
-          .filter((key) => !isDeepStrictEqual(nodes[op.node_id!]?.config?.[key], op.config![key]))
+          .filter((key) => !holdsRequested(nodes[op.node_id!]?.config?.[key], submitted?.nodes?.[op.node_id!]?.config?.[key], op, key))
           .map((key) => `${op.node_id}.config.${key}`),
   );
 }
@@ -617,10 +651,31 @@ function readBackNote(stored: any, published: boolean, versionUuid: string): str
   if (published) return `Saved and published — version ${versionUuid} is live for new sessions.`;
 
   return (
-    `Saved to DRAFT version ${versionUuid}, which is NOT live. Publish it with ` +
+    `Saved to DRAFT version ${versionUuid}, which is NOT live; pass that version_uuid to later ` +
+    `edits too, they build on this draft. Publish it with ` +
     `didit_workflow_publish({ workflow_id: "${versionUuid}" }) — passing the stable workflow_id ` +
     `instead targets the version that is already published. Existing sessions are unaffected.`
   );
+}
+
+/**
+ * The save's note, led by what was lost on the way in. `heldBack`: a publish was asked for and not
+ * done. `unverified`: settings were sent and what was stored could not be read.
+ */
+function lostNote(lost: ReturnType<typeof lostSettings>, heldBack: boolean, saved: string, unverified = false): string {
+  return [
+    heldBack
+      ? lost.dropped.length > 0
+        ? "NOT published, because the version does not hold everything that was asked for."
+        : "NOT published, because what the API stored could not be checked."
+      : "",
+    droppedSettingsNote(lost),
+    unverified ? UNVERIFIED_SETTINGS_NOTE : "",
+    unconfirmedSettingsNote(lost),
+    saved,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /** PATCH one version to published and report the status the API CONFIRMS, never the one we asked
@@ -677,7 +732,9 @@ export async function publishWorkflow(workflowId: string, scope: Scope = {}): Pr
       version_uuid: target,
       status,
       published: live,
+      is_live_version: live,
       status_confirmed: confirmed,
+      ids_note: WORKFLOW_IDS_NOTE,
       note: live
         ? `Version ${target} is live for new sessions. Existing sessions are unaffected.`
         : `The API reports status "${status}" for version ${target} after the publish — it is NOT ` +
@@ -720,8 +777,13 @@ export async function setWorkflowGraph(
       method: "PUT",
       json: { graph },
     });
-    const stored = await persistedGraph(targetUuid);
-    const published = publish ? (await publishVersion(targetUuid)).status === "published" : false;
+    const stored = await storedWorkflowGraph(targetUuid);
+    // A version that lost a setting on the way in is not put live (see lostSettings).
+    const lost = lostSettings(graph, stored);
+    // Settings were sent and what was stored could not be read: nothing was compared, so nothing goes live.
+    const unverified = stored === null && carriesSettings(graph);
+    const heldBack = publish && (lost.dropped.length > 0 || unverified);
+    const published = publish && !heldBack ? (await publishVersion(targetUuid)).status === "published" : false;
 
     return {
       workflow_id: workflowId,
@@ -733,9 +795,27 @@ export async function setWorkflowGraph(
       status: published ? "published" : "draft",
       graph_read_back: stored !== null,
       ...(stored ? { graph: summarizeGraph(stored) } : {}),
-      note: readBackNote(stored, published, targetUuid),
+      ...(lost.dropped.length > 0 ? { dropped_config_keys: lost.dropped } : {}),
+      ...(lost.unconfirmed.length > 0 ? { unconfirmed_config_keys: lost.unconfirmed } : {}),
+      ...(unverified ? { settings_verified: false } : {}),
+      note: lostNote(lost, heldBack, readBackNote(stored, published, targetUuid), unverified),
     };
   });
+}
+
+/** The draft an edit reads AND saves. create-draft is idempotent (max 1 draft per workflow group):
+ *  it hands back the draft that already holds earlier edits, or clones the live version when there
+ *  is none. Reading the published graph and saving it over that draft reverted every earlier edit
+ *  while each save reported applied:true (prod 14-nov: age 21 and expiry REVIEW flip-flopped 3×). */
+async function draftToEdit(wf: any): Promise<{ uuid: string; created: boolean }> {
+  if (String(wf.status ?? "").toLowerCase() === "draft") return { uuid: wf.uuid, created: false };
+  const draft = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(wf.uuid, "workflow_id")}/create-draft/`), {
+    method: "POST",
+  });
+  const uuid = draft?.uuid ?? draft?.workflow_id;
+  if (!uuid) throw new Error(`Could not resolve the draft version of ${wf.uuid} to edit; nothing was saved.`);
+
+  return { uuid, created: true };
 }
 
 /** Edit a workflow's graph with small OPERATIONS instead of resending the whole thing. The MCP
@@ -758,21 +838,23 @@ export async function editWorkflowGraph(
     scope.application_id,
   );
   return runForScope(organizationId, applicationId, async () => {
-    // 1. Fetch the FULL current graph server-side (allow-lists included; never sent by the model).
-    const current = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(workflow.uuid, "workflow_id")}/workflow-graph/`));
+    // 1. The DRAFT the edit lands on (the live published version is never mutated).
+    const { uuid: targetUuid, created: createdDraft } = await draftToEdit(workflow);
+    // 2. Fetch that draft's FULL graph server-side (allow-lists included; never sent by the model).
+    const current = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(targetUuid, "workflow_id")}/workflow-graph/`));
     const baseGraph = current?.graph ?? current;
-    // 2. Apply the small ops in memory, then normalize branch catch-alls to explicit else branches.
+    // 3. Apply the small ops in memory, then normalize branch catch-alls to explicit else branches.
     const { graph: merged, changes } = applyGraphOps(baseGraph, operations);
     normalizeFeatureConfigs(merged);
     normalizeBranchElse(merged);
     resolveBranchRuleNodeIds(merged);
     assertKycKybSegregation(merged);
-    // 3. Dry-run validate server-side. Return cleanly on failure — never save a broken graph.
+    // 4. Dry-run validate server-side. Return cleanly on failure — never save a broken graph.
     let validation: any;
     try {
       validation = await apiRequest(orgAppPath(`/workflow-graph/validate/`), {
         method: "POST",
-        json: { graph: merged, workflow_uuid: workflow.uuid },
+        json: { graph: merged, workflow_uuid: targetUuid },
       });
     } catch (e: any) {
       validation = { is_valid: false, error: e?.message ?? String(e) };
@@ -785,45 +867,50 @@ export async function editWorkflowGraph(
         note: "Validation failed — nothing was saved. Fix the reported issues and retry.",
       };
     }
-    // 4. Apply to a DRAFT (the live published version is never mutated).
-    let targetUuid: string = workflow.uuid;
-    let createdDraft = false;
-    if (String(workflow.status ?? "").toLowerCase() !== "draft") {
-      const draft = await apiRequest(
-        orgAppPath(`/verification-settings/${pathSegment(workflow.uuid, "workflow_id")}/create-draft/`),
-        { method: "POST" },
-      );
-      targetUuid = draft?.uuid ?? draft?.workflow_id ?? targetUuid;
-      createdDraft = true;
-    }
+    // 5. Save to the draft the graph was read from.
     await apiRequest(orgAppPath(`/verification-settings/${pathSegment(targetUuid, "workflow_id")}/workflow-graph/`), {
       method: "PUT",
       json: { graph: merged },
     });
-    const stored = await persistedGraph(targetUuid);
-    const unconfirmed = stored ? unconfirmedConfigKeys(stored, operations) : [];
-    const published = publish ? (await publishVersion(targetUuid)).status === "published" : false;
+    const stored = await storedWorkflowGraph(targetUuid);
+    // Two different answers: a key the API does not know was left out (dropped), a key it knows
+    // was stored with another value than the one asked for (unconfirmed).
+    const lost = lostSettings(merged, stored);
+    const unconfirmed = [
+      ...new Set([...(stored ? unconfirmedConfigKeys(stored, operations, merged) : []), ...lost.unconfirmed]),
+    ].filter((key) => !lost.dropped.includes(key));
+    const unverified = stored === null && operations.some(operationCarriesSettings);
+    const heldBack = publish && (lost.dropped.length > 0 || unverified);
+    const published = publish && !heldBack ? (await publishVersion(targetUuid)).status === "published" : false;
 
     return {
       applied: true,
       changes,
-      workflow_id: workflowId,
+      workflow_id: workflow.workflow_id ?? workflowId,
       version_uuid: targetUuid,
       organization_id: organizationId,
       application_id: applicationId,
       created_draft: createdDraft,
       published,
+      is_live_version: published,
       status: published ? "published" : "draft",
+      ids_note: WORKFLOW_IDS_NOTE,
       node_count: Object.keys(merged.nodes || {}).length,
       graph_read_back: stored !== null,
       ...(stored ? { graph: summarizeGraph(stored) } : {}),
+      ...(lost.dropped.length > 0 ? { dropped_config_keys: lost.dropped } : {}),
       ...(unconfirmed.length > 0 ? { unconfirmed_config_keys: unconfirmed } : {}),
-      note:
+      ...(unverified ? { settings_verified: false } : {}),
+      note: lostNote(
+        { ...lost, unconfirmed: [] },
+        heldBack,
         unconfirmed.length > 0
           ? `The stored graph does NOT match what was requested for ${unconfirmed.join(", ")}. ` +
-            `Re-read those with didit_workflow_get_graph before telling the user they changed. ` +
-            readBackNote(stored, published, targetUuid)
+              `Re-read those with didit_workflow_get_graph before telling the user they changed. ` +
+              readBackNote(stored, published, targetUuid)
           : readBackNote(stored, published, targetUuid),
+        unverified,
+      ),
     };
   });
 }

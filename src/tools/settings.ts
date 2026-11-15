@@ -2,6 +2,11 @@ import { everyPage, type WholeList } from "../paging";
 import { apiRequest, orgAppPath } from "../config";
 import { pathSegment } from "../security";
 import {
+  carriesSettings,
+  droppedSettingsNote,
+  lostSettings,
+  unconfirmedSettingsNote,
+  UNVERIFIED_SETTINGS_NOTE,
   assertKycKybSegregation,
   buildLinearGraphFromFeatures,
   normalizeFeatureConfigs,
@@ -24,6 +29,60 @@ export async function listEveryWorkflow(): Promise<WholeList> {
 
 export async function getWorkflow(uuid: string): Promise<any> {
   return apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/`));
+}
+
+/** Which id is which. Sessions accept both, and a customer who integrated a version uuid kept
+ *  running a superseded version for two days after newer ones were published (prod 12-nov). */
+export const WORKFLOW_IDS_NOTE =
+  "workflow_id is the STABLE id: give it for integrations, SDKs and session creation — it stays " +
+  "the same across versions and runs the live published version. version_uuid (= uuid) is ONE " +
+  "exact version: a session created with it stays pinned to that version and ignores later " +
+  "publishes, so never give it as the id to integrate. is_live_version says whether this version " +
+  "is the one new sessions run.";
+
+export const isPublishedVersion = (row: any): boolean => String(row?.status ?? "").toLowerCase() === "published";
+
+/** A version labelled with its version_uuid and, when the live version is known (`live`: that
+ *  version, or null when nothing is published), whether it is the one new sessions run. A
+ *  superseded version still says status "published", so status alone never answers that. */
+export function labelWorkflowVersion(row: any, live?: any): any {
+  const liveness = live === undefined ? {} : { is_live_version: Boolean(live) && live.uuid === row.uuid };
+
+  return { ...row, version_uuid: row.uuid, ...liveness };
+}
+
+/** The live version of a workflow: the newest published one in its version history (listed newest
+ *  first). undefined when the history cannot be read. */
+async function liveWorkflowVersion(workflowId: string): Promise<any> {
+  const history = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(workflowId, "workflow_id")}/versions/`)).catch(
+    () => null,
+  );
+  const versions = Array.isArray(history) ? history : history?.results;
+
+  if (!Array.isArray(versions) || versions.length === 0) return undefined;
+
+  return versions.find(isPublishedVersion) ?? null;
+}
+
+/** didit_workflow_list in one application, its rows labelled like a search row: the list shows
+ *  each workflow's live version, or its draft when nothing is published. */
+export async function listWorkflowVersions(params?: Record<string, any>): Promise<any> {
+  const page = await listWorkflows(params);
+
+  if (!Array.isArray(page?.results)) return page;
+
+  const results = page.results.map((row: any) => labelWorkflowVersion(row, isPublishedVersion(row) ? row : null));
+
+  return { ...page, results, ids_note: WORKFLOW_IDS_NOTE };
+}
+
+/** didit_workflow_get: one version, labelled with which id integrations use and whether it is live. */
+export async function getWorkflowVersion(uuid: string): Promise<any> {
+  const wf = await getWorkflow(uuid);
+
+  if (!wf?.uuid || !wf.workflow_id) return wf;
+
+  return { ...labelWorkflowVersion(wf, await liveWorkflowVersion(wf.workflow_id)), ids_note: WORKFLOW_IDS_NOTE };
 }
 
 /**
@@ -121,9 +180,20 @@ export async function createWorkflow(data: Record<string, any>): Promise<any> {
     json: { graph },
   });
 
+  // The validation answer carries each config as the API accepted it. A setting that was sent and
+  // is not in it was left out without an error, and a workflow that lost a setting is not put live:
+  // on staging this tool answered "created and published" for a workflow whose made-up
+  // "decline at 95" key was gone (12 November 2026).
+  // When the validation answer carries no graph, the stored one is read instead. If neither can be
+  // read, what the API kept is unknown: a workflow with settings is then not put live either.
+  const sentSettings = carriesSettings(graph);
+  const accepted = validation?.graph ?? (sentSettings ? await storedWorkflowGraph(uuid) : null);
+  const lost = lostSettings(graph, accepted);
+  const unverified = sentSettings && !accepted;
   const wantPublished = status === undefined || String(status).toLowerCase() === "published";
+  const heldBack = wantPublished && (lost.dropped.length > 0 || unverified);
   let final = base;
-  if (wantPublished) {
+  if (wantPublished && !heldBack) {
     final = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/`), {
       method: "PATCH",
       json: { status: "published" },
@@ -132,17 +202,50 @@ export async function createWorkflow(data: Record<string, any>): Promise<any> {
 
   // Return only the accurate, post-graph summary — NOT the base create body, whose `features`/
   // `workflow_graph` reflect the pre-graph draft and would read as "nothing was configured".
+  const published = wantPublished && !heldBack;
+  const state = heldBack
+    ? unverified
+      ? "Workflow created as a DRAFT and NOT published, because what the API stored could not be checked."
+      : "Workflow created as a DRAFT and NOT published, because it does not hold everything that was asked for."
+    : published
+      ? "Workflow created and published - live for new sessions."
+      : "Workflow created as a DRAFT. Publish it in the console or with didit_workflow_publish.";
+
   return {
     workflow_id: uuid,
-    status: wantPublished ? "published" : "draft",
+    status: published ? "published" : "draft",
     created: true,
     graph_applied: true,
     features: featureList.map((f: any) => String(f?.feature ?? "").toUpperCase()).filter(Boolean),
     workflow_url: final?.workflow_url ?? base?.workflow_url,
-    note: wantPublished
-      ? "Workflow created and published — live for new sessions."
-      : "Workflow created as a DRAFT. Publish it in the console or with didit_workflow_publish.",
+    ...(lost.dropped.length > 0 ? { dropped_config_keys: lost.dropped } : {}),
+    ...(lost.unconfirmed.length > 0 ? { unconfirmed_config_keys: lost.unconfirmed } : {}),
+    ...(unverified ? { settings_verified: false } : {}),
+    note: [
+      state,
+      droppedSettingsNote(lost),
+      unverified ? UNVERIFIED_SETTINGS_NOTE : "",
+      heldBack ? "Then publish it with didit_workflow_publish." : "",
+      unconfirmedSettingsNote(lost),
+    ]
+      .filter(Boolean)
+      .join(" "),
   };
+}
+
+/**
+ * The graph as the API STORED it, or null when it could not be read. Deliberately has no fallback
+ * to the graph that was sent: returning the intent as if it were the result is how "I removed
+ * those fields" survived a save that kept them.
+ */
+export async function storedWorkflowGraph(uuid: string): Promise<any | null> {
+  try {
+    const res = await apiRequest(orgAppPath(`/verification-settings/${pathSegment(uuid, "workflow_id")}/workflow-graph/`));
+
+    return res?.graph ?? res ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function updateWorkflow(uuid: string, data: Record<string, any>): Promise<any> {

@@ -1,4 +1,6 @@
 import { apiRequest, getHeaders, orgPath, requestContext, resolveOrganizationId, MCP_AUTHORIZATION_SERVER_ORIGIN } from "../config";
+import type { RegisteredTool } from "./registry";
+import { ORG_APP_PROPS } from "../orgapp";
 import { assertBoolean, DiditError, pathSegment } from "../security";
 
 // Billing is ORG-level on the console (no flat /billing/balance/). The org top-up endpoint
@@ -342,3 +344,131 @@ export async function updateBillingDetails(changes: Record<string, unknown>, org
     throw error;
   }
 }
+
+// ── The billing tools (tools/registry.ts) ──────────────────────────────────
+// Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
+// The definitions are listed where these tools always were, so the tool list does not change.
+export const BILLING_TOOLS: readonly RegisteredTool[] = [
+  {
+    def: {
+      name: "didit_billing_get_plan",
+      description:
+        "Get the organization's plan: the plan and its status, monthly fee and credit, the next charge, the last " +
+        "payment, any unpaid invoice and any scheduled plan change. `next_steps.plans_url` is the console page where " +
+        "the person changes the plan.",
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+    },
+    // Billing is the organization's: its path is built from the organization the caller sent.
+    access: "read",
+    permission: "read:subscription", // GET /organization/{org}/billing/plans/ → billing/views.py PlanBillingView
+    routingIds: true,
+    run: (args) => getPlan(args.organization_id),
+  },
+  {
+    def: {
+      name: "didit_billing_quote_plan",
+      description:
+        "Quote a plan change without making it: what it charges today (`amount_due`), the credit it adds " +
+        "(`credit_added`) and the billing period. Plans: free, growth ($99/month, $115 of credit a month, 4% off every " +
+        "price), scale ($299/month, $350 of credit a month, 10% off); yearly billing is cheaper. Show the person the " +
+        "quote; they confirm and pay on `next_steps.plans_url` (Didit tools never buy a plan).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          plan: { type: "string", enum: ["free", "growth", "scale"], description: "The plan to quote." },
+          billing_interval: { type: "string", enum: ["monthly", "yearly"], description: "Defaults to monthly." },
+        },
+        required: ["plan"],
+      },
+    },
+    // Quotes a plan change (a GET): nothing is bought, the person confirms in the console.
+    access: "read",
+    permission: "read:subscription", // GET …/billing/plans/quote/ → PlanQuoteView
+    routingIds: true,
+    run: (args) => quotePlan(args.plan, args.billing_interval, args.organization_id),
+  },
+  {
+    def: {
+      name: "didit_billing_list_payment_methods",
+      description:
+        "List the organization's saved cards (brand, last 4 digits, expiry) in the order automatic charges try them, " +
+        "card 1 being the primary. An empty list means no card is saved: top-ups then go through Checkout or the " +
+        "console. `next_steps.add_card_url` is where the person adds a card or turns on automatic top-up.",
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+    },
+    access: "read",
+    permission: "read:subscription", // GET …/billing/payment-methods/ → PaymentMethodsView
+    routingIds: true,
+    run: (args) => listPaymentMethods(args.organization_id),
+  },
+  {
+    def: {
+      name: "didit_billing_list_receipts",
+      description: "List the organization's payment receipts (top-ups and plan charges), newest first.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          limit: { type: "number", description: "Page size (default set by the server)." },
+          offset: { type: "number", description: "Rows to skip." },
+        },
+      },
+    },
+    access: "read",
+    permission: "read:subscription", // GET …/billing/receipts/ → ReceiptsView
+    routingIds: true,
+    run: (args) => listReceipts(args.organization_id, args.limit, args.offset),
+  },
+  {
+    def: {
+      name: "didit_billing_get_details",
+      description:
+        "Get the billing details printed on every receipt and invoice: legal name, tax ID, address, billing emails " +
+        "and PO number.",
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+    },
+    access: "read",
+    permission: "read:subscription", // GET …/billing/details/ → BillingDetailsView
+    routingIds: true,
+    run: (args) => getBillingDetails(args.organization_id),
+  },
+  {
+    def: {
+      name: "didit_billing_update_details",
+      description:
+        "Change the billing details printed on receipts and invoices. Pass only the fields to change; the rest " +
+        "keep their saved values. Before calling, show the person each change and get their confirmation. When " +
+        "the organization confirms billing changes with an authenticator code, the change is refused and the " +
+        "person saves it in the console instead (the error names the page).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          legal_name: { type: "string", description: "The company's legal name." },
+          tax_id_type: { type: "string", description: "Stripe tax ID type, e.g. eu_vat, gb_vat, us_ein. Needs tax_id." },
+          tax_id: { type: "string", description: "The tax ID number. Needs tax_id_type." },
+          address: {
+            type: "object",
+            description: "Billing address; only the lines passed change.",
+            properties: {
+              line1: { type: "string" },
+              line2: { type: "string" },
+              city: { type: "string" },
+              state: { type: "string" },
+              postal_code: { type: "string" },
+              country: { type: "string", description: "ISO 3166-1 alpha-2, e.g. ES, US." },
+            },
+            additionalProperties: false,
+          },
+          billing_emails: { type: "array", items: { type: "string" }, description: "Addresses that receive receipts and invoices (replaces the list)." },
+          po_number: { type: "string", description: "Purchase order number printed on invoices." },
+        },
+      },
+    },
+    // The routing ids route the call; they are not billing details.
+    access: "write",
+    permission: "write:subscription", // PUT …/billing/details/ → BillingDetailsView (+ step-up)
+    run: ({ organization_id: _org, application_id: _app, ...changes }) => updateBillingDetails(changes),
+  },
+];

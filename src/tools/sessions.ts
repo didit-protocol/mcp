@@ -1,4 +1,11 @@
-import { apiRequest, getHeaders, orgAppPath, resolveApplicationId, resolveOrganizationId } from "../config";
+import { apiRequest, getHeaders, orgAppPath, requestContext, resolveApplicationId, resolveOrganizationId } from "../config";
+import type { RegisteredTool } from "./registry";
+import { PAGE_PROPS, pageParams } from "../paging";
+import { DOCUMENT_TYPES, SESSION_STATUSES } from "./shared-schema";
+import { searchSessions } from "./search";
+// session-explain imports getSessionDecision from here: each side uses the other only inside a call.
+import { explainSessionDecision } from "./session-explain";
+import { ORG_APP_PROPS } from "../orgapp";
 import { createSessionPdfDownload } from "../session-pdf-download";
 import { createSignatureDownload } from "../signature-download";
 import { pathSegment, assertBoolean, assertSafeWebhookUrl, DiditError, MAX_BATCH_IDS } from "../security";
@@ -11,13 +18,60 @@ import { withoutScope } from "./compliance";
 
 const sid = (id: string) => pathSegment(id, "session_id");
 
+/**
+ * The application a person's call acts in, as the header the flat `/session/` route reads.
+ *
+ * For a person's token that route takes the application from `X-Didit-Application-Id`, and only when
+ * the header is absent derives it from the workflow (sdv `IsValidUserOrgClient`). Without the header,
+ * a call that NAMED its application and a workflow the API cannot find (an id that does not exist, or
+ * a workflow's name where its id belongs) was answered "Name the application in the
+ * X-Didit-Application-Id header" with a hint about roles: a header a model cannot set, for a call
+ * that had named the application. And a workflow of ANOTHER application created the session there,
+ * with nothing in the answer saying so. Staging, 12 November 2026.
+ *
+ * With the header the API works in the application the call names, and answers about the workflow.
+ * A call that names no application sends none, and the API derives it from the workflow as before.
+ * An API key is its application and sends no such header.
+ */
+function namedApplicationHeaders(): Record<string, string> | undefined {
+  const context = requestContext.getStore();
+  if (!context?.accessToken || context.apiKey || !context.applicationId) return undefined;
+
+  return { ...getHeaders(), "X-Didit-Application-Id": context.applicationId };
+}
+
 export async function createSession(data: Record<string, any>): Promise<any> {
   const json = { ...data };
   // portrait_image may be a URL the backend fetches — SSRF-guard it (base64 left untouched).
   if (typeof json.portrait_image === "string" && /^https?:\/\//i.test(json.portrait_image)) {
     json.portrait_image = assertSafeWebhookUrl(json.portrait_image, "portrait_image");
   }
-  return apiRequest("/session/", { method: "POST", json });
+  const headers = namedApplicationHeaders();
+  try {
+    return await apiRequest("/session/", { method: "POST", json, headers });
+  } catch (error) {
+    throw headers ? error : applicationNotDerived(error, json.workflow_id);
+  }
+}
+
+/**
+ * A call that named no application leaves the API to derive it from the workflow. When it cannot
+ * (no workflow with that id that the person can use, or a name where the id belongs) the API asks
+ * for the `X-Didit-Application-Id` header, which is not something a caller of this tool can send.
+ * Say what the caller can do: the workflow reference is what failed.
+ */
+function applicationNotDerived(error: unknown, workflowId: unknown): unknown {
+  if (!(error instanceof DiditError) || error.shape.status !== 403 || !/X-Didit-Application-Id/.test(error.shape.message)) return error;
+  const named = typeof workflowId === "string" && workflowId.trim() !== "";
+
+  return new DiditError({
+    code: "bad_request",
+    field: "workflow_id",
+    message: named
+      ? "No workflow you can use has this workflow_id, so the application to create the session in could not be worked out from it."
+      : "workflow_id is required: it also tells which application the session is created in.",
+    hint: "Pass the id of a workflow, not its name: didit_workflow_list returns the ids. To say which application to work in, pass application_id as well (didit_context_get lists the applications).",
+  });
 }
 
 /**
@@ -316,6 +370,26 @@ export async function importSharedSession(data: Record<string, any>): Promise<an
   return apiRequest("/session/import-shared/", { method: "POST", json: data });
 }
 
+/**
+ * The scope of a person's call to a session import route, as the headers that route reads.
+ *
+ * The import routes are flat (`/session/imports/...`). For a person's token the API takes the
+ * organization from `X-Didit-Organization-Id` and the application from `X-Didit-Application-Id`,
+ * and refuses the call when it cannot tell them (organization_required, application_required):
+ * every import call people made in production on 12 November 2026 was refused that way. Resolved
+ * like any scoped call, so a person with several applications who names none is told which ones
+ * they have. An API key is its application and sends neither.
+ */
+function importScopeHeaders(): Record<string, string> | undefined {
+  const context = requestContext.getStore();
+  if (!context?.accessToken || context.apiKey) return undefined;
+  return {
+    ...getHeaders(),
+    "X-Didit-Organization-Id": pathSegment(resolveOrganizationId(), "organization_id"),
+    "X-Didit-Application-Id": pathSegment(resolveApplicationId(), "application_id"),
+  };
+}
+
 export async function createImport(data: Record<string, any>): Promise<any> {
   const json = { ...data };
   // The backend FETCHES source_file_url — SSRF-guard it before forwarding.
@@ -323,7 +397,7 @@ export async function createImport(data: Record<string, any>): Promise<any> {
     json.source_file_url = assertSafeWebhookUrl(json.source_file_url, "source_file_url");
   }
   assertProviderCredentials(json);
-  return withoutCredentials(await apiRequest("/session/imports/", { method: "POST", json }));
+  return withoutCredentials(await apiRequest("/session/imports/", { method: "POST", json, headers: importScopeHeaders() }));
 }
 
 /**
@@ -359,12 +433,12 @@ function withoutCredentials(body: any): any {
 }
 
 export async function listImportProviders(): Promise<any> {
-  return apiRequest("/session/imports/providers/");
+  return apiRequest("/session/imports/providers/", { headers: importScopeHeaders() });
 }
 
 export async function checkImportProvider(data: Record<string, any>): Promise<any> {
   assertProviderCredentials(data);
-  return withoutCredentials(await apiRequest("/session/imports/providers/check/", { method: "POST", json: data }));
+  return withoutCredentials(await apiRequest("/session/imports/providers/check/", { method: "POST", json: data, headers: importScopeHeaders() }));
 }
 
 const IMPORT_ACTIONS = ["start", "pause", "resume", "cancel", "retry"] as const;
@@ -384,18 +458,665 @@ export async function manageImport(importId: string, action: unknown, data: Reco
     await apiRequest(`/session/imports/${pathSegment(importId, "import_id")}/${pathSegment(action, "action")}/`, {
       method: "POST",
       json: body ?? {},
+      headers: importScopeHeaders(),
     }),
   );
 }
 
 export async function getImportTemplate(): Promise<any> {
-  return apiRequest("/session/imports/template/");
+  return apiRequest("/session/imports/template/", { headers: importScopeHeaders() });
 }
 
 export async function getImport(importId: string): Promise<any> {
-  return apiRequest(`/session/imports/${pathSegment(importId,"import_id")}/`);
+  return apiRequest(`/session/imports/${pathSegment(importId, "import_id")}/`, { headers: importScopeHeaders() });
 }
 
 export async function getImportErrors(importId: string): Promise<any> {
-  return apiRequest(`/session/imports/${pathSegment(importId,"import_id")}/errors/`);
+  return apiRequest(`/session/imports/${pathSegment(importId, "import_id")}/errors/`, { headers: importScopeHeaders() });
 }
+
+
+// The interface languages a session can be created in.
+const LANGUAGE_CODES = [
+  "en", "ar", "bg", "bn", "bs", "ca", "cnr", "cs", "da", "de", "el", "es", "et",
+  "fa", "fi", "fr", "he", "hi", "hr", "hu", "hy", "id", "it", "ja", "ka", "kk",
+  "ko", "ky", "lt", "lv", "mk", "mn", "ms", "nl", "no", "pl", "pt-BR", "pt",
+  "ro", "ru", "sk", "sl", "so", "sq", "sr", "sv", "th", "tr", "uk", "uz",
+  "vi", "zh-CN", "zh-TW", "zh",
+];
+
+// ── The session tools (tools/registry.ts) ──────────────────────────────────
+// Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
+// The definitions are listed where these tools always were, so the tool list does not change.
+export const SESSION_TOOLS: readonly RegisteredTool[] = [
+  {
+    def: {
+      name: "didit_session_create",
+      description: "Create a verification session. Requires workflow_id (created in the Console Workflows page) — the workflow defines which steps run and whether the session is KYC or KYB. Returns session_id, url, and session_token.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          workflow_id: { type: "string", description: "REQUIRED. The STABLE workflow_id (`workflow_id` of didit_workflow_search/list) of the workflow that defines the verification steps; runs its live version. A version uuid pins that one version and ignores later publishes. Selects KYC vs KYB implicitly." },
+          vendor_data: { type: "string", description: "Your unique identifier for the user (e.g. user ID). Used to group sessions into a user/business." },
+          callback: { type: "string", description: "URL to redirect the user to after verification" },
+          callback_method: { type: "string", enum: ["initiator", "completer", "both"], description: "Which device/flow the callback applies to" },
+          language: { type: "string", enum: LANGUAGE_CODES, description: "Pre-set the verification UI language (ISO code)" },
+          sandbox_scenario: { type: "string", description: "SANDBOX ONLY (an application whose mode is 'sandbox' — see didit_context_get): predefine the outcome instead of running real providers, so the session is never billed. Slugs are 'approve', 'decline_*' (e.g. decline_aml_hit, decline_document_expired, decline_kyb_registry_mismatch) and 'review_*' (e.g. review_aml_possible_match). Ignored by a live application, where every session IS billed." },
+          metadata: { type: "object", description: "Arbitrary JSON stored on the session and echoed in webhooks" },
+          contact_details: { type: "object", description: "Pre-fill contact info (e.g. email, phone) for the session" },
+          expected_details: { type: "object", description: "Expected values to validate against (e.g. expected country, IP)" },
+          portrait_image: { type: "string", description: "Base64 or URL reference portrait for Biometric Authentication / Face-Match-first workflows. Optional when the vendor_data user already has a stored face (approved liveness face, ePassport photo, document portrait, or enrolled profile face) - the stored face is reused automatically; 400 if neither is available" },
+        },
+        required: ["workflow_id"],
+      },
+    },
+    access: "write",
+    permission: null, // POST /session/ → session.py:152 — permission classes only, no decorator
+    run: (args) => createSession(args),
+  },
+  {
+    def: {
+      name: "didit_session_list",
+      description: `List verification sessions for ONE app. If you have multiple apps (or pass no scope) this automatically spans every app, newest first - but didit_session_search is the canonical cross-app tool and what to reach for to answer "my last N sessions". status accepts session-level values: ${SESSION_STATUSES}. HOW MANY: \`count\` stops at 100 (100 means "100 or more"); when it does, the result adds \`total_count\` (the exact number, from the console's own tab counts) or \`count_is_lower_bound: true\`. Answer "how many" from total_count, never report 100 as the number; limit:1 is enough to count.`,
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          status: { type: "string", description: `Filter by session status (${SESSION_STATUSES}). Several statuses separated by commas match any of them, e.g. "Not Started,In Progress".` },
+          session_kind: { type: "string", enum: ["user", "business", "all"], description: "KYC (user), KYB (business), or all" },
+          vendor_data: { type: "string", description: "Filter by vendor_data" },
+          workflow_id: { type: "string", description: "Filter by workflow UUID" },
+          search: { type: "string", description: "Free-text search" },
+          date_from: { type: "string", description: "ISO date lower bound" },
+          date_to: { type: "string", description: "ISO date upper bound" },
+          limit: { type: "string", description: "Page size (LimitOffset pagination)" },
+          offset: { type: "string", description: "Pagination offset" },
+        },
+      },
+    },
+    // With no application named, it lists the sessions of every application of the organization.
+    access: "read",
+    permission: "list:sessions", // GET …/sessions/ → application.py:123
+    spanAllApplications: (args) => searchSessions(args),
+    run: (args) => listSessions(args),
+  },
+  {
+    def: {
+      name: "didit_session_get_decision",
+      description: "Get the full verification decision and all extracted data for a session.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string", description: "Session UUID" },
+        },
+        required: ["session_id"],
+      },
+    },
+    access: "read",
+    permission: "read:sessions", // GET /session/{id}/decision/ → session.py:536
+    run: (args) => getSessionDecision(args.session_id),
+  },
+  {
+    def: {
+      name: "didit_session_get_location_evidence",
+      description: "Precise Location (GEOLOCATION) evidence of ONE session, per Location node: `config` (what judged it, every action resolved through the preset), `result` (the decision's verdict), EVERY attempt incl. retired ones (`retired:true`), `reference_points` (device, IP, address; `area_reading` is the earlier attempt a carried area verdict stands on), `distances`, `areas` (inside / blocked / undetermined area ids, `nearest_allowed_km`, `allowed_result`), `anonymizers` (vpn, proxy, tor, spoofing, emulator; null = cannot tell) and `history`: the same person's earlier checks (same vendor_data) that LOCATION_CONSECUTIVE_MISMATCHES and travel tolerance are judged from. The decision keeps only the accepted attempt: use this for 'which attempt was outside', 'why consecutive mismatches' or 'why was the distance excused'. Holds precise coordinates: quote only what the question needs. `nodes: []` means no Location attempt was recorded; a 404 'Precise Location is not available.' means the feature is off on this deployment.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string", description: "Session UUID" },
+        },
+        required: ["session_id"],
+      },
+    },
+    access: "read",
+    permission: "read:sessions", // GET /geolocation/sessions/{id}/evidence/ → geolocation/views/console.py:53
+    run: (args) => getSessionLocationEvidence(args.session_id),
+  },
+  {
+    def: {
+      name: "didit_session_simulate",
+      description:
+        "SANDBOX ONLY: finish a session of a sandbox application (mode 'sandbox' in didit_context_get) with the " +
+        "outcome you pick, without anyone going through the verification flow, then read it with " +
+        "didit_session_get_decision and its webhooks with didit_session_webhooks. Never billed. Pass new_status " +
+        "('Approved', 'Declined', 'In Review', 'Expired', 'Abandoned'), a scenario slug ('approve', 'decline_aml_hit', " +
+        "'decline_document_expired', 'review_aml_possible_match', ...) or a risk. A live session answers not found.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. A session of a sandbox application." },
+          new_status: { type: "string", enum: ["Approved", "Declined", "In Review", "Expired", "Abandoned"] },
+          scenario: { type: "string", description: "Sandbox scenario slug whose outcome to reproduce." },
+          risk: { type: "string", description: "A risk case to add as a warning." },
+          comment: { type: "string", description: "Note on the activity entry." },
+          send_webhooks: { type: "boolean", description: "Send the webhooks a real status change sends (default true)." },
+        },
+        required: ["session_id"],
+      },
+    },
+    access: "write",
+    permission: "write:sessions", // POST /session/{id}/simulate/ → sandbox simulate (sandbox sessions only)
+    run: ({ session_id, ...data }) => simulateSandboxSession(session_id, data),
+  },
+  {
+    def: {
+      name: "didit_session_update_status",
+      description: "Overwrite a session's decision by approving, declining, or requesting resubmission; optionally send a notification email that cannot be recalled. Before calling, obtain explicit user confirmation of the session, new decision, and any email recipient. For resubmission, pass new_status='Resubmitted' and nodes_to_resubmit; already-approved steps are kept.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string" },
+          new_status: { type: "string", enum: ["Approved", "Declined", "Resubmitted"], description: "New decision status" },
+          comment: { type: "string", description: "Reviewer note stored on the audit trail" },
+          nodes_to_resubmit: { type: "array", items: { type: "string" }, description: "Node IDs the user must redo (only for Resubmitted)" },
+          send_email: { type: "boolean", description: "Send a notification email that cannot be recalled. Set true only after explicit user confirmation of the notification and recipient." },
+          email_address: { type: "string", description: "Override the notification recipient; confirm this address with the user before sending." },
+          email_language: { type: "string", description: "Language for the notification email" },
+        },
+        required: ["session_id", "new_status"],
+      },
+    },
+    // A consequential decision (approve, decline), and it can reach outside the workspace.
+    access: "destructive",
+    openWorld: true,
+    permission: "write:sessions", // PATCH /session/{id}/update-status/ → session.py:1033
+    run: ({ session_id, ...data }) => updateSessionStatus(session_id, data),
+  },
+  {
+    def: {
+      name: "didit_session_update_data",
+      description: "Correct the KYC data extracted from the ID document on a session (reviewer override). Only send the fields you want to change.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string" },
+          document_type: { type: "string", enum: DOCUMENT_TYPES },
+          document_subtype: { type: "string" },
+          document_number: { type: "string" },
+          personal_number: { type: "string" },
+          date_of_birth: { type: "string", description: "YYYY-MM-DD" },
+          date_of_issue: { type: "string", description: "YYYY-MM-DD" },
+          expiration_date: { type: "string", description: "YYYY-MM-DD" },
+          issuing_state: { type: "string", description: "ISO 3166-1 alpha-3 issuing country" },
+          first_name: { type: "string" },
+          last_name: { type: "string" },
+          gender: { type: "string", enum: ["M", "F", "U"] },
+          address: { type: "string" },
+          place_of_birth: { type: "string" },
+          nationality: { type: "string" },
+          marital_status: { type: "string", enum: ["SINGLE", "MARRIED", "DIVORCED", "WIDOWED", "UNKNOWN"] },
+          extra_fields: { type: "object", description: "Document-specific extra fields" },
+          parsed_address: { type: "object", description: "Structured address override" },
+        },
+        required: ["session_id"],
+      },
+    },
+    access: "write",
+    permission: "write:sessions", // PATCH /session/{id}/update-data/ → session.py:1238
+    run: ({ session_id, ...data }) => updateSessionData(session_id, data),
+  },
+  {
+    def: {
+      name: "didit_session_update_poa_data",
+      description: "Correct the Proof of Address data extracted from the POA document on a session (reviewer override). Only send the fields you want to change.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string" },
+          issuing_state: { type: "string", description: "ISO 3166-1 alpha-3 issuing country" },
+          document_type: { type: "string", enum: ["UTILITY_BILL", "BANK_STATEMENT", "GOVERNMENT_ISSUED_DOCUMENT", "OTHER_POA_DOCUMENT", "UNKNOWN"] },
+          document_language: { type: "string" },
+          issuer: { type: "string" },
+          issue_date: { type: "string", description: "YYYY-MM-DD" },
+          poa_address: { type: "string" },
+          name_on_document: { type: "string" },
+          extra_fields: { type: "object" },
+          poa_parsed_address: { type: "object", description: "Structured address override" },
+        },
+        required: ["session_id"],
+      },
+    },
+    access: "write",
+    permission: "write:sessions", // PATCH /session/{id}/update-poa-data/ → session.py:1461
+    run: ({ session_id, ...data }) => updateSessionPoaData(session_id, data),
+  },
+  {
+    def: {
+      name: "didit_session_delete",
+      description: "Permanently and irreversibly delete a single verification session (KYC or KYB) - its verification data and stored media. Blocklist entries, issued share tokens, already-queued webhook deliveries, consumed credits, and the parent user/business are not affected. Requires confirm:true - only pass it after the user has explicitly confirmed this exact deletion.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string" },
+          confirm: { type: "boolean", description: "REQUIRED. Must be true - deletion is permanent and irreversible. Only set after explicit user confirmation of this exact action." },
+        },
+        required: ["session_id", "confirm"],
+      },
+    },
+    access: "destructive",
+    permission: "delete:sessions", // DELETE /session/{id}/delete/ → session.py:1406
+    run: (args) => deleteSession(args.session_id, args.confirm),
+  },
+  {
+    def: {
+      name: "didit_session_batch_delete",
+      description: "Permanently and irreversibly delete multiple KYC sessions by session number, or EVERY KYC session in the application with delete_all:true (KYB sessions are never touched; delete those individually). Requires confirm:true - only pass it after the user has explicitly confirmed this exact deletion.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_numbers: {
+            type: "array",
+            items: { type: "number" },
+            description: "Array of session numbers to delete",
+          },
+          delete_all: { type: "boolean", description: "Set true to delete ALL sessions (ignores session_numbers)" },
+          confirm: { type: "boolean", description: "REQUIRED. Must be true - deletion is permanent and irreversible. Only set after explicit user confirmation of this exact action." },
+        },
+        required: ["confirm"],
+      },
+    },
+    access: "destructive",
+    permission: "delete:sessions", // DELETE …/sessions/delete/ → application.py:529
+    run: (args) => batchDeleteSessions(args.session_numbers, args.delete_all, args.confirm),
+  },
+  {
+    def: {
+      name: "didit_session_generate_pdf",
+      description: "Return download_url, expires_at and expires_in (300 seconds) for the original Didit session PDF. Fetch the URL to save the PDF; no Authorization header is needed. Treat the URL as sensitive. Requires configured MCP HTTP PDF downloads.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string" },
+        },
+        required: ["session_id"],
+      },
+    },
+    // Its name reads like a read, but its handler creates a server-side artifact or job.
+    access: "write",
+    permission: "read:sessions", // GET /session/{id}/generate-pdf/ → pdf.py:86
+    run: (args) => generateSessionPdf(args.session_id),
+  },
+  {
+    def: {
+      name: "didit_session_get_signature_evidence",
+      description:
+        "Return download_url, content_type, expires_at and expires_in (300 seconds) for a signer's evidence PDF of an E-signature step: level and format, " +
+        "signer, IP address, each document with its original SHA-256 and field values and the SHA-256 of every signed file, plus, for an Advanced (AES) " +
+        "signature, the verified identity session, the code confirmation, the certificate and the timestamp. Pass the evidence_file path's signer as " +
+        "signature_id; a Business Verification step with several signers needs it, otherwise the route picks one. Fetch the URL to save the PDF; no " +
+        "Authorization header is needed. Treat the URL as sensitive. Requires configured MCP HTTP downloads (see the README).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. The User Verification (KYC) or Business Verification (KYB) session." },
+          node_id: { type: "string", description: "REQUIRED. The E-signature step: node_id of the item in the decision's signatures[]." },
+          signature_id: { type: "string", description: "id of the signer's item in signatures[]. Required to pick a signer on a Business Verification step with several." },
+        },
+        required: ["session_id", "node_id"],
+      },
+    },
+    // Its name reads like a read, but its handler creates a server-side artifact or job.
+    access: "write",
+    permission: "read:sessions", // GET /session/{id}/signatures/{node}/evidence/ → signatures/downloads.py:78
+    run: (args) => getSignatureEvidence(args.session_id, args.node_id, args.signature_id),
+  },
+  {
+    def: {
+      name: "didit_session_get_signed_document",
+      description:
+        "Return download_url, content_type, expires_at and expires_in (300 seconds) for the signed PDF of one document of an E-signature step: the document the " +
+        "signer was shown with their field values stamped and the evidence page (unless signature_evidence_page is off). An Advanced (AES) PDF also carries the " +
+        "PAdES signature with its timestamp; a Simple PDF has no digital signature, seal or timestamp. Didit checks the file against sha256_signed first (409 on a " +
+        "mismatch, nothing returned). Use the id of the document in signatures[].documents[]. Treat the URL as sensitive. Requires configured MCP HTTP downloads.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. The User Verification (KYC) or Business Verification (KYB) session." },
+          node_id: { type: "string", description: "REQUIRED. The E-signature step: node_id of the item in the decision's signatures[]." },
+          document_id: { type: "string", description: "REQUIRED. id of the document in signatures[].documents[]." },
+        },
+        required: ["session_id", "node_id", "document_id"],
+      },
+    },
+    // Its name reads like a read, but its handler creates a server-side artifact or job.
+    access: "write",
+    permission: "read:sessions", // GET …/signatures/{node}/documents/{doc}/file/ → same view
+    run: (args) => getSignedDocument(args.session_id, args.node_id, args.document_id),
+  },
+  {
+    def: {
+      name: "didit_session_get_signature_field_image",
+      description:
+        "Return download_url, content_type (image/png), expires_at and expires_in (300 seconds) for the signature or initials a signer applied to a field. " +
+        "Use the field id from the image_url of signatures[].documents[].fields[]. Treat the URL as sensitive. Requires configured MCP HTTP downloads.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. The User Verification (KYC) or Business Verification (KYB) session." },
+          node_id: { type: "string", description: "REQUIRED. The E-signature step: node_id of the item in the decision's signatures[]." },
+          field_id: { type: "string", description: "REQUIRED. The field on this signer's copy, as in the field's image_url." },
+        },
+        required: ["session_id", "node_id", "field_id"],
+      },
+    },
+    // Its name reads like a read, but its handler creates a server-side artifact or job.
+    access: "write",
+    permission: "read:sessions", // GET …/signatures/{node}/fields/{field}/image/ → same view
+    run: (args) => getSignatureFieldImage(args.session_id, args.node_id, args.field_id),
+  },
+  {
+    def: {
+      name: "didit_session_validate_signatures",
+      description:
+        "Re-check the signed documents of an E-signature step and save the result in each signer's validation. Didit re-reads every signed PDF, checks its " +
+        "SHA-256 and, for an Advanced (AES) signature, validates the PAdES signature, the certificate, the revocation data and the timestamp (a Simple signature " +
+        "has no digital signature, so only file integrity is checked). Nothing is signed again. Without signature_id every signer of the step is checked and the " +
+        "call fails with 409 if any has not signed; 400 means a stored signed PDF no longer matches its recorded SHA-256. Returns the checked signers.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string", description: "REQUIRED. The User Verification (KYC) or Business Verification (KYB) session." },
+          node_id: { type: "string", description: "REQUIRED. The E-signature step: node_id of the item in the decision's signatures[]." },
+          signature_id: { type: "string", description: "id of one signer's item in signatures[]; omit to check every signer of the step." },
+        },
+        required: ["session_id", "node_id"],
+      },
+    },
+    // Its name reads like a read, but its handler creates a server-side artifact or job.
+    access: "write",
+    permission: "write:sessions", // POST …/signatures/{node}/validate/ → signatures/downloads.py:99
+    run: (args) => validateSignatures(args.session_id, args.node_id, args.signature_id),
+  },
+  {
+    def: {
+      name: "didit_session_list_reviews",
+      description: "List the review history and activity log for a session, newest first. One page: 50 entries unless `limit` says otherwise, with `count` as the total and `offset` to read the ones after.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string" },
+          ...PAGE_PROPS,
+        },
+        required: ["session_id"],
+      },
+    },
+    access: "read",
+    permission: "read:sessions", // GET …/sessions/{id}/reviews/ → activity.py:77
+    run: (args) => listSessionReviews(args.session_id, pageParams(args)),
+  },
+  {
+    def: {
+      name: "didit_session_add_review",
+      description: "Add a review note to a session's audit trail, optionally changing its status.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          session_id: { type: "string" },
+          comment: { type: "string", description: "Review comment or note" },
+          new_status: {
+            type: "string",
+            enum: ["Not Started", "In Progress", "Approved", "Declined", "In Review", "Expired", "Abandoned", "Kyc Expired", "Resubmitted", "Awaiting User"],
+            description: "Optional new session status to record with the note",
+          },
+        },
+        required: ["session_id"],
+      },
+    },
+    access: "write",
+    permission: "write:sessions", // POST …/sessions/{id}/reviews/ → activity.py:97
+    run: ({ session_id, ...data }) => addSessionReview(session_id, data),
+  },
+  {
+    def: {
+      name: "didit_session_share",
+      description: "Share a verified session with a trusted partner for reusable KYC (B2B session sharing).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string" },
+          partner_client_id: { type: "string", description: "The partner application's client_id" },
+        },
+        required: ["session_id", "partner_client_id"],
+      },
+    },
+    // Shares verification data with a partner.
+    access: "write",
+    openWorld: true,
+    permission: "write:sessions", // POST /session/{id}/share/ → shared_session.py:44
+    run: (args) => shareSession(args.session_id, args),
+  },
+  {
+    def: {
+      name: "didit_session_explain_decision",
+      description: "WHY a verification session ended Approved / Declined / In Review, as a deterministic trace read from the record: the feature that decided it (strictest wins), each warning that had an effect with its raw value, every triggered status rule (field, operator, configured vs actual value), the human override if a reviewer changed the automatic verdict, and for each cause the workflow config key that governs it (`lever`, with its CURRENT value read from the workflow graph; only keys that exist in the feature-config contract; null means it is not a workflow setting). `workflow.graph_read:false` means the graph could not be read, so no current values. Use this for every 'why was it declined / in review / approved', 'it should have been X' and 'how do I make these go to X' question INSTEAD of reading the whole decision — it never returns images, extracted fields or PII. `informational` lists warnings that changed nothing. `unexplained:true` means a decided session (Declined / In Review) whose record shows no effective cause (e.g. minimized age-assurance logs): say so, never invent one. `lifecycle_status:true` (Expired, Abandoned, Not Started, In Progress, Resub Requested…) means nothing decided it — the status is the whole explanation.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string", description: "REQUIRED. The session uuid (from the page's session-id param, didit_session_search or the user)" },
+        },
+        required: ["session_id"],
+      },
+    },
+    // Folds a session's decision payload and its workflow graph into the outcome trace.
+    access: "read",
+    permission: "read:sessions", // GET /session/{id}/decision/ folded into its trace
+    run: (args) => explainSessionDecision(args.session_id),
+  },
+  {
+    def: {
+      name: "didit_session_webhooks",
+      description: "Delivery log of the webhooks Didit sent for ONE session (last 30 days): destination URL, HTTP response status, timing, signing headers (X-Signature/X-Timestamp) and a capped copy of the payload. The way to check an integration end to end: create a session on a SANDBOX application with sandbox_scenario 'approve' (unbilled, fires status.updated immediately), then call this with wait_seconds so the call waits for the delivery instead of you polling. A 2xx response_status means the customer's endpoint received it; 401/403 usually means their signature check (must be HMAC-SHA256 hex of the RAW body); an empty list after the wait means the endpoint never got the event (not public, or the destination is disabled).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string", description: "REQUIRED. The session whose deliveries to read" },
+          wait_seconds: { type: "integer", minimum: 0, maximum: 60, description: "Keep polling up to this many seconds until at least one delivery exists (0 = read once). Use 30-45 right after creating a sandbox session." },
+        },
+        required: ["session_id"],
+      },
+    },
+    // The per-session webhook delivery log (its only verb-like token is "webhooks").
+    access: "read",
+    permission: "read:sessions", // GET /session/{id}/webhooks/ → webhooks.py:38
+    run: (args) => listSessionWebhooks(args.session_id, Number(args.wait_seconds ?? 0)),
+  },
+  {
+    def: {
+      name: "didit_session_webhook_resend",
+      description: "Resend one recorded webhook delivery of a session to the configured endpoint (the session page's own Resend). Use after the customer fixed their endpoint so they do not need a new session; returns the new delivery with its response_status.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: { type: "string", description: "REQUIRED" },
+          webhook_id: { type: "string", description: "REQUIRED. The delivery's uuid from didit_session_webhooks" },
+        },
+        required: ["session_id", "webhook_id"],
+      },
+    },
+    // Its name reads like a read, but its handler creates a server-side artifact or job.
+    access: "write",
+    permission: "create:sessions", // POST /session/{id}/webhook/{uuid}/resend → webhooks.py:109
+    run: (args) => resendSessionWebhook(args.session_id, args.webhook_id),
+  },
+  {
+    def: {
+      name: "didit_session_import_shared",
+      description: "Import a shared verification session from a partner (Reusable KYC).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          share_token: { type: "string", description: "Token received from the sharing partner" },
+        },
+        required: ["share_token"],
+      },
+    },
+    access: "write",
+    permission: null, // POST /session/import-shared/ → shared_session.py:78 — no decorator
+    run: (args) => importSharedSession(args),
+  },
+];
+
+// ── The session import tools (tools/registry.ts) ──────────────────────────────────
+// Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
+// The definitions are listed where these tools always were, so the tool list does not change.
+export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
+  {
+    def: {
+      name: "didit_session_create_import",
+      description:
+        "Create a bulk import job: a hosted CSV/NDJSON file (source_file_url) of historical verifications, or (source=provider) a migration from another " +
+        "identity verification provider. File imports use Didit's canonical schema; label a record's source with the optional per-row `provider` column in the " +
+        "file. A provider migration reads Sumsub, Onfido, Persona and ComplyCube with the customer's READ-ONLY key (`credentials`, named as that provider's " +
+        "credential_fields from didit_session_list_import_providers); Veriff, iDenfy and MetaMap are read by the record IDs in source_file_url, and the others import " +
+        "an export file. The key is secret: ask the user for a read-only key, never log or repeat it, and never reuse it. Didit encrypts it, never returns it and " +
+        "erases it when the import ends. Prefer dry_run:true first: it counts what would import and writes nothing, ends READY, and didit_session_manage_import " +
+        "action=start then imports for real. Record IDs are namespaced by provider, so re-runs and moving between a file and a provider migration never import a " +
+        "record twice. An application runs at most 4 active import jobs at once (a fifth answers 429); a job a deploy interrupted resumes by itself. Imports must be " +
+        "enabled for the organization by Didit and are refused on a sandbox application (403).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          source_file_url: { type: "string", description: "Publicly fetchable HTTPS URL of the CSV/NDJSON file (or, for providers read by record IDs, of the ID list) to import." },
+          import_type: { type: "string", enum: ["user_verification", "business_verification", "status_rules", "transactions"], description: "What the rows represent (default user_verification)" },
+          source_format: { type: "string", enum: ["csv", "ndjson"], description: "File format (default: inferred from the URL)" },
+          workflow_id: { type: "string", description: "Workflow to associate imported sessions with" },
+          source: { type: "string", enum: ["file", "provider"], description: "provider makes this a migration from another provider. Omit for a file import." },
+          provider: { type: "string", description: "Migration source id from didit_session_list_import_providers (for example sumsub, onfido, persona). Required when source is provider." },
+          credentials: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description: "SECRET. The provider's read-only key, with the field names its credential_fields list. Never echo it back to the user or into logs.",
+          },
+          options: { type: "object", description: "Provider options, for example { region } (Onfido: eu, us, ca)." },
+          status_mapping: {
+            type: "object",
+            additionalProperties: { type: "string", enum: ["Approved", "Declined", "In Review", "Expired", "Not Finished", "Abandoned"] },
+            description: "Edits to the provider's default status mapping: source status to Didit status. Not Finished and Abandoned are skipped and counted, never imported.",
+          },
+          dry_run: { type: "boolean", description: "Count what a provider migration would import and write nothing; the job ends READY and is started with didit_session_manage_import." },
+          face_templates: { type: "boolean", description: "Build face templates from imported selfies and search them against the application's faces and blocklist (flags for review only). Requires lawful_basis_confirmed." },
+          lawful_basis_confirmed: { type: "boolean", description: "Confirms the customer has a lawful basis to share these selfies with Didit as processor. Only set it after the user states so." },
+        },
+        required: ["source_file_url"],
+      },
+    },
+    access: "write",
+    permission: null, // POST /session/imports/ → imports.py:77 — no decorator
+    run: (args) => createImport(args),
+  },
+  {
+    def: {
+      name: "didit_session_list_import_providers",
+      description: "List the 15 providers verifications can be migrated from: what each needs to connect (credential_fields, regions), whether its API can list records, the permissions its read-only key needs and its default status mapping.",
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+    },
+    access: "read",
+    permission: null, // GET /session/imports/providers/ → import_jobs.py:99 — no decorator
+    run: () => listImportProviders(),
+  },
+  {
+    def: {
+      name: "didit_session_check_import_provider",
+      description:
+        "Read a provider with the customer's read-only key before creating a migration. Nothing is stored. For providers read by record IDs, pass record_ids " +
+        "(the first record ID of the export). The key is secret: never log or repeat it.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          provider: { type: "string", description: "REQUIRED. Provider id from didit_session_list_import_providers." },
+          credentials: { type: "object", additionalProperties: { type: "string" }, description: "REQUIRED. SECRET. The provider's read-only key, named as its credential_fields." },
+          options: { type: "object", description: "Provider options, for example { region }." },
+          record_ids: { type: "array", items: { type: "string" }, description: "For providers read by record IDs: the first record ID of the export." },
+        },
+        required: ["provider", "credentials"],
+      },
+    },
+    // Reads the provider the sessions come from, with the customer's key; nothing is stored.
+    access: "write",
+    openWorld: true,
+    permission: null, // POST /session/imports/providers/check/ → import_jobs.py:120 — no decorator
+    run: (args) => checkImportProvider(args),
+  },
+  {
+    def: {
+      name: "didit_session_manage_import",
+      description:
+        "Act on an import job: start (a dry run that ended READY imports for real, with the status_mapping, face_templates and lawful_basis_confirmed sent now), " +
+        "pause, resume, cancel (what was imported stays; the uploaded file and the key are erased) or retry (runs an ended migration again as a NEW job with a new key " +
+        "in credentials, since the old one was erased; everything already in Didit is skipped).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          import_id: { type: "string", description: "REQUIRED. Import job ID." },
+          action: { type: "string", enum: ["start", "pause", "resume", "cancel", "retry"], description: "REQUIRED." },
+          data: {
+            type: "object",
+            description: "start: { status_mapping, face_templates, lawful_basis_confirmed }. retry: { credentials } (SECRET, never echo it). Other actions take none.",
+          },
+        },
+        required: ["import_id", "action"],
+      },
+    },
+    // Its name reads like a read, but it starts, pauses, resumes, cancels or retries an import.
+    access: "write",
+    permission: null, // POST /session/imports/{id}/{start|pause|resume|cancel|retry}/ → import_jobs.py — no decorator
+    run: (args) => manageImport(args.import_id, args.action, args.data),
+  },
+  {
+    def: {
+      name: "didit_session_get_import_template",
+      description: "Download the canonical import template (column headers and format) used by didit_session_create_import.",
+      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+    },
+    access: "read",
+    permission: null, // GET /session/imports/template/ → imports.py:197 — no decorator
+    run: () => getImportTemplate(),
+  },
+  {
+    def: {
+      name: "didit_session_get_import",
+      description: "Get the status and summary of a bulk import job.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          import_id: { type: "string", description: "Import job ID returned by didit_session_create_import" },
+        },
+        required: ["import_id"],
+      },
+    },
+    access: "read",
+    permission: null, // GET /session/imports/{id}/ → imports.py:170 — no decorator
+    run: (args) => getImport(args.import_id),
+  },
+  {
+    def: {
+      name: "didit_session_get_import_errors",
+      description: "List per-row errors for a bulk import job (rows that failed validation or processing).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          import_id: { type: "string", description: "Import job ID" },
+        },
+        required: ["import_id"],
+      },
+    },
+    access: "read",
+    permission: null, // GET /session/imports/{id}/errors/ → imports.py:182 — no decorator
+    run: (args) => getImportErrors(args.import_id),
+  },
+];

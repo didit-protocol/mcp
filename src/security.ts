@@ -648,9 +648,9 @@ export function statusToCode(status: number): string {
 export function statusToHint(status: number, body: any): string | undefined {
   switch (status) {
     case 402:
-      return "Insufficient balance. Use didit_org_top_up to add credits ($50 to $20,000), then retry.";
+      return "Insufficient balance. didit_org_top_up adds credits where this connection lists it; otherwise call didit_org_get_balance and give the person the top-up link in its next_steps ($50 to $20,000). Then retry.";
     case 404:
-      return "The referenced id was not found. List the parent collection first (e.g. didit_list_sessions / didit_list_workflows) to get a valid id.";
+      return "The referenced id was not found. List the parent collection first (for example didit_session_list or didit_workflow_list) to get a valid id.";
     case 422:
       return body && Array.isArray(body.allowed)
         ? "Invalid enum value — choose one of the values in `allowed`."
@@ -793,7 +793,44 @@ export function parseErrorBody(body: any): { message?: string; field?: string; a
     const explicitField = isPlainObject && typeof body.field === "string" && body.field ? body.field : undefined;
     return { message: drf.message, field: safeFieldName(explicitField) || drf.field, allowed };
   }
+  // 3) A field mapped to a plain STRING: {"workflow_id": "Invalid workflow_id."}.
+  if (isPlainObject) {
+    const flat = extractFlatFieldError(body);
+    if (flat) return { ...flat, allowed };
+  }
   return { allowed };
+}
+
+/** Keys of an error body that carry no field's message. `raw` is the text of a body that was not JSON. */
+const NOT_A_FIELD_MESSAGE: ReadonlySet<string> = new Set(["raw", "code", "status", "field", "allowed"]);
+
+/**
+ * A field mapped to a plain string, which a view answers when it raises
+ * `ValidationError({"field": "message"})`: DRF keeps the string as it is.
+ *
+ * extractDrfFieldError accepts a map only when a value is a list or an object, so this shape had
+ * no reader: the reason was dropped and the caller was told "Request failed with status 400."
+ * Staging, 12 November 2026: session create with a workflow its application does not have
+ * answers {"workflow_id": "Invalid workflow_id."}. Production the same week: 8 of 82
+ * didit_session_create calls failed bad_request from 4 people, several retried within minutes.
+ *
+ * Runs after the {detail}/{message}/{error} path, so a body with one of those never reaches it.
+ */
+function extractFlatFieldError(body: Record<string, unknown>): { message: string; field?: string } | null {
+  let firstKey: string | undefined;
+  const parts: string[] = [];
+  let scanned = 0;
+  for (const key in body) {
+    if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+    if (scanned++ >= DRF_MAX_PARTS) break;
+    const value = body[key];
+    if (typeof value !== "string" || !value.trim() || NOT_A_FIELD_MESSAGE.has(key)) continue;
+    firstKey ??= key;
+    parts.push(`${key}: ${value.trim()}`);
+  }
+  if (firstKey === undefined) return null;
+
+  return { message: parts.join("; ").slice(0, DRF_MAX_MSG), field: safeFieldName(firstKey) };
 }
 
 /**
