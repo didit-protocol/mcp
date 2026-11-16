@@ -343,6 +343,27 @@ The server keeps one for 65 seconds, which fits a balancer that closes idle conn
 
 All Didit base URLs and OAuth endpoints are environment variables with public defaults (`verification.didit.me`, `apx.didit.me`, `business.didit.me`) — override them for a private deployment. See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`.env.example`](.env.example) for the full reference.
 
+### Waking agents instead of polling (optional)
+
+With [Wakeshift](https://wakeshift.ai), an agent that creates a session, an import or a transaction is woken in the same conversation when it changes, instead of polling `didit_session_get_decision`, `didit_session_get_import` or `didit_session_webhooks`. The Didit backend reports each change to the server with a signed request; see [`docs/backend-events.md`](docs/backend-events.md).
+
+| Variable | Description |
+|---|---|
+| `WAKESHIFT_KEY` | Optional, HTTP only, with `DIDIT_EVENTS_SECRET`. The Wakeshift app key. Turns on wakes: `didit_session_create`, `didit_session_webhooks`, `didit_session_create_import`, `didit_session_manage_import` and `didit_transaction_create` watch what they start, and `/mcp` adds `didit_session_watch` and `didit_session_watch_reviews` (toolset `sessions`) and `didit_transaction_watch_reviews` (toolset `transactions`), all three read-only. Without both variables, the server runs exactly as before |
+| `DIDIT_EVENTS_SECRET` | Optional, HTTP only, with `WAKESHIFT_KEY`. A Standard Webhooks secret (`whsec_…`) shared with the Didit backend: turns on `POST /internal/events/*`, which the backend calls for each change. A malformed secret stops the server at startup |
+
+It works with every `toolsets` selection (on `core`, the watch tools are one `didit_tool_search` away), with `read_only=true`, and with API key connections. The ChatGPT catalog (`/mcp/chatgpt`) and the stdio server never offer it. It needs Node 22.12 or later.
+
+It also needs `@wakeshift/sdk` installed next to the server. It is a development dependency of this repository, so a source checkout has it after `npm ci`. The published package and any install made without development dependencies do not: add the version `package.json` names with `npm install @wakeshift/sdk@<that version>` before setting the two variables, or the server stops at startup and says so.
+
+**What turning it on shares, and what it changes for agents.** Read from `@wakeshift/sdk` 0.11.1, the exact version this repository pins:
+
+- Each watch sends Wakeshift the event and the ID it watches (a session, import, transaction or application ID), the tool's name, an opaque hash that stands for the caller, the client's name and `User-Agent`, and the request's `_meta` as the client sent it.
+- Each change the backend reports is sent to Wakeshift whether or not a conversation watches it: a session's ID, application ID and final status, a webhook delivery's session ID, type, destination host and response status, an import's status and counts, and a transaction's IDs and status.
+- No Didit credential, no tool result and no other tool argument is sent.
+- Tools that subscribe gain a sentence in their description and three optional arguments (`session_key`, `harness`, `conversation_id`), and three tools are added to the catalog: `subscribe_events`, `unsubscribe_events` and `list_subscriptions`.
+- After a call that subscribes, text written by the Wakeshift service is appended to the tool's result. It can ask the agent to start a background listener and to offer the person a one-time install, and the added description tells the agent to follow it, so whoever sets `WAKESHIFT_KEY` is trusting that service with what agents are told.
+
 ## Workflow feature configuration
 
 Every workflow feature node takes a `config` object. The tables below are the complete
