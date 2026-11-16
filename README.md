@@ -1,5 +1,9 @@
 # Didit MCP Server
 
+[![Add to Kiro](https://kiro.dev/images/add-to-kiro.svg)](https://kiro.dev/launch/mcp/add?name=didit&config=%7B%22url%22%3A%22https%3A%2F%2Fmcp.didit.me%2Fmcp%22%2C%22autoApprove%22%3A%5B%5D%7D)
+
+[Privacy policy](https://didit.me/terms/privacy-policy) · [Didit support](https://didit.me/contact/)
+
 The official [Model Context Protocol](https://modelcontextprotocol.io) server for [Didit](https://didit.me) — bring KYC, KYB, AML screening, transaction monitoring, biometrics, and full workspace operations to Claude, Cursor, VS Code, Windsurf, Zed, and any MCP client.
 
 - **160+ tools** across sessions, workflows, vendor users/businesses, transactions, the standalone verification APIs, lists, cases, reports, webhooks, and billing.
