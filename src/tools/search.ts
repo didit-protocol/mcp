@@ -1,6 +1,6 @@
 import { getOrgAppMap, mapWithConcurrency, ORG_APP_PROPS, runForScope, OrgRef, AppRef } from "../orgapp";
 import type { RegisteredTool } from "./registry";
-import { LAST_N_DAYS_PROP, SESSION_STATUSES } from "./shared-schema";
+import { LAST_N_DAYS_PROP, SESSION_SEARCH_DESCRIPTION, SESSION_STATUSES } from "./shared-schema";
 import { applyRelativeWindow } from "../dates";
 import { apiRequest, orgPath, requestContext } from "../config";
 import { listSessions } from "./sessions";
@@ -466,14 +466,14 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_session_search",
-      description: `Search verification sessions ACROSS ALL your apps and organizations in a single call — the efficient way to answer "the last 5 in-review sessions across my apps". Aggregates server-side and returns newest matches first, each tagged with its organization/application. Omit organization_id/application_id to span everything; pass them to narrow scope. status accepts: ${SESSION_STATUSES}.`,
+      description: `Search verification sessions ACROSS ALL your apps and organizations in a single call — the efficient way to answer "the last 5 in-review sessions across my apps". Aggregates server-side and returns newest matches first, each tagged with its organization/application. Omit organization_id/application_id to span everything; pass them to narrow scope.`,
       inputSchema: {
         type: "object" as const,
         properties: {
           status: { type: "string", description: `Filter by session status (${SESSION_STATUSES}). Several statuses separated by commas match any of them, e.g. "Not Started,In Progress".` },
           session_kind: { type: "string", enum: ["user", "business", "all"], description: "KYC (user), KYB (business), or all" },
           workflow_id: { type: "string", description: "Filter by workflow UUID" },
-          search: { type: "string", description: "Free-text search" },
+          search: { type: "string", description: SESSION_SEARCH_DESCRIPTION },
           date_from: { type: "string", description: "ISO date lower bound" },
           date_to: { type: "string", description: "ISO date upper bound" },
           ...LAST_N_DAYS_PROP,

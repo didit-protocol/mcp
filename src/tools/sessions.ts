@@ -518,7 +518,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_session_list",
-      description: `List verification sessions for ONE app. If you have multiple apps (or pass no scope) this automatically spans every app, newest first - but didit_session_search is the canonical cross-app tool and what to reach for to answer "my last N sessions". status accepts session-level values: ${SESSION_STATUSES}. HOW MANY: \`count\` stops at 100 (100 means "100 or more"); when it does, the result adds \`total_count\` (the exact number, from the console's own tab counts) or \`count_is_lower_bound: true\`. Answer "how many" from total_count, never report 100 as the number; limit:1 is enough to count.`,
+      description: `List verification sessions for ONE app. If you have multiple apps (or pass no scope) this automatically spans every app, newest first - but didit_session_search is the canonical cross-app tool and what to reach for to answer "my last N sessions". HOW MANY: \`count\` stops at 100 (100 means "100 or more"); when it does, the result adds \`total_count\` (the exact number, from the console's own tab counts) or \`count_is_lower_bound: true\`. Answer "how many" from total_count, never report 100 as the number; limit:1 is enough to count.`,
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -527,7 +527,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
           session_kind: { type: "string", enum: ["user", "business", "all"], description: "KYC (user), KYB (business), or all" },
           vendor_data: { type: "string", description: "Filter by vendor_data" },
           workflow_id: { type: "string", description: "Filter by workflow UUID" },
-          search: { type: "string", description: "Free-text search" },
+          search: { type: "string", description: "Free-text search. S-<number> finds a session by number exactly." },
           date_from: { type: "string", description: "ISO date lower bound" },
           date_to: { type: "string", description: "ISO date upper bound" },
           limit: { type: "string", description: "Page size (LimitOffset pagination)" },

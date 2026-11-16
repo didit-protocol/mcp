@@ -16,6 +16,16 @@ export const LAST_N_DAYS_PROP = {
   },
 } as const;
 
+/**
+ * The `search` argument of the session search tool (the list tool carries its first half). A person names a session by the
+ * number the console shows (S-2946), so the exact way to find one by number is stated on the
+ * argument itself: a model reads it whenever the tool is offered, and only then. A bare number is
+ * a prefix search that also matches document, personal and phone numbers and vendor_data, which
+ * is how a request for one session returns others.
+ */
+export const SESSION_SEARCH_DESCRIPTION =
+  "Free-text search (name, email, vendor_data, document or phone number). S-<number> finds a user verification by number exactly, B-<number> with session_kind business a business one; numbers are per application. A bare number is a prefix search.";
+
 /** The status a user or business record of the application can have (its own statuses, not a session's). */
 export const ENTITY_STATUSES = ["ACTIVE", "FLAGGED", "BLOCKED"];
 

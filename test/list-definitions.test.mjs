@@ -163,6 +163,27 @@ test("the discovery tools describe a tool to an API key connection without the r
   });
 });
 
+// A person names a session by the number the console shows. An assistant that had the number and
+// no id typed a session id that did not exist (the console Copilot, 11 Nov 2026), and the hint
+// that would have sent it to an exact lookup lived in that assistant's system prompt, where it
+// reached conversations that were never offered this tool. The argument itself says it now. It
+// costs the list nothing: the two descriptions no longer repeat the statuses their `status`
+// argument already lists.
+test("the session search and list tools say how to find a session by its number", async () => {
+  const tools = await listed({ hosted: true }, PERSON);
+  const search = tools.get("didit_session_search");
+  const list = tools.get("didit_session_list");
+  assert.match(search.inputSchema.properties.search.description, /S-<number> finds a user verification by number exactly/);
+  assert.match(search.inputSchema.properties.search.description, /B-<number> with session_kind business/);
+  assert.match(search.inputSchema.properties.search.description, /bare number is a prefix search/);
+  assert.match(list.inputSchema.properties.search.description, /S-<number> finds a session by number exactly/);
+  for (const tool of [search, list]) {
+    // Said once, on the argument that takes it.
+    assert.match(tool.inputSchema.properties.status.description, /Not Started, In Progress, In Review/, tool.name);
+    assert.doesNotMatch(tool.description, /Not Started, In Progress/, tool.name);
+  }
+});
+
 test("the tool list stays within its budget", async () => {
   // Bytes of name, description and input schema: what a model reads on every request. On
   // Claude the full list is about 0.4 tokens per byte.
