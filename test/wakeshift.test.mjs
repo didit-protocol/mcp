@@ -308,9 +308,9 @@ function stubDidit(t, routes) {
   return calls;
 }
 
-async function connect(t, { wakeshift = true, hosted = true, profile, selection, authInfo = AUTH_INFO } = {}) {
+async function connect(t, { wakeshift = true, hosted = true, profile, selection, authInfo = AUTH_INFO, watchable } = {}) {
   const wake = createTestClient({ app: "Didit" });
-  const dw = createDiditWakeshift(wake);
+  const dw = createDiditWakeshift(wake, watchable ? { watchable } : {});
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const server = createServer({ hosted, profile, selection, wakeshift: wakeshift ? dw.hooks : undefined });
   await server.connect(serverTransport);
@@ -387,6 +387,41 @@ test("a Wakeshift failure never fails didit_session_create (the session may be b
   const res = await call(client, "didit_session_create", { workflow_id: "wf-1" });
   assert.equal(res.isError, undefined);
   assert.equal(res.structuredContent.session_id, SESSION);
+  assert.deepEqual(wake.subscriptions, []);
+});
+
+test("a call for an organization wakes are not on for subscribes nothing, and the tool answers as it does without a watch", async (t) => {
+  // WAKESHIFT_ORGANIZATIONS, the second check (wakeshift-organizations.ts): asked where each watch is made.
+  stubDidit(t, {
+    "POST /session/": { body: { session_id: SESSION, url: "https://verify.didit.me/x", session_token: "st" }, status: 201 },
+    [`GET /session/${SESSION}/decision/`]: { body: { session_id: SESSION, status: "In Review" } },
+  });
+  let asked = 0;
+  // The check may read the person's organizations, so it is awaited: a promise answers like a value.
+  const { client, wake } = await connect(t, { watchable: async () => ((asked += 1), false) });
+
+  const created = await call(client, "didit_session_create", { workflow_id: "wf-1" });
+  assert.equal(created.isError, undefined, "the session is still created");
+  assert.equal(created.structuredContent.session_id, SESSION);
+
+  const watched = await call(client, "didit_session_watch", { session_id: SESSION });
+  assert.equal(watched.isError, undefined, "the read still answers");
+  assert.deepEqual(
+    { status: watched.structuredContent.status, watching: watched.structuredContent.watching },
+    { status: "In Review", watching: false },
+  );
+
+  assert.deepEqual(wake.subscriptions, [], "nothing was subscribed for either call");
+  assert.equal(asked, 2, "asked once per call that would have made a watch");
+});
+
+test("the watch check is asked after the access check: a session the caller cannot read is refused before it", async (t) => {
+  stubDidit(t, {});
+  let asked = 0;
+  const { client, wake } = await connect(t, { watchable: () => ((asked += 1), true) });
+  const res = await call(client, "didit_session_watch", { session_id: SESSION });
+  assert.equal(res.isError, true);
+  assert.equal(asked, 0);
   assert.deepEqual(wake.subscriptions, []);
 });
 

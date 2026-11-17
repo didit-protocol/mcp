@@ -105,6 +105,18 @@ destination configured.
 headers. The bodies below are the whole contract; the server drops fields it
 doesn't know.
 
+**Add `organization_id` to every body**: the ID of the organization that owns
+the application. It is the one field outside the tables below, the same on all
+four routes, a string of at most 200 characters, and optional. The server reads
+it and never forwards it: Wakeshift isn't told which organization something
+belongs to. It decides one thing. A server that turns wakes on for a list of
+organizations (`WAKESHIFT_ORGANIZATIONS`, under "Configuring the MCP server")
+emits a notification only when its organization is on the list, and answers
+`204` without emitting when it isn't, or when the body names none. A backend
+may apply the same list at its end and not send the others at all, which saves
+the requests; the server's list is the one that decides what reaches
+Wakeshift.
+
 ### Session status: `/internal/events/session-status-updated`
 
 Send it every time a verification session's status changes: wherever the
@@ -358,7 +370,7 @@ notify_mcp("session-import-finished", {
 
 | Status | Meaning | Retry? |
 | --- | --- | --- |
-| `204` | Done: emitted, already emitted for this change, or a status that wakes nobody. | No |
+| `204` | Done: emitted, already emitted for this change, a status that wakes nobody, or an organization wakes aren't on for. | No |
 | `400` | The body isn't valid JSON, or a field is missing or the wrong type. The response's `fields` lists which. | No: fix the sender |
 | `401` | Missing, invalid or stale signature. | No: check the secret and the clock |
 | `404` | The route is off: the server has no `DIDIT_EVENTS_SECRET` or no `WAKESHIFT_KEY`. | No: drop it |
@@ -394,6 +406,7 @@ memory, so no session affinity is needed.
 | --- | --- |
 | `WAKESHIFT_KEY` | The Wakeshift app key (`wst_…`), from the Wakeshift console. |
 | `DIDIT_EVENTS_SECRET` | The shared signing secret, `whsec_…`. |
+| `WAKESHIFT_ORGANIZATIONS` | Optional. The organizations wakes are on for: a comma-separated list of organization IDs. Unset, or a list that names `*`: every organization. Set and empty: none. |
 
 With both `WAKESHIFT_KEY` and `DIDIT_EVENTS_SECRET` set, on the HTTP transport,
 the server mounts the routes, offers the three watch tools on `/mcp` and
@@ -401,6 +414,33 @@ the server mounts the routes, offers the three watch tools on `/mcp` and
 OAuth or an API key), and lets the tools above subscribe. With either
 missing, Wakeshift is off: no routes (`404`), no new tools, every tool, description and prompt as before, and nothing is sent to Wakeshift. The ChatGPT catalog
 (`/mcp/chatgpt`) and the stdio server never offer it.
+
+`WAKESHIFT_ORGANIZATIONS` rolls it out to some organizations first. With a
+list, three things decide, each on its own:
+
+- **What a connection is offered.** An application API key is its
+  application's organization, and a sign-in whose token names an organization
+  is that one: listed, it is offered wakes; not listed, the server is the
+  server it is with Wakeshift off for it (no watch tool, no description
+  change). Most sign-ins name no organization. Such a person is offered wakes
+  when they belong to a listed organization; the server reads their
+  organizations with their own token and remembers the answer for ten minutes.
+  If that read fails the connection is served as with Wakeshift off, and the
+  next request asks again.
+- **What a call may watch.** A watch is made only when the call acts in a
+  listed organization: the `organization_id` it passes, the token's, the API
+  key's, or the caller's only one. A person with several organizations who
+  names none (watching a session by its ID) can watch when every organization
+  they belong to is listed, since the session belongs to one of them;
+  otherwise they name the organization on the call, and the tool's read is
+  made in it. When a call may not watch, nothing subscribes and the tool
+  answers as it does when Wakeshift won't wake the caller (a watch tool with
+  `watching: false`). So belonging to a listed organization never makes
+  another one of the person's watchable.
+- **What is emitted.** A notification about an organization that isn't listed,
+  or one that names none, is answered `204` and never emitted.
+
+The startup line says how many organizations wakes are on for, never which.
 
 Generate a secret with, for example:
 

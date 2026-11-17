@@ -117,8 +117,20 @@ export function verify(key: Buffer, headers: SignatureHeaders, body: string, now
 export type PushResult = { status: number; body?: Record<string, unknown> };
 
 /**
+ * `organization_id`: the organization the notification is about. Every body may carry it and none
+ * of the body schemas names it, so it is read here and never reaches an emit: Wakeshift is not
+ * told which organization something belongs to. It decides one thing, whether this server emits
+ * the notification at all (wakeshift-organizations.ts).
+ */
+const organizationIdField = id.optional();
+
+/**
  * Handles one backend notification: verifies it, validates the body, and calls
  * emit. Kept apart from the HTTP framework so it can be tested.
+ *
+ * `accepts` is the roll-out's filter: given the notification's organization (undefined when the
+ * body names none), false acknowledges it without emitting. The sender is answered 204 either
+ * way: a notification this server chose not to forward is not one to retry.
  */
 export async function handleBackendEvent<T>(
   key: Buffer,
@@ -126,6 +138,7 @@ export async function handleBackendEvent<T>(
   rawBody: string,
   schema: z.ZodType<T>,
   emit: (body: T) => Promise<unknown>,
+  accepts: (organizationId: string | undefined) => boolean = () => true,
 ): Promise<PushResult> {
   if (!verify(key, headers, rawBody)) {
     return { status: 401, body: { error: "invalid_signature" } };
@@ -137,12 +150,15 @@ export async function handleBackendEvent<T>(
     return { status: 400, body: { error: "invalid_json" } };
   }
   const result = schema.safeParse(parsed);
-  if (!result.success) {
+  const organizationId = organizationIdField.safeParse((parsed as { organization_id?: unknown } | null)?.organization_id);
+  if (!result.success || !organizationId.success) {
+    const issues = result.success ? [] : result.error.issues.map((i) => i.path.join("."));
     return {
       status: 400,
-      body: { error: "invalid_body", fields: [...new Set(result.error.issues.map((i) => i.path.join(".")))] },
+      body: { error: "invalid_body", fields: [...new Set([...issues, ...(organizationId.success ? [] : ["organization_id"])])] },
     };
   }
+  if (!accepts(organizationId.data)) return { status: 204 };
   try {
     await emit(result.data);
   } catch (err) {

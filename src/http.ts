@@ -23,8 +23,11 @@ import { DiditTokenVerifier } from "./auth/verifier";
 import { IntrospectionTokenVerifier } from "./auth/introspection-verifier";
 import { CachingTokenVerifier } from "./auth/cached-verifier";
 import { MAX_EVENT_BODY_BYTES, handleBackendEvent, signingKey } from "./backend-events";
-import type { DiditWakeshift } from "./wakeshift";
-import {MCP_PORT,
+import { getOrgAppMap } from "./orgapp";
+import type { DiditWakeshift, WakeshiftHooks } from "./wakeshift";
+import { type ConnectionAuth, createWakeshiftAccess, describeOrganizations, organizationAllowed, wakeshiftOrganizations } from "./wakeshift-organizations";
+import {
+  MCP_PORT,
   MCP_RESOURCE_URI,
   MCP_SCOPES_SUPPORTED,
   MCP_TOKEN_VERIFY_MODE,
@@ -34,10 +37,14 @@ import {MCP_PORT,
   DIDIT_OIDC_AUTHORIZE_URL,
   DIDIT_OIDC_TOKEN_URL,
   DIDIT_OIDC_REGISTRATION_URL,
-  DIDIT_JWKS_URL, SERVER_VERSION, setServerVersion,
+  DIDIT_JWKS_URL,
+  SERVER_VERSION,
+  setServerVersion,
   MCP_PUBLIC_DISCOVERY,
   MCP_PAYMENTS_PATH,
-  SERVER_FEATURES } from "./config";
+  SERVER_FEATURES,
+  requestContext,
+} from "./config";
 import { connectPage } from "./connect-page";
 import { holdIdleConnections } from "./connection-timeouts";
 import { LATE_RELEASE_LOOKUP, resolveReleaseVersion } from "./release-version";
@@ -99,6 +106,10 @@ const PUBLIC_DISCOVERY_METHODS = new Set(["initialize", "notifications/initializ
  * so neither the published package nor an image built without development dependencies carries
  * it, and whoever turns the feature on installs it knowingly. Turned on without it, the server
  * stops at startup and says which package is missing.
+ *
+ * WAKESHIFT_ORGANIZATIONS (wakeshift-organizations.ts) limits all of it to a list of
+ * organizations: a connection of any other organization is served exactly as with Wakeshift off,
+ * and a backend notification about any other organization is acknowledged and never emitted.
  */
 const WAKESHIFT_SDK = "@wakeshift/sdk";
 
@@ -111,7 +122,18 @@ export const wakeshiftModule = {
   load: (): typeof import("./wakeshift") => require("./wakeshift"),
 };
 
-function mountWakeshift(app: express.Express): DiditWakeshift | undefined {
+/** What one connection is handed: the hooks, when wakes are offered to it (wakeshift-organizations.ts). */
+type WakeshiftFor = (authInfo: ConnectionAuth) => Promise<WakeshiftHooks | undefined>;
+
+/**
+ * The organizations a signed-in person belongs to, read with the person's own token. It is the map
+ * every scoped tool call already reads (orgapp.ts, remembered there per token), so for a person
+ * who goes on to use the server this costs nothing more.
+ */
+const membershipsOf = (token: string): Promise<string[]> =>
+  requestContext.run({ accessToken: token }, async () => (await getOrgAppMap()).map((organization) => organization.orgId));
+
+function mountWakeshift(app: express.Express): WakeshiftFor | undefined {
   const secret = process.env.DIDIT_EVENTS_SECRET?.trim();
   const key = process.env.WAKESHIFT_KEY?.trim();
   if (secret && !key) {
@@ -122,6 +144,7 @@ function mountWakeshift(app: express.Express): DiditWakeshift | undefined {
   if (!secret || !key) return undefined;
 
   const signing = signingKey(secret); // throws at startup on a malformed secret
+  const organizations = wakeshiftOrganizations();
   let wakeshift: DiditWakeshift;
   try {
     wakeshift = wakeshiftModule.load().createWakeshiftFromEnv();
@@ -154,14 +177,22 @@ function mountWakeshift(app: express.Express): DiditWakeshift | undefined {
           typeof req.body === "string" ? req.body : "",
           route.schema as any,
           route.emit as (body: unknown) => Promise<unknown>,
+          // A notification about an organization wakes are not on for is answered and dropped here,
+          // so nothing of it reaches Wakeshift. With a list, one that names no organization is too.
+          (organizationId) => organizationAllowed(organizations, organizationId),
         );
         if (result.body) res.status(result.status).json(result.body);
         else res.status(result.status).end();
       });
     });
   }
-  console.error(`[didit-mcp] Wakeshift on: backend events at POST /internal/events/*; watch tools offered on /mcp and /mcp/payments.`);
-  return wakeshift;
+  console.error(
+    `[didit-mcp] Wakeshift on for ${describeOrganizations(organizations)}: backend events at POST /internal/events/*; ` +
+      "watch tools offered on /mcp and /mcp/payments.",
+  );
+  const hooks = wakeshift.hooks;
+  const offered = createWakeshiftAccess(organizations, membershipsOf);
+  return async (authInfo) => ((await offered(authInfo)) ? hooks : undefined);
 }
 
 export async function createHttpApp(): Promise<express.Express> {
@@ -187,7 +218,7 @@ export async function createHttpApp(): Promise<express.Express> {
   app.get(SESSION_PDF_DOWNLOAD_PATH, downloadSessionPdf);
   app.get(SESSION_SIGNATURE_DOWNLOAD_PATH, downloadSessionSignatureFile);
   // Signed by the Didit backend, not by an MCP Bearer; before express.json, which would consume the body.
-  const wakeshift = mountWakeshift(app);
+  const wakeshiftFor = mountWakeshift(app);
   // Base64 file inputs (*_base64 tool params, 15MB decoded cap + ~33% base64
   // overhead) must fit in the JSON-RPC body. Overridable per environment.
   app.use(express.json({ limit: process.env.MCP_JSON_BODY_LIMIT || "25mb" }));
@@ -373,7 +404,7 @@ export async function createHttpApp(): Promise<express.Express> {
             profile: endpoint.profile,
             moneyTools: endpoint.moneyTools,
             selection,
-            wakeshift: wakeshift?.hooks,
+            wakeshift: await wakeshiftFor?.(req.auth),
           });
           if (reply) res.json(reply);
           else res.status(202).end();
@@ -397,7 +428,7 @@ export async function createHttpApp(): Promise<express.Express> {
         selection,
         // What the server says about itself depends on who connected (guidance.ts).
         apiKey: Boolean(apiKeyScopeOf(req.auth)),
-        wakeshift: wakeshift?.hooks,
+        wakeshift: await wakeshiftFor?.(req.auth),
       });
       // Answer in the shape the caller named (accept.ts): an event stream when it named one,
       // which is the stream every current client gets, JSON when it only accepts JSON — a format the

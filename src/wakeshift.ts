@@ -32,8 +32,9 @@ import { Wakeshift, encodeArgValue, isWakeshiftError, type AnyEvent, type Subscr
 import { z } from "zod";
 import * as sessions from "./tools/sessions";
 import * as transactions from "./tools/transactions";
-import { resolveApplicationId } from "./config";
-import { ORG_APP_PROPS } from "./orgapp";
+import { requestContext, resolveApplicationId } from "./config";
+import { createWatchable, wakeshiftOrganizations } from "./wakeshift-organizations";
+import { ORG_APP_PROPS, getOrgAppMap } from "./orgapp";
 import { apiKeyScopeOf } from "./api-key-connection";
 import { TOOL_CALL_READ, TOOL_CALL_WRITE } from "./tools/discovery";
 import {
@@ -182,7 +183,18 @@ export function wakeConfirmed(sub: Subscription): boolean {
 }
 
 /** Defines Didit's events on a Wakeshift client, and everything that subscribes and emits them. */
-export function createDiditWakeshift(wake: Wakeshift) {
+export type DiditWakeshiftOptions = {
+  /**
+   * Whether the call being answered may make a watch. The roll-out's second check
+   * (wakeshift-organizations.ts): asked where each watch is made, after the tool's own access
+   * check. False subscribes nothing, and the tool answers as it does when Wakeshift won't wake
+   * the caller: a watch tool with `watching: false`, a tool that subscribes with its own result.
+   */
+  watchable?: () => boolean | Promise<boolean>;
+};
+
+export function createDiditWakeshift(wake: Wakeshift, options: DiditWakeshiftOptions = {}) {
+  const watchable = options.watchable ?? (() => true);
   // Every argument is an ID: encodeArgValue keeps case-sensitive IDs apart.
   const arg = (value: string) => encodeArgValue(value);
 
@@ -386,6 +398,9 @@ export function createDiditWakeshift(wake: Wakeshift) {
    * never turns the result into an error.
    */
   async function after(name: string, args: Record<string, any>, result: any): Promise<void> {
+    // Every tool call passes through here. Only a tool that subscribes after its own work is a
+    // question for the roll-out; the watch tools ask it themselves, in watch().
+    if (own(subscribing, name) === undefined || WAKESHIFT_TOOL_NAMES.includes(name) || !(await watchable())) return;
     try {
       switch (name) {
         case "didit_session_create": {
@@ -456,7 +471,9 @@ export function createDiditWakeshift(wake: Wakeshift) {
         "decision with didit_session_get_decision.",
       inputSchema: {
         type: "object",
-        properties: { session_id: { type: "string", description: "Session UUID" } },
+        // The two routing ids, as on the tools it extends: a person with several organizations
+        // names the one the session belongs to, and the read below is then made in it.
+        properties: { session_id: { type: "string", description: "Session UUID" }, ...ORG_APP_PROPS },
         required: ["session_id"],
       },
     },
@@ -484,6 +501,7 @@ export function createDiditWakeshift(wake: Wakeshift) {
    * Wakeshift failure is logged and answers the same: the read already succeeded.
    */
   async function watch<E extends AnyEvent>(name: string, event: E, args: Record<string, string>, opts: SubscribeOptions): Promise<boolean> {
+    if (!(await watchable())) return false;
     const current = wake.currentCall();
     let sub: Subscription;
     try {
@@ -574,5 +592,15 @@ export type DiditWakeshift = ReturnType<typeof createDiditWakeshift>;
 
 /** The production client: WAKESHIFT_KEY from the environment. */
 export function createWakeshiftFromEnv(): DiditWakeshift {
-  return createDiditWakeshift(new Wakeshift());
+  // The organization a call acts in is the one its dispatch resolved (index.ts): an explicit
+  // organization_id, the token's, the API key's, or the caller's only one. For a call that
+  // resolved none, createWatchable asks for the person's organizations: the map every scoped call
+  // already reads, remembered per token (orgapp.ts).
+  return createDiditWakeshift(new Wakeshift(), {
+    watchable: createWatchable(
+      wakeshiftOrganizations(),
+      () => requestContext.getStore()?.organizationId,
+      async () => (await getOrgAppMap()).map((organization) => organization.orgId),
+    ),
+  });
 }
