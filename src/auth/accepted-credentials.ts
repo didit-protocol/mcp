@@ -77,13 +77,23 @@ export function isAcceptedToken(credential: IntrospectedCredential, consoleClien
  * `InvalidTokenError` is what the bearer middleware answers with a 401 whose
  * `error_description` carries this text and whose `error_uri` is the docs page, so a person
  * reads the reason in the client instead of diagnosing "my account looks empty".
+ *
+ * Its own type, so the refusal line can name this cause: a 401 for a token this server
+ * does not accept and a 401 for an expired one are answered identically, and only the error says
+ * which it was. Being an `InvalidTokenError`, it is answered exactly as before.
  */
+export class UnsupportedCredentialError extends InvalidTokenError {
+  constructor() {
+    super(
+      "This is a Didit token issued to an application or another client (the token POST /programmatic/login " +
+        "returns is one), not a Didit MCP sign-in, so the hosted Didit MCP cannot act for it. Connect by " +
+        "signing in with Didit (OAuth) in your MCP client, or with an application API key in the x-api-key " +
+        `header. See ${MCP_AUTH_DOCS_URL}`,
+      MCP_AUTH_DOCS_URL,
+    );
+  }
+}
+
 export function unsupportedCredentialError(): InvalidTokenError {
-  return new InvalidTokenError(
-    "This is a Didit token issued to an application or another client (the token POST /programmatic/login " +
-      "returns is one), not a Didit MCP sign-in, so the hosted Didit MCP cannot act for it. Connect by " +
-      "signing in with Didit (OAuth) in your MCP client, or with an application API key in the x-api-key " +
-      `header. See ${MCP_AUTH_DOCS_URL}`,
-    MCP_AUTH_DOCS_URL,
-  );
+  return new UnsupportedCredentialError();
 }

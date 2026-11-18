@@ -20,6 +20,7 @@ delete process.env.MCP_DEFAULT_ORG;
 const require = createRequire(import.meta.url);
 const { createHttpApp } = require("../dist/http.js");
 const { profileServesWidgets } = require("../dist/chatgpt-app.js");
+const { countableLine, refusalReasonOf } = require("../dist/auth/refusal-log.js");
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -122,7 +123,7 @@ test("an unauthenticated call names the missing credential and the client that m
     assert.equal(answer.status, 401);
     assert.equal(lines.length, 1, JSON.stringify(lines));
     const [line] = lines;
-    assert.equal(line.message, "hosted request refused");
+    assert.equal(line.message, "hosted request refused: missing_credential status=401 credential=none");
     assert.equal(line.level, "warn");
     assert.equal(line.path, "/mcp");
     assert.equal(line.method, "POST");
@@ -302,7 +303,7 @@ test("a request cut off before its answer is logged, with how long it stayed ope
 
     assert.equal(lines.length, 1, JSON.stringify(lines));
     const [line] = lines;
-    assert.equal(line.message, "hosted request not answered");
+    assert.equal(line.message, "hosted request not answered: client_closed status=0 credential=authorization");
     assert.equal(line.reason, "client_closed");
     assert.equal(line.status, 0, "nothing was sent, so there is no status to report");
     assert.equal(line.path, "/mcp");
@@ -343,4 +344,207 @@ test("a profile endpoint logs its own refusal once, not once per endpoint", asyn
     assert.equal(lines[0].path, "/mcp/chatgpt");
     assert.equal(lines[0].reason, "missing_credential");
   });
+});
+
+/**
+ * what the log store keeps, and therefore what a person can count.
+ *
+ * The sidecar stores a JSON line's `message` as the line body and, of the line's other top-level
+ * keys, only the ones the logging contract reserves (didit-infra/infra-brain
+ * `contracts/logging-contract.md` v2 §5 - the list below) plus the ones the pipeline adds itself.
+ * Every other key is dropped before the line reaches the store. A refusal that says which it was in
+ * a field therefore arrives as the bare text `hosted request refused`: about 1,500 of those in 53
+ * minutes of production, indistinguishable from each other, and a filter for `401` inside them
+ * matches none. These tests read the line the way the store does — the body alone — so a change that
+ * keeps the reason in a field fails here even though the field is right in the emitted JSON.
+ */
+const CONTRACT_RESERVED_FIELDS = [
+  // correlation (§7)
+  "trace_id",
+  "span_id",
+  "amzn_trace_id",
+  // HTTP
+  "method",
+  "path",
+  "status_code",
+  "duration_ms",
+  "remote_addr",
+  "request",
+  // tasks
+  "task_id",
+  "task_name",
+  "event",
+  "data",
+  // code
+  "name",
+  "module",
+  "funcName",
+  "lineno",
+  // diagnostics
+  "error",
+  // business
+  "conversation_id",
+  "request_id",
+  // versioning
+  "log_schema",
+];
+/** What the pipeline itself puts on a line; it keeps its own keys as well as the reserved ones. */
+const PIPELINE_ADDED_FIELDS = ["levelname", "app_version"];
+
+/** One line as the store has it: the body a text filter searches, and the metadata beside it. */
+function stored(line) {
+  const metadata = {};
+  for (const [key, value] of Object.entries(line)) {
+    if (key === "message") continue;
+    if (CONTRACT_RESERVED_FIELDS.includes(key) || PIPELINE_ADDED_FIELDS.includes(key)) metadata[key] = value;
+  }
+
+  return { body: line.message ?? "", metadata };
+}
+
+/** How many stored bodies a plain text filter matches: the count the issue asks a person to make. */
+const countIn = (bodies, filter) => bodies.filter((body) => body.includes(filter)).length;
+
+test("a stored refusal says its reason and status in the text, in one fixed shape", async () => {
+  const lines = [];
+  const run = async (options) => {
+    const answer = await refusalsOf(() => request(options.server, options.request));
+
+    return answer.lines.map(stored);
+  };
+  introspection = () => json({ active: false });
+  await withApp(async (server) => {
+    // No credential at all, a Bearer the auth service refuses, a reachability probe, a body the
+    // parser rejected: four different refusals, four different answers to "why".
+    lines.push(...(await run({ server, request: { body: INITIALIZE } })));
+    lines.push(...(await run({ server, request: { body: INITIALIZE, headers: { Authorization: "Bearer person.access.token" } } })));
+    lines.push(...(await run({ server, request: { method: "GET" } })));
+    lines.push(...(await run({ server, request: { raw: '{"jsonrpc": "2.0",' } })));
+
+    const bodies = lines.map((line) => line.body);
+
+    assert.deepEqual(bodies, [
+      "hosted request refused: missing_credential status=401 credential=none",
+      "hosted request refused: credential_refused status=401 credential=authorization",
+      "hosted request refused: unsupported_method status=405 credential=none",
+      "hosted request refused: bad_request status=400 credential=none",
+    ]);
+    // Countable the way the issue counted in production: the status is in the text the store keeps,
+    // so a filter for `401` matches the two 401s and nothing else.
+    assert.equal(countIn(bodies, "status=401"), 2);
+    assert.equal(countIn(bodies, "status=405"), 1);
+    assert.equal(countIn(bodies, "credential=authorization"), 1);
+    assert.equal(countIn(bodies, "hosted request refused: "), 4);
+  });
+});
+
+test("a token the auth service calls active but this server does not accept has its own reason", async () => {
+  // The token `POST /programmatic/login` returns: active, issued to one of the account's own
+  // applications. It is answered 401 like an expired token, so the two can only be told apart by a
+  // reason of their own — with v5.1.71's new refusal, a total was all the store could give.
+  introspection = () =>
+    json({
+      active: true,
+      client_id: "client-of-the-application",
+      sub: "5bfe5319-625d-487c-a9c3-8f3cf50750b8",
+      claims: ["read:picture"],
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+  await withApp(async (server) => {
+    const { answer, lines } = await refusalsOf(() =>
+      request(server, { body: INITIALIZE, headers: { Authorization: "Bearer application.token.value" } }),
+    );
+
+    assert.equal(answer.status, 401, answer.raw.slice(0, 200));
+    assert.equal(lines.length, 1, JSON.stringify(lines));
+    assert.equal(stored(lines[0]).body, "hosted request refused: unsupported_credential status=401 credential=authorization");
+    // Never the credential, and never a path with ids in it.
+    assert.ok(!JSON.stringify(lines).includes("application.token.value"), "the token must never reach the log");
+  });
+});
+
+test("a request the store sees cut off says so, and how long it was open", async () => {
+  introspection = () => new Promise(() => {});
+  await withApp(async (server) => {
+    const { lines } = await refusalsOf(async () => {
+      const { port } = server.address();
+      const payload = JSON.stringify(INITIALIZE);
+      const req = http.request({
+        host: "127.0.0.1",
+        port,
+        path: "/mcp",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+          Accept: "application/json, text/event-stream",
+          Authorization: "Bearer person.access.token",
+        },
+      });
+      req.on("error", () => {});
+      req.write(payload);
+      req.end();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      req.destroy();
+
+      return {};
+    });
+
+    assert.equal(lines.length, 1, JSON.stringify(lines));
+    const [line] = lines.map(stored);
+
+    // Nothing was answered, so there is no HTTP status to report: `status=0` is the dropped
+    // connection, which is the 502 shape a connector leaves behind.
+    assert.equal(line.body, "hosted request not answered: client_closed status=0 credential=authorization");
+  });
+});
+
+test("every reason has its exact text, pinned so a new one cannot slip in unread", () => {
+  // The closed list of reasons and the status and credential kind that produce each one. The README
+  // table ("Log lines you can count") says what each counts; this test says what each reads as.
+  const reasons = [
+    [401, "none", "missing_credential"],
+    [401, "authorization", "credential_refused"],
+    [401, "x-api-key", "credential_refused"],
+    [401, "both", "credential_refused"],
+    [403, "x-api-key", "forbidden"],
+    [405, "none", "unsupported_method"],
+    [406, "authorization", "not_acceptable"],
+    [400, "none", "bad_request"],
+    [413, "none", "bad_request"],
+    [415, "none", "bad_request"],
+    [500, "authorization", "server_error"],
+    [503, "none", "server_error"],
+  ];
+  const pinned = {
+    missing_credential: "hosted request refused: missing_credential status=401 credential=none",
+    credential_refused: "hosted request refused: credential_refused status=401 credential=authorization",
+    forbidden: "hosted request refused: forbidden status=403 credential=x-api-key",
+    unsupported_method: "hosted request refused: unsupported_method status=405 credential=none",
+    not_acceptable: "hosted request refused: not_acceptable status=406 credential=authorization",
+    bad_request: "hosted request refused: bad_request status=400 credential=none",
+    server_error: "hosted request refused: server_error status=500 credential=authorization",
+  };
+
+  for (const [status, credential, reason] of reasons) {
+    assert.equal(refusalReasonOf(status, credential), reason, `${status} with ${credential}`);
+  }
+  for (const [reason, text] of Object.entries(pinned)) {
+    const [status, credential] = reasons.find((entry) => entry[2] === reason).slice(0, 2);
+
+    assert.equal(countableLine("hosted request refused", reason, status, credential), text);
+  }
+  // The one reason only the verification path can produce (accepted-credentials.ts), and the
+  // not-answered line, in the same fixed shape.
+  assert.equal(
+    countableLine("hosted request refused", "unsupported_credential", 401, "authorization"),
+    "hosted request refused: unsupported_credential status=401 credential=authorization",
+  );
+  assert.equal(
+    countableLine("hosted request not answered", "client_closed", 0, "none"),
+    "hosted request not answered: client_closed status=0 credential=none",
+  );
+  // Nothing a status cannot place is invented: a 404 from an unrelated path is not a refusal.
+  assert.equal(refusalReasonOf(404, "none"), undefined);
+  assert.equal(refusalReasonOf(200, "authorization"), undefined);
 });

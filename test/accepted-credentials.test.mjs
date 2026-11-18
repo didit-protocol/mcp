@@ -62,7 +62,9 @@ test("a token minted for an application (POST /programmatic/login) is not", () =
 test("the refusal names both supported ways in and links the docs page", () => {
   const error = unsupportedCredentialError();
 
-  assert.equal(error.constructor.name, "InvalidTokenError");
+  // Its own type, so the refusal line names this cause rather than an expired token;
+  // still an InvalidTokenError, so the bearer middleware answers it the same way (401 below).
+  assert.equal(error.constructor.name, "UnsupportedCredentialError");
   assert.match(error.message, /programmatic\/login/);
   assert.match(error.message, /sign(ing)? in with Didit \(OAuth\)/);
   assert.match(error.message, /application API key in the x-api-key header/);

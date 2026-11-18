@@ -17,11 +17,18 @@
  * says which, and how long the request was open, so the next report is one query instead of a
  * reconstruction (the same reason the console logs refused authorizations).
  *
+ * Why the reason and the status are in the message text: the log pipeline keeps a line's
+ * `message` as the line body and only the fields the logging contract reserves, so a reason that
+ * travelled as a field reached the store as `hosted request refused` alone - about 1,500 identical
+ * lines an hour, and a filter for `401` inside them matched none. `countableLine` is the fixed shape.
+ *
  * What it never says: the credential. Only which header carried one, and the reason — never a token,
  * an API key or a prefix of either. Deliberately not sampled: the arrival time is the evidence, and a
  * sample would drop exactly the request someone is asking about.
  */
 import type { Request, Response } from "express";
+
+import { UnsupportedCredentialError } from "./accepted-credentials";
 
 /** Which request header carried the caller's credential, as it arrived (before any rewrite). */
 export type CredentialHeader = "none" | "authorization" | "x-api-key" | "both";
@@ -30,6 +37,9 @@ export type CredentialHeader = "none" | "authorization" | "x-api-key" | "both";
 export type RefusalReason =
   | "missing_credential"
   | "credential_refused"
+  // The auth service calls the token active, and this server does not accept the kind of credential it
+  // is (accepted-credentials.ts): 401 like an expired token, but a different cause and a different fix.
+  | "unsupported_credential"
   | "forbidden"
   | "unsupported_method"
   | "not_acceptable"
@@ -43,6 +53,8 @@ interface Caller {
   credential: CredentialHeader;
   client: string;
   forwarded?: string;
+  /** Why the auth path refused it, when the HTTP status alone cannot say (noteRefusalReason). */
+  reason?: RefusalReason;
 }
 
 const callers = new WeakMap<Request, Caller>();
@@ -100,6 +112,37 @@ export function refusalReasonOf(status: number, credential: CredentialHeader): R
 }
 
 /**
+ * Note why the auth path refused this request, when its status cannot say it. The bearer middleware
+ * answers a 401 for a token the auth service refuses (expired, revoked) and for a token it calls
+ * active but whose kind this server does not accept (accepted-credentials.ts); the line says which,
+ * because the fix differs - sign in again, or connect with a credential this server takes.
+ */
+export function noteRefusalReason(req: Request, error: unknown): void {
+  const caller = callers.get(req);
+
+  if (caller && error instanceof UnsupportedCredentialError) caller.reason = "unsupported_credential";
+}
+
+/**
+ * The body the log store keeps: `<prefix>: <reason> status=<status> credential=<kind>`.
+ *
+ * The reason, the status and the kind of header are IN the text on purpose. The pipeline stores a
+ * line's `message` as the line body and keeps only the fields the logging contract reserves, so a
+ * reason that travelled as a field arrived in the store as `hosted request refused` alone: about
+ * 1,500 such lines an hour in production, every one of them identical, and a filter for `401`
+ * inside them matched none. Nothing free-form reaches the text: the reason is one of
+ * the closed lists above, and the credential is the name of the header, never its value.
+ */
+export function countableLine(
+  prefix: "hosted request refused" | "hosted request not answered",
+  reason: RefusalReason | NoAnswerReason,
+  status: number,
+  credential: CredentialHeader,
+): string {
+  return `${prefix}: ${reason} status=${status} credential=${credential}`;
+}
+
+/**
  * Watch one request on a hosted endpoint and log how it ended. Mounted before the body parser, so a
  * body it rejects is logged too; the caller has already noted the credentials (`noteRequestCredentials`).
  *
@@ -133,11 +176,12 @@ export function logRefusedHostedRequest(req: Request, path: string, status: numb
   const caller = callers.get(req);
 
   if (!caller) return;
-  const reason = refusalReasonOf(status, caller.credential);
+  // A noted reason is the verifier's own words for a 401; for any other status the answer decides.
+  const reason = (status === 401 ? caller.reason : undefined) ?? refusalReasonOf(status, caller.credential);
   if (!reason) return;
   emit({
     level: "warn",
-    message: "hosted request refused",
+    message: countableLine("hosted request refused", reason, status, caller.credential),
     path: path.slice(0, 64),
     method: text(req.method).toUpperCase().slice(0, 8),
     status,
@@ -154,13 +198,14 @@ export function logUnansweredHostedRequest(req: Request, path: string, res: Resp
 
   if (!caller) return;
   const reason: NoAnswerReason = "client_closed";
+  // 0 when nothing was sent: the caller saw a dropped connection, which is the 502 shape.
+  const status = res.headersSent ? res.statusCode : 0;
   emit({
     level: "warn",
-    message: "hosted request not answered",
+    message: countableLine("hosted request not answered", reason, status, caller.credential),
     path: path.slice(0, 64),
     method: text(req.method).toUpperCase().slice(0, 8),
-    // 0 when nothing was sent: the caller saw a dropped connection, which is the 502 shape.
-    status: res.headersSent ? res.statusCode : 0,
+    status,
     reason,
     credential: caller.credential,
     client: caller.client,

@@ -957,6 +957,36 @@ Configuration for Questionnaire feature.
 
 <!-- END GENERATED FEATURE CONFIG REFERENCE -->
 
+## Log lines you can count
+
+The hosted server writes one line to stderr for a request it refused, and one for a request that ended before its answer. The log pipeline stores a line's `message` as the line body and keeps only the fields the logging contract reserves, so the reason and the status are **in the text itself**, in a fixed shape a plain text filter counts.
+
+| Line | What it counts |
+| --- | --- |
+| `hosted request refused: <reason> status=<status> credential=<kind>` | One request to `/mcp`, `/mcp/chatgpt` or `/mcp/payments` that was answered with a refusal, by why it was refused and with which HTTP status. A successful call writes nothing. |
+| `hosted request not answered: client_closed status=<status> credential=<kind>` | One request that arrived and was cut off before its answer (the client gave up, or the balancer's timeout did): the shape a connector reports as `502`. `status=0` means nothing was sent, so the caller saw a dropped connection. |
+
+`<reason>` is one of these, and a test pins the exact text of each one:
+
+| Reason | Status | What it means |
+| --- | --- | --- |
+| `missing_credential` | 401 | The request carried no `Authorization` and no `x-api-key`. |
+| `credential_refused` | 401 | The auth service did not accept the credential: invalid, expired or revoked. |
+| `unsupported_credential` | 401 | The credential is active, but it is not a kind this server accepts (a token minted for one of your applications - `POST /auth/v2/programmatic/login` returns one - or a delegated token). Signing in again does not fix it; connecting with the other credential does. |
+| `forbidden` | 403 | An application API key was sent to an endpoint that takes a sign-in with Didit. |
+| `unsupported_method` | 405 | A reachability probe with a method the transport does not serve (a `GET`). |
+| `not_acceptable` | 406 | An `Accept` header the transport cannot answer. |
+| `bad_request` | 400, 413, 415 | A body the JSON parser rejected, one over the size limit, or one in a charset it cannot read. |
+| `server_error` | 5xx | The auth service did not answer. Retryable, and not a verdict on the credential. |
+
+`<kind>` is which header carried the credential - `none`, `authorization`, `x-api-key` or `both` - never the credential itself. No line carries a token, a key, a query string or a path with ids in it: the path it keeps as a field is cut at 64 characters.
+
+To count one reason over an hour, match the text with whichever selector your log store uses:
+
+```
+count_over_time({job="didit-mcp-server"} |= "hosted request refused: unsupported_credential" [1h])
+```
+
 ## Contributing
 
 The feature-config contract above is generated - never hand-write a config key into a tool description. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the regeneration workflow and the checks that enforce it.

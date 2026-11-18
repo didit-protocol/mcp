@@ -59,7 +59,9 @@ test("a signed token minted for an application is refused with the same error as
   assert.equal(payload.token_use, undefined);
 
   await assert.rejects(verifier.verifyAccessToken(token), (err) => {
-    assert.equal(err.constructor.name, "InvalidTokenError");
+    // The same answer to the caller (401 invalid_token), under its own type so the refusal line can
+    // count this cause apart from an expired token.
+    assert.equal(err.constructor.name, "UnsupportedCredentialError");
     assert.equal(err.errorCode, "invalid_token");
     assert.match(err.message, /programmatic\/login/);
     assert.match(err.message, /signing in with Didit \(OAuth\)/);

@@ -13,7 +13,7 @@ import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { createServer } from "./index";
 import { compressResponses } from "./compress";
 import { apiKeyScopeOf } from "./api-key-connection";
-import { noteRequestCredentials, watchHostedRequest } from "./auth/refusal-log";
+import { noteRefusalReason, noteRequestCredentials, watchHostedRequest } from "./auth/refusal-log";
 import { answerFormatFor, isBrowserNavigation, namesMcpMediaType } from "./accept";
 import { defaultToolsets, selectionFromRequest } from "./toolsets";
 import { modernGate, isModernRequest, handleModernRpc } from "./mcp-modern";
@@ -347,17 +347,31 @@ export async function createHttpApp(): Promise<express.Express> {
   for (const endpoint of endpoints) {
     // Emits 401 + WWW-Authenticate (pointing at this resource's protected-resource metadata)
     // for unauthenticated calls, and populates req.auth on success.
-    const bearerAuth = requireBearerAuth({
-      verifier,
-      resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(endpoint.resourceUrl),
-    });
+    //
+    // Built per request only so the refusal line can be told what a 401 meant: the
+    // verifier has no request of its own, and the status alone cannot distinguish an expired token
+    // from a credential this server does not accept at all. Nothing else is per request.
+    const bearerAuthFor = (req: express.Request) =>
+      requireBearerAuth({
+        verifier: {
+          verifyAccessToken: async (token: string) => {
+            try {
+              return await verifier.verifyAccessToken(token);
+            } catch (error) {
+              noteRefusalReason(req, error);
+              throw error;
+            }
+          },
+        },
+        resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(endpoint.resourceUrl),
+      });
 
     // Mixed auth (config.ts MCP_PUBLIC_DISCOVERY, off by default): let the protocol-negotiation
     // methods through without a Bearer and require one for everything else. A client cannot know
     // how to authenticate until it has negotiated a protocol version, so hosts that probe with
     // `server/discover` first read an unconditional 401 as "cannot connect" rather than as an
     // OAuth challenge. These three methods disclose only the server name, version, capabilities
-    // and supported versions; the tool catalog and every tool call stay behind `bearerAuth`.
+    // and supported versions; the tool catalog and every tool call stay behind the bearer check.
     // A batched (array) body has no top-level `method`, so it always takes the authenticated path.
     const maybeBearerAuth: express.RequestHandler = (req, res, next) => {
       if (MCP_PUBLIC_DISCOVERY) {
@@ -372,7 +386,7 @@ export async function createHttpApp(): Promise<express.Express> {
         req.headers.authorization = `Bearer ${apiKey.trim()}`;
       }
 
-      return bearerAuth(req, res, next);
+      return bearerAuthFor(req)(req, res, next);
     };
     // API keys connect to the full catalog only. A reduced profile is a reviewed app with its own
     // sign-in (the ChatGPT app), and its data boundary is defined for a person's connection.
