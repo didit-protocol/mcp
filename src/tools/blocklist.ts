@@ -65,7 +65,7 @@ export const BLOCKLIST_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:blocklist", // GET …/blocklist/ → blocklist.py:178
+    permission: ["read:blocklist", "list:blocklist"], // GET …/blocklist/ → blocklist.py:178
     run: (args) => getBlocklist({ ...args, ...pageParams(args) }),
   },
   {

@@ -48,7 +48,12 @@ test("every tool has a type from its annotations, and the counts add up", () => 
   for (const tool of [...catalog.hosted.tools, ...catalog.local_only.tools]) {
     assert.ok(TYPES.has(tool.type), `${tool.name}: ${tool.type}`);
     assert.equal(typeof tool.group, "string", tool.name);
-    assert.ok(tool.permission === null || /^[a-z]+:[a-z-]+$/.test(tool.permission), `${tool.name}: ${tool.permission}`);
+    // One permission, or the whole set the endpoint accepts any one of (read/list on a GET).
+    const permissions = Array.isArray(tool.permission) ? tool.permission : [tool.permission];
+    assert.ok(tool.permission === null || permissions.length > 0, `${tool.name}: ${tool.permission}`);
+    for (const permission of permissions) {
+      assert.ok(permission === null || /^[a-z]+:[a-z-]+$/.test(permission), `${tool.name}: ${permission}`);
+    }
     assert.ok(Array.isArray(tool.required), tool.name);
   }
   const { read, write, destructive, total, tools } = catalog.hosted;

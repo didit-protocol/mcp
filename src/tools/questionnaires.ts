@@ -265,7 +265,7 @@ export const QUESTIONNAIRE_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, ...PAGE_PROPS } },
     },
     access: "read",
-    permission: "read:questionnaires", // GET …/questionnaires/ → questionnaire.py:96
+    permission: ["read:questionnaires", "list:questionnaires"], // GET …/questionnaires/ → questionnaire.py:96
     run: (args) => listQuestionnaires(pageParams(args)),
   },
   {
@@ -338,7 +338,7 @@ export const QUESTIONNAIRE_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:questionnaires", // GET …/questionnaires/{uuid}/ → questionnaire.py:204
+    permission: ["read:questionnaires", "list:questionnaires"], // GET …/questionnaires/{uuid}/ → questionnaire.py:204
     run: (args) => getQuestionnaire(args.questionnaire_id, Boolean(args.include_translations)),
   },
   {

@@ -55,6 +55,13 @@ async function listTools(options, authInfo) {
   return (await listToolsAndInstructions(options, authInfo)).tools;
 }
 
+/** The permission a role must hold: one string, or the whole set the endpoint accepts any one of. */
+function permissionOf(entry) {
+  if (Array.isArray(entry)) return entry.length > 0 ? [...entry] : null;
+
+  return entry;
+}
+
 /** read, write or destructive, from the annotations a client groups tools by. */
 function typeOf(tool) {
   if (tool.annotations?.readOnlyHint) return "read";
@@ -66,8 +73,12 @@ function describe(tool) {
     name: tool.name,
     type: typeOf(tool),
     group: tool._meta?.["anthropic/toolGroup"] ?? null,
-    // The permission the caller's organization role must hold; null when the endpoint has no per-role check.
-    permission: TOOL_PERMISSIONS[tool.name] ?? null,
+    // The permission the caller's organization role must hold; null when the endpoint has no per-role
+    // check. An endpoint that accepts any one of several is published as the WHOLE set, because a role
+    // holding any one of them may run the tool: `create:sessions` or `write:sessions` on the session
+    // views, and `read:sessions` or `list:sessions` on a read the backend accepts either way. A single
+    // permission stays a string, so only the rows that really accept more than one change shape.
+    permission: permissionOf(TOOL_PERMISSIONS[tool.name] ?? null),
     required: [...(tool.inputSchema?.required ?? [])].sort(),
   };
 }

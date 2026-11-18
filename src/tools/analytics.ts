@@ -1,5 +1,6 @@
 import { apiRequest, orgAppPath } from "../config";
 import { getOrgAppMap, mapWithConcurrency, runForScope } from "../orgapp";
+import { leftOutFields, liveReadableScopes, type LeftOutApplication, type LeftOutOrganization } from "../live-access";
 import { applyRelativeWindow } from "../dates";
 
 // Cross-org/app aggregate analytics. The per-app /analytics/ endpoint already returns a
@@ -77,6 +78,9 @@ export async function analytics(args: Record<string, any>): Promise<any> {
   let sessionsStarted = 0;
   let scanned = 0;
   let skipped = 0;
+  // What the fan-out left out because the caller's live membership no longer allows it.
+  let leftOutOrganizations: LeftOutOrganization[] = [];
+  let leftOutApplications: LeftOutApplication[] = [];
 
   function merge(a: any, orgId: string, orgName: string, appId: string, appName: string): void {
     if (!a || typeof a !== "object") return;
@@ -121,9 +125,27 @@ export async function analytics(args: Record<string, any>): Promise<any> {
     merge(a, organization_id, "", application_id, "");
   } else {
     const map = await getOrgAppMap();
-    const pairs = map
-      .filter((o) => !organization_id || o.orgId === organization_id)
-      .flatMap((o) => o.apps.map((ap) => ({ o, ap })));
+    // A call that names an APPLICATION acts in that application only: cut the map to the
+    // organization that lists it (when no organization is named) and to that application BEFORE
+    // asking the live membership, so one question is asked, not one per organization, an unrelated
+    // organization's auth failure cannot fail the call, and left_out_applications never names an
+    // application this call does not read (an internal issue review).
+    const namedApp = application_id ? String(application_id).toLowerCase() : undefined;
+    const scopedMap = map
+      .filter((o) => {
+        if (organization_id && o.orgId !== organization_id) return false;
+        return !namedApp || o.apps.some((ap) => ap.appId.toLowerCase() === namedApp);
+      })
+      .map((o) => (namedApp ? { ...o, apps: o.apps.filter((ap) => ap.appId.toLowerCase() === namedApp) } : o));
+    // The organizations and applications this fan-out is about to read, judged by the caller's
+    // LIVE membership: the map is cached for 60 s, so a removal from an organization,
+    // or an application taken off the membership, would otherwise keep being read here — and the
+    // result would silently merge rows the person may no longer see.
+    const live = await liveReadableScopes(scopedMap);
+    leftOutOrganizations = live.leftOutOrganizations;
+    leftOutApplications = live.leftOutApplications;
+    // The map is already cut to the named application, not every application of the organization.
+    const pairs = live.readable.flatMap((o) => o.apps.map((ap) => ({ o, ap })));
     scanned = pairs.length;
     await mapWithConcurrency(pairs, FANOUT_CONCURRENCY, async ({ o, ap }) => {
       try {
@@ -169,6 +191,7 @@ export async function analytics(args: Record<string, any>): Promise<any> {
     avg_verification_seconds: verificationCount > 0 ? Math.round((verificationSeconds / verificationCount) * 10) / 10 : null,
     ...(include_timeseries ? { timeseries } : {}),
     per_app: perApp,
+    ...leftOutFields(leftOutOrganizations, leftOutApplications),
     note: "Counts are summed across apps (exact). feature_funnel.reached = sessions that REACHED that step (not per-step pass/fail), so 'tried phone verification' = feature_funnel.PHONE.reached (step keys: OCR, LIVENESS, FACE_MATCH, AML, POA, PHONE, EMAIL, NFC, DATABASE_VALIDATION, QUESTIONNAIRE, IP_ANALYSIS, AGE_ESTIMATION, KYB_*) and 'dropped off' is inferred from reached vs finished/approved. conversion_rate recomputed = approved/(approved+declined+in_review).",
   };
 }

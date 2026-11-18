@@ -200,6 +200,18 @@ The MCP is an OAuth 2.1 **resource server**; the Didit console (`business.didit.
 
 Scopes: `didit:management` (workspace operations), `didit:verification` (running checks) and `didit:staff` (Didit staff accounts only; the authorization server never issues it to anyone else). Your console **role** is enforced server-side on every call.
 
+A role change, an application-access change or a membership change applies **on the next call**, on a connection that is already open. The server asks Didit for your current role, permissions and applications on every call and refuses before sending anything, and a call that names no organization or application checks every one it would read before reading it. No reconnect is needed. `didit_context_get` is the one exception: it lists the organizations and applications you have from a copy that can be up to a minute old.
+
+A **removal** and an application-access change apply at once. A **demotion** applies at once to the calls the server judges itself, which is nearly all of them. Three things can still take up to **ten minutes (600 seconds)**, because the verification service keeps its own copy of your role:
+
+- a permission your role has just **gained** may be refused until that copy expires, and the refusal says so;
+- a **demotion** may not be seen on the few calls the server cannot judge on its own — reports and their exports, the Investigator reads and decisions, importing a shared session — so the old role can still be accepted there until that copy expires;
+- `didit_session_get_decision`, `didit_session_update_status` and `didit_session_delete` take only a session id and name no organization, so when no single organization resolves for you (you belong to several, or several applications) the server cannot tell which membership the session belongs to: the verification service alone decides those three calls, and a demotion can be accepted there until its copy expires.
+
+If Didit's sign-in service cannot be reached, the call is refused rather than sent — after two attempts of eight seconds each, and reads included — because nothing has confirmed what you may do. Retrying in a moment is the fix.
+
+A server that verifies tokens locally instead of asking Didit for your role on every call (the `jwks` mode) has no live check to make: there a role change reaches a connection when its token is refreshed, and the verification service's own 600-second copy still applies to the calls it decides.
+
 The hosted server also takes an **application API key** in place of a sign-in, for agents that run with no person present.
 Such a connection is one application with the key's own access, not a user with a role: see [Connect with an API key](#connect-with-an-api-key-headless-agents-and-ci).
 

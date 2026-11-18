@@ -16,6 +16,7 @@ import { createServer, serverDescriptorOf } from "./index";
 import { SERVER_VERSION } from "./config";
 import type { CatalogProfile } from "./chatgpt-app";
 import type { CatalogSelection } from "./toolsets";
+import type { LiveAccess } from "./permissions";
 // Type only: wakeshift.ts (and @wakeshift/sdk) load only when http.ts turns Wakeshift on.
 import type { WakeshiftHooks } from "./wakeshift";
 
@@ -140,6 +141,8 @@ export interface ModernOptions {
   selection?: CatalogSelection;
   /** Wakeshift (wakeshift.ts), when http.ts turned it on. */
   wakeshift?: WakeshiftHooks;
+  /** The caller's current access to one organization, read per tool call (permissions.ts). */
+  liveAccess?: LiveAccess;
 }
 
 /** serverInfo on every result (SHOULD) + the mandatory CacheableResult fields. */
@@ -200,6 +203,7 @@ export async function handleModernRpc(
     selection: options.selection,
     apiKey: Boolean(apiKeyScopeOf(authInfo)),
     wakeshift: options.wakeshift,
+    liveAccess: options.liveAccess,
   });
 
   await server.connect(serverSide);

@@ -91,7 +91,16 @@ import { toSafeErrorShape, DiditError } from "./security";
 // Type only: wakeshift.ts (and @wakeshift/sdk) load only when http.ts turns Wakeshift on.
 import type { WakeshiftHooks } from "./wakeshift";
 import { auditToolCall } from "./audit-log";
-import { decidePermission, missingPermissionError } from "./permissions";
+import {
+  acceptedPermissions,
+  currentAccessRefusal,
+  decidePermission,
+  missingPermissionError,
+  tokenPermissions,
+  type LiveAccess,
+  type OrganizationAccess,
+} from "./permissions";
+import { liveAccessFor } from "./live-access";
 import {
   FULL_SELECTION,
   SELECTABLE_TOOLSET_IDS,
@@ -222,6 +231,50 @@ async function ensureScopeDefaults(name: string): Promise<void> {
   }
 }
 
+
+/**
+ * The application a call ACTS ON, for the caller's live membership to judge, or undefined when the
+ * tool acts on the organization itself.
+ *
+ * What a tool's scope already declares decides it, never a list of tool names:
+ * - a tool carrying the shared routing id (`ORG_APP_PROPS.application_id`, the documented "optional
+ *   when you own exactly one application — it is resolved automatically") acts on one application,
+ *   and the dispatcher resolves it when the caller names none, so the resolved default is judged
+ *   too. Identity, not the property name: `didit_audit_log_list` takes an `application_id` that
+ *   only narrows the organization's log and never routes the call, so it words its own and stays
+ *   an organization-level tool.
+ * - a tool that words its own `application_id` and REQUIRES it (creating an API key for one
+ *   application) acts on the id the caller sends, and on no other.
+ * Anything else is organization-level: an application it never acts in must not refuse it.
+ */
+function applicationForCall(
+  schema: { properties?: Record<string, unknown>; required?: readonly string[] } | undefined,
+  namedApp: string | undefined,
+  resolvedApp: string | undefined,
+): string | undefined {
+  const properties = schema?.properties;
+  if (!properties || !("application_id" in properties)) return undefined;
+  if (properties.application_id === ORG_APP_PROPS.application_id) return namedApp ?? resolvedApp;
+  return schema?.required?.includes("application_id") ? namedApp : undefined;
+}
+
+/**
+ * The organization whose membership lists this application — from the same 60 s organisation map the
+ * scope defaults are resolved from (orgapp.ts), so a call that names only an `application_id` (a
+ * member of several organizations naming one of their applications) can still be judged by the live
+ * answer for the organization it acts in. No extra request: the map is the one the resolver already
+ * read for this call.
+ */
+async function organizationOfApplication(applicationId: string): Promise<string | undefined> {
+  try {
+    const map = await getOrgAppMap();
+    const wanted = applicationId.toLowerCase();
+
+    return map.find((o) => o.apps.some((a) => a.appId.toLowerCase() === wanted))?.orgId;
+  } catch {
+    return undefined; // discovery failed: the live check is skipped, as when no organization resolves
+  }
+}
 
 // Per-app list tools that have a cross-org/app aggregate sibling declare it (spanAllApplications,
 // tools/registry.ts). A multi-tenant caller who invokes one of these without a resolvable scope
@@ -480,6 +533,13 @@ export function createServer(
     apiKey?: boolean;
     /** Wakeshift (wakeshift.ts): handed in by http.ts only when it is on. */
     wakeshift?: WakeshiftHooks;
+    /**
+     * The caller's CURRENT access to one organization, read from service-didit-auth on every
+     * tool call (permissions.ts `currentAccessRefusal`). http.ts hands it in only for the
+     * introspection mode: an API key is an application, a stdio token is the person's own, and a
+     * JWKS-verified token has no live membership to ask about.
+     */
+    liveAccess?: LiveAccess;
   } = {},
 ): Server {
   const hosted = options.hosted === true;
@@ -1186,6 +1246,10 @@ export function createServer(
     // Permission pre-check verdict (permissions.ts): decided once here so the audit line
     // can record a shadow-mode "would_deny" and the dispatch below can refuse a "deny".
     const tokenOrg = (authInfo?.extra as Record<string, unknown> | undefined)?.organization_id as string | undefined;
+    // What the token carried when the connection was verified. Only used to tell a change the live
+    // answer shows apart from a privilege the role never had; the introspection at connect answers
+    // without permissions unless MCP_DEFAULT_ORG is set, so it is often empty.
+    const signedInPermissions = tokenPermissions(authInfo?.scopes);
     const permission = decidePermission({
       tool: wakeshift?.permissionAs(toolName) ?? toolName,
       scopes: authInfo?.scopes,
@@ -1204,6 +1268,14 @@ export function createServer(
     // x-api-key and never as a Bearer, and the organization and application are the key's own.
     // A call that names another one is refused below rather than silently redirected.
     const keyScope = apiKeyScopeOf(authInfo);
+    // The caller's CURRENT membership, read from service-didit-auth for the organization a call
+    // acts in: the dispatcher below asks it for that organization, and a
+    // cross-organisation fan-out asks it for each organization it is about to read.
+    // Only a hosted OAuth connection has a member role to ask about, and `off` turns it off.
+    const liveAccessReader =
+      hosted && !keyScope && options.liveAccess && authInfo?.token && permissionMode() !== "off"
+        ? (organizationId: string) => options.liveAccess!(authInfo!.token!, organizationId)
+        : undefined;
     return requestContext.run(
       keyScope
         ? {
@@ -1226,6 +1298,8 @@ export function createServer(
           undefined,
         applicationId: argApp || process.env.MCP_DEFAULT_APP || undefined,
         toolName,
+        acceptedPermissions: acceptedPermissions(wakeshift?.permissionAs(toolName) ?? toolName),
+        liveAccess: liveAccessReader,
         actorVia: actorViaFromHeaders(extra?.requestInfo?.headers),
       },
       () => auditToolCall({ tool: toolName, args: callArgs, authInfo, hosted, permissionCheck, via }, async () => {
@@ -1365,10 +1439,80 @@ export function createServer(
   // Single-org/single-app callers: fill the default scope so they needn't pass/discover ids.
   await ensureScopeDefaults(name);
 
+  // the caller's CURRENT access to the organization this call acts in, asked of
+  // service-didit-auth on this call instead of being taken from the token that was verified (and
+  // remembered) when the connection opened. That service re-derives the answer on every
+  // introspection and drops its cached copy on every membership, role and application-access
+  // change, so a demotion, a removal or an application taken away reaches an already-open
+  // connection on its very next call — and a promotion does not have to wait out the 60 s token
+  // cache either. Only a hosted OAuth connection has a member role to ask about (see the option).
+  const liveStore = requestContext.getStore();
+  // The application this call will actually use, when the tool acts on one (applicationForCall, from
+  // what the tool's schema declares): named, or the default the dispatcher resolved.
+  const liveApplication = applicationForCall(inputSchemaByTool.get(name), argApp, liveStore?.applicationId);
+  // The organization is the one the call names or resolved, or - when the call names an application
+  // and no organization (a member of several organizations naming one application) - the one whose
+  // membership lists that application. Without it the live question was never asked for such a call,
+  // and a fan-out below read every organization instead of refusing (an internal issue review).
+  const liveOrganization =
+    liveStore?.organizationId ?? (liveStore?.liveAccess && liveApplication ? await organizationOfApplication(liveApplication) : undefined);
+  let liveChecked = false;
+  // The live answer positively carries a permission this tool accepts: the connection may be
+  // ahead of the verification service's own cached copy. Kept for the error path below.
+  let liveConfirmed = false;
+  // Staff tools are exempt from the membership check: a staff caller reads a customer organization it
+  // is not a member of, so the live answer is `org_role: null` by design (introspection-verifier.ts).
+  // The staff gate is the verification service's, re-decided on every staff endpoint call
+  // (tools/staff.ts); the server's own is_privileged check is only defense-in-depth. Exempted through
+  // the same predicate ensureScopeDefaults uses above, not a second list of tool names.
+  if (liveStore?.liveAccess && liveOrganization && !isPrivilegedToolName(name)) {
+    let access: OrganizationAccess | null | undefined;
+    try {
+      // Memoised for this call (live-access.ts liveAccessFor): a fan-out below asks the same
+      // reader for every other organization, and none of them is asked twice.
+      access = await liveAccessFor(liveOrganization);
+    } catch {
+      // The auth service did not answer. That is not a verdict on the person's role: the call is
+      // not sent (nothing confirmed its permissions) and the message says so, retryable, never a
+      // bare refusal — the same rule the token verifier follows (auth/introspection-verifier.ts).
+      return refuse(
+        `Didit could not confirm your access to this organization just now (the sign-in service did not answer), ` +
+          `so ${name} was not sent. Retry in a moment.`,
+      );
+    }
+    if (access === null) {
+      return refuse(
+        `Your Didit sign-in is no longer valid, so ${name} cannot run. Reconnect this connection and sign in again.`,
+      );
+    }
+    if (access) {
+      liveChecked = true;
+      // The application the call will ACTUALLY use, when the tool acts on one (applicationForCall,
+      // from what the tool's schema declares). Organization-level tools — including one whose
+      // `application_id` only filters the organization's records — are not refused for an
+      // application they never act in. For an application tool, the resolved default is judged
+      // too: naming no `application_id` is the documented way to use the one application you own,
+      // so an access removal must reach it. The default comes from the 60 s
+      // organisation map; the answer compared against it is live.
+      const refusal = currentAccessRefusal({
+        tool: name,
+        permissionFor: wakeshift?.permissionAs(name),
+        access,
+        applicationId: liveApplication,
+        signedInPermissions,
+      });
+      if (refusal) return refuse(refusal);
+      const acceptedNow = acceptedPermissions(wakeshift?.permissionAs(name) ?? name);
+      liveConfirmed = acceptedNow.length > 0 && (access.permissions ?? []).some((p) => acceptedNow.includes(p));
+    }
+  }
+
   try {
     // The caller's organization role lacks the permission the backend would demand for
-    // this tool: refuse here with the permission named (the backend would 403 anyway).
-    if (permission === "deny") throw missingPermissionError(wakeshift?.permissionAs(name) ?? name);
+    // this tool: refuse here with the permission named (the backend would 403 anyway). When the
+    // live answer above has just decided the call, it is the current one and this cached verdict
+    // (up to MCP_INTROSPECTION_CACHE_TTL_MS old) must not refuse a role the person has now.
+    if (permission === "deny" && !liveChecked) throw missingPermissionError(wakeshift?.permissionAs(name) ?? name);
 
     let result: any;
 
@@ -1513,6 +1657,21 @@ export function createServer(
     // PII and local paths stripped; structuredContent OMITTED so a strict client never
     // validates an error against the tool's success outputSchema.
     const shape = toSafeErrorShape(error);
+    // the caller's CURRENT membership carries a permission this tool accepts (the live
+    // answer above said so), but service-didit-verification decides permissions from its own
+    // introspection cache, INTROSPECT_CACHE_TIMEOUT = 600 s (core/utils/authentication.py), and
+    // refuses with a bare 403 until it expires. Say what that means instead of passing it on. The
+    // copy names no change of its own: the connect introspection answers without permissions, so a
+    // raised role cannot be told apart from a stale downstream copy, and a 403 for another reason
+    // must not be reported as a promotion.
+    if (liveConfirmed && shape.status === 403) {
+      return refuse(
+        `Didit's verification service refused ${name}, although your current role in this organization carries ` +
+          "the permission it needs. That service keeps its own copy of a role for up to 10 minutes (600 seconds), so a " +
+          "role raised just now may not have reached it yet: retry in a few minutes or sign in again. " +
+          "If it still refuses then, this call is being refused for another reason.",
+      );
+    }
     const fieldLine = shape.field ? `\nField: ${shape.field}` : "";
     const hintLine = shape.hint ? `\nHint: ${shape.hint}` : "";
     const allowedLine = shape.allowed && shape.allowed.length ? `\nAllowed: ${shape.allowed.join(", ")}` : "";

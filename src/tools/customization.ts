@@ -55,7 +55,7 @@ export const BRANDING_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
     access: "read",
-    permission: "read:customization", // GET …/white-label-customization/ → white_label_customization.py:66
+    permission: ["read:customization", "list:customization"], // GET …/white-label-customization/ → white_label_customization.py:66
     run: () => getCustomization(),
   },
   {

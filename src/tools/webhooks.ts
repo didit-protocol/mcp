@@ -57,7 +57,7 @@ export const WEBHOOK_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
     access: "read",
-    permission: "read:webhooks", // GET …/webhook/destinations/ → webhook_destinations.py:106
+    permission: ["read:webhooks", "list:webhooks"], // GET …/webhook/destinations/ → webhook_destinations.py:106
     run: () => listDestinations(),
   },
   {
@@ -97,7 +97,7 @@ export const WEBHOOK_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:webhooks", // GET …/webhook/destinations/{uuid}/ → webhook_destinations.py:151
+    permission: ["read:webhooks", "list:webhooks"], // GET …/webhook/destinations/{uuid}/ → webhook_destinations.py:151
     run: (args) => getDestination(args.destination_uuid),
   },
   {

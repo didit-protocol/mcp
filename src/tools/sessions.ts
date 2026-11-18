@@ -512,7 +512,9 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "write",
-    permission: null, // POST /session/ → session.py:152 — permission classes only, no decorator
+    // SessionView / SessionV2View accept EITHER privilege (`accepted_org_permissions`, a DRF
+    // permission class rather than a decorator: session.py:193,219), so this is a set, not null.
+    permission: ["create:sessions", "write:sessions"],
     run: (args) => createSession(args),
   },
   {
@@ -537,7 +539,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
     },
     // With no application named, it lists the sessions of every application of the organization.
     access: "read",
-    permission: "list:sessions", // GET …/sessions/ → application.py:123
+    permission: ["list:sessions", "read:sessions"], // GET …/sessions/ → application.py:123
     spanAllApplications: (args) => searchSessions(args),
     run: (args) => listSessions(args),
   },
@@ -554,7 +556,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:sessions", // GET /session/{id}/decision/ → session.py:536
+    permission: ["read:sessions", "list:sessions"], // GET /session/{id}/decision/ → session.py:536
     run: (args) => getSessionDecision(args.session_id),
   },
   {
@@ -570,7 +572,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:sessions", // GET /geolocation/sessions/{id}/evidence/ → geolocation/views/console.py:53
+    permission: ["read:sessions", "list:sessions"], // GET /geolocation/sessions/{id}/evidence/ → geolocation/views/console.py:53
     run: (args) => getSessionLocationEvidence(args.session_id),
   },
   {
@@ -737,7 +739,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
     },
     // Its name reads like a read, but its handler creates a server-side artifact or job.
     access: "write",
-    permission: "read:sessions", // GET /session/{id}/generate-pdf/ → pdf.py:86
+    permission: ["read:sessions", "list:sessions"], // GET /session/{id}/generate-pdf/ → pdf.py:86
     run: (args) => generateSessionPdf(args.session_id),
   },
   {
@@ -762,7 +764,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
     },
     // Its name reads like a read, but its handler creates a server-side artifact or job.
     access: "write",
-    permission: "read:sessions", // GET /session/{id}/signatures/{node}/evidence/ → signatures/downloads.py:78
+    permission: ["read:sessions", "list:sessions"], // GET /session/{id}/signatures/{node}/evidence/ → signatures/downloads.py:78
     run: (args) => getSignatureEvidence(args.session_id, args.node_id, args.signature_id),
   },
   {
@@ -786,7 +788,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
     },
     // Its name reads like a read, but its handler creates a server-side artifact or job.
     access: "write",
-    permission: "read:sessions", // GET …/signatures/{node}/documents/{doc}/file/ → same view
+    permission: ["read:sessions", "list:sessions"], // GET …/signatures/{node}/documents/{doc}/file/ → same view
     run: (args) => getSignedDocument(args.session_id, args.node_id, args.document_id),
   },
   {
@@ -808,7 +810,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
     },
     // Its name reads like a read, but its handler creates a server-side artifact or job.
     access: "write",
-    permission: "read:sessions", // GET …/signatures/{node}/fields/{field}/image/ → same view
+    permission: ["read:sessions", "list:sessions"], // GET …/signatures/{node}/fields/{field}/image/ → same view
     run: (args) => getSignatureFieldImage(args.session_id, args.node_id, args.field_id),
   },
   {
@@ -850,7 +852,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:sessions", // GET …/sessions/{id}/reviews/ → activity.py:77
+    permission: ["read:sessions", "list:sessions"], // GET …/sessions/{id}/reviews/ → activity.py:77
     run: (args) => listSessionReviews(args.session_id, pageParams(args)),
   },
   {
@@ -909,7 +911,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
     },
     // Folds a session's decision payload and its workflow graph into the outcome trace.
     access: "read",
-    permission: "read:sessions", // GET /session/{id}/decision/ folded into its trace
+    permission: ["read:sessions", "list:sessions"], // GET /session/{id}/decision/ folded into its trace
     run: (args) => explainSessionDecision(args.session_id),
   },
   {
@@ -927,7 +929,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
     },
     // The per-session webhook delivery log (its only verb-like token is "webhooks").
     access: "read",
-    permission: "read:sessions", // GET /session/{id}/webhooks/ → webhooks.py:38
+    permission: ["read:sessions", "list:sessions"], // GET /session/{id}/webhooks/ → webhooks.py:38
     run: (args) => listSessionWebhooks(args.session_id, Number(args.wait_seconds ?? 0)),
   },
   {
@@ -961,7 +963,8 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "write",
-    permission: null, // POST /session/import-shared/ → shared_session.py:78 — no decorator
+    // ImportSharedSessionView is IsValidClient only (shared_session.py:78): no organization role.
+    permission: null,
     run: (args) => importSharedSession(args),
   },
 ];
@@ -1012,7 +1015,9 @@ export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "write",
-    permission: null, // POST /session/imports/ → imports.py:77 — no decorator
+    // Every import endpoint inherits ConsoleImportAccessMixin.accepted_org_permissions
+    // (`write:sessions`, imports.py:186) — a permission class, not a decorator.
+    permission: "write:sessions",
     run: (args) => createImport(args),
   },
   {
@@ -1022,7 +1027,7 @@ export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
     access: "read",
-    permission: null, // GET /session/imports/providers/ → import_jobs.py:99 — no decorator
+    permission: "write:sessions", // ConsoleImportAccessMixin.accepted_org_permissions (also for reads)
     run: () => listImportProviders(),
   },
   {
@@ -1046,7 +1051,7 @@ export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
     // Reads the provider the sessions come from, with the customer's key; nothing is stored.
     access: "write",
     openWorld: true,
-    permission: null, // POST /session/imports/providers/check/ → import_jobs.py:120 — no decorator
+    permission: "write:sessions", // ConsoleImportAccessMixin.accepted_org_permissions
     run: (args) => checkImportProvider(args),
   },
   {
@@ -1072,7 +1077,7 @@ export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
     },
     // Its name reads like a read, but it starts, pauses, resumes, cancels or retries an import.
     access: "write",
-    permission: null, // POST /session/imports/{id}/{start|pause|resume|cancel|retry}/ → import_jobs.py — no decorator
+    permission: "write:sessions", // SessionImportJobMixin → ConsoleImportAccessMixin.accepted_org_permissions
     run: (args) => manageImport(args.import_id, args.action, args.data),
   },
   {
@@ -1082,7 +1087,7 @@ export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
     access: "read",
-    permission: null, // GET /session/imports/template/ → imports.py:197 — no decorator
+    permission: "write:sessions", // ConsoleImportAccessMixin.accepted_org_permissions (also for reads)
     run: () => getImportTemplate(),
   },
   {
@@ -1099,7 +1104,7 @@ export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: null, // GET /session/imports/{id}/ → imports.py:170 — no decorator
+    permission: "write:sessions", // ConsoleImportAccessMixin.accepted_org_permissions (also for reads)
     run: (args) => getImport(args.import_id),
   },
   {
@@ -1116,7 +1121,7 @@ export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: null, // GET /session/imports/{id}/errors/ → imports.py:182 — no decorator
+    permission: "write:sessions", // ConsoleImportAccessMixin.accepted_org_permissions (also for reads)
     run: (args) => getImportErrors(args.import_id),
   },
 ];

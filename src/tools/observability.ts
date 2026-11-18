@@ -60,7 +60,7 @@ export const AUDIT_AND_ALERT_TOOLS: readonly RegisteredTool[] = [
     },
     // application_id filters the organization's audit log; it does not route the call.
     access: "read",
-    permission: "read:audit-logs", // GET /audit/{org}/audit-logs/ → audit/views/audit_log.py:292
+    permission: ["read:audit-logs", "list:audit-logs"], // GET /audit/{org}/audit-logs/ → audit/views/audit_log.py:292
     routingIds: true,
     run: (args) => listAuditLogs(args),
   },
@@ -72,7 +72,7 @@ export const AUDIT_AND_ALERT_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
     },
     access: "read",
-    permission: "read:applications", // GET …/alerts/ → alerts.py:62
+    permission: ["read:applications", "list:applications"], // GET …/alerts/ → alerts.py:62
     run: (args) => listAlerts(args),
   },
   {

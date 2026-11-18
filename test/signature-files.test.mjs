@@ -149,8 +149,9 @@ test("validate posts the signer id when given and nothing else, and returns the 
 });
 
 test("permissions: the files need read:sessions, validate needs write:sessions", () => {
+  // A GET accepts either permission: read:sessions or list:sessions.
   for (const name of ["evidence", "signed_document", "field_image"].map((n) => n === "signed_document" ? "didit_session_get_signed_document" : `didit_session_get_signature_${n}`)) {
-    assert.equal(TOOL_PERMISSIONS[name], "read:sessions", name);
+    assert.deepEqual(TOOL_PERMISSIONS[name], ["read:sessions", "list:sessions"], name);
   }
   assert.equal(TOOL_PERMISSIONS.didit_session_validate_signatures, "write:sessions");
 });

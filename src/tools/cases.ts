@@ -93,7 +93,7 @@ export const CASE_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, status: { type: "string" }, cursor: { type: "string" } } },
     },
     access: "read",
-    permission: "list:cases", // GET …/cases/ → case_management.py:264
+    permission: ["list:cases", "read:cases"], // GET …/cases/ → case_management.py:264
     run: (args) => listCases(args),
     spanAllApplications: (args) => searchCases(args),
   },
@@ -104,7 +104,7 @@ export const CASE_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, case_id: { type: "string" } }, required: ["case_id"] },
     },
     access: "read",
-    permission: "read:cases", // GET …/cases/{id}/ → case_management.py:353
+    permission: ["read:cases", "list:cases"], // GET …/cases/{id}/ → case_management.py:353
     run: (args) => getCase(args.case_id),
   },
   {
@@ -184,7 +184,7 @@ export const CASE_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:cases", // GET …/cases/statistics/ → case_management.py:910
+    permission: ["list:cases", "read:cases"], // GET …/cases/statistics/ → case_management.py:910
     run: (args) => caseStatistics(args),
   },
   {

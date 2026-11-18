@@ -676,8 +676,9 @@ test("the tool is registered as a read-only session tool", async () => {
   assert.ok(tool, "tool listed");
   assert.deepEqual(tool.inputSchema.required, ["session_id"]);
   assert.equal(tool.annotations.readOnlyHint, true);
-  assert.equal(
-    TOOL_PERMISSIONS.didit_session_explain_decision,
+  // A GET accepts either permission: read:sessions or list:sessions.
+  assert.deepEqual(TOOL_PERMISSIONS.didit_session_explain_decision, [
     "read:sessions",
-  );
+    "list:sessions",
+  ]);
 });

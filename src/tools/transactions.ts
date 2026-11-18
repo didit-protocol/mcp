@@ -340,7 +340,7 @@ export const TRANSACTION_RULE_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:transactions", // GET …/transactions/rules/ → transactions.py:754
+    permission: ["list:transactions", "read:transactions"], // GET …/transactions/rules/ → transactions.py:754
     run: (args) => listTransactionRules(args),
   },
   {
@@ -358,7 +358,7 @@ export const TRANSACTION_RULE_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:transactions", // GET …/transactions/rules/{uuid}/ → transactions.py:785
+    permission: ["list:transactions", "read:transactions"], // GET …/transactions/rules/{uuid}/ → transactions.py:785
     run: (args) => getTransactionRule(args.rule_uuid),
   },
   {
@@ -501,7 +501,7 @@ export const TRANSACTION_RULE_TOOLS: readonly RegisteredTool[] = [
     // by the handlers (tools/transactions.ts), never with a top-level anyOf in the input schema:
     // model APIs refuse a tool list that has one (test/tool-schemas-portable.test.mjs).,
     access: "read",
-    permission: "list:transactions", // GET …/transactions/rules/library/ → transactions.py:895
+    permission: ["list:transactions", "read:transactions"], // GET …/transactions/rules/library/ → transactions.py:895
     run: (args) => listTransactionRuleLibrary(args),
   },
   {
@@ -571,7 +571,7 @@ export const TRANSACTION_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:transactions", // GET …/transactions/ → transactions.py:278
+    permission: ["list:transactions", "read:transactions"], // GET …/transactions/ → transactions.py:278
     run: (args) => listTransactions(args),
     spanAllApplications: (args) => searchTransactions(args),
   },
@@ -620,7 +620,7 @@ export const TRANSACTION_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:transactions", // GET …/transactions/{id}/ → transactions.py:479
+    permission: ["list:transactions", "read:transactions"], // GET …/transactions/{id}/ → transactions.py:479
     run: (args) => getTransaction(args.transaction_id),
   },
   {

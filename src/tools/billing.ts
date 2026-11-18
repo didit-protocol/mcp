@@ -360,7 +360,7 @@ export const BILLING_TOOLS: readonly RegisteredTool[] = [
     },
     // Billing is the organization's: its path is built from the organization the caller sent.
     access: "read",
-    permission: "read:subscription", // GET /organization/{org}/billing/plans/ → billing/views.py PlanBillingView
+    permission: ["read:subscription", "list:subscription"], // GET /organization/{org}/billing/plans/ → billing/views.py PlanBillingView
     routingIds: true,
     run: (args) => getPlan(args.organization_id),
   },
@@ -384,7 +384,7 @@ export const BILLING_TOOLS: readonly RegisteredTool[] = [
     },
     // Quotes a plan change (a GET): nothing is bought, the person confirms in the console.
     access: "read",
-    permission: "read:subscription", // GET …/billing/plans/quote/ → PlanQuoteView
+    permission: ["read:subscription", "list:subscription"], // GET …/billing/plans/quote/ → PlanQuoteView
     routingIds: true,
     run: (args) => quotePlan(args.plan, args.billing_interval, args.organization_id),
   },
@@ -398,7 +398,7 @@ export const BILLING_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
     },
     access: "read",
-    permission: "read:subscription", // GET …/billing/payment-methods/ → PaymentMethodsView
+    permission: ["read:subscription", "list:subscription"], // GET …/billing/payment-methods/ → PaymentMethodsView
     routingIds: true,
     run: (args) => listPaymentMethods(args.organization_id),
   },
@@ -416,7 +416,7 @@ export const BILLING_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:subscription", // GET …/billing/receipts/ → ReceiptsView
+    permission: ["read:subscription", "list:subscription"], // GET …/billing/receipts/ → ReceiptsView
     routingIds: true,
     run: (args) => listReceipts(args.organization_id, args.limit, args.offset),
   },
@@ -429,7 +429,7 @@ export const BILLING_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
     },
     access: "read",
-    permission: "read:subscription", // GET …/billing/details/ → BillingDetailsView
+    permission: ["read:subscription", "list:subscription"], // GET …/billing/details/ → BillingDetailsView
     routingIds: true,
     run: (args) => getBillingDetails(args.organization_id),
   },

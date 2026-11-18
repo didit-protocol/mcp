@@ -22,6 +22,7 @@ import { mountInvestigatorAgentEndpoint } from "./investigator-agent";
 import { DiditTokenVerifier } from "./auth/verifier";
 import { IntrospectionTokenVerifier } from "./auth/introspection-verifier";
 import { CachingTokenVerifier } from "./auth/cached-verifier";
+import type { LiveAccess } from "./permissions";
 import { MAX_EVENT_BODY_BYTES, handleBackendEvent, signingKey } from "./backend-events";
 import { getOrgAppMap } from "./orgapp";
 import type { DiditWakeshift, WakeshiftHooks } from "./wakeshift";
@@ -307,10 +308,15 @@ export async function createHttpApp(): Promise<express.Express> {
   // that cannot be validated locally. JWKS is available for JWT-access-token setups.
   // Introspection is a network call per request, so accepted tokens are remembered briefly
   // (auth/cached-verifier.ts); JWKS verification is local and needs no cache.
-  const verifier =
-    MCP_TOKEN_VERIFY_MODE === "jwks"
-      ? new DiditTokenVerifier()
-      : new CachingTokenVerifier(new IntrospectionTokenVerifier(), MCP_INTROSPECTION_CACHE_TTL_MS);
+  // The same introspection client serves the per-call freshness read below: what a
+  // token may do is asked again, for the organization the call acts in, on every tool call.
+  const introspection = MCP_TOKEN_VERIFY_MODE === "jwks" ? undefined : new IntrospectionTokenVerifier();
+  const liveAccess: LiveAccess | undefined = introspection
+    ? (token, organizationId) => introspection.organizationAccess(token, organizationId)
+    : undefined;
+  const verifier = introspection
+    ? new CachingTokenVerifier(introspection, MCP_INTROSPECTION_CACHE_TTL_MS)
+    : new DiditTokenVerifier();
   console.error(`[didit-mcp] token verification mode: ${MCP_TOKEN_VERIFY_MODE}`);
   // One endpoint per catalog profile. Each is its own OAuth protected resource, so its 401
   // challenge points at its own metadata URL and the client requests a token for the right
@@ -405,6 +411,7 @@ export async function createHttpApp(): Promise<express.Express> {
             moneyTools: endpoint.moneyTools,
             selection,
             wakeshift: await wakeshiftFor?.(req.auth),
+            liveAccess,
           });
           if (reply) res.json(reply);
           else res.status(202).end();
@@ -429,6 +436,7 @@ export async function createHttpApp(): Promise<express.Express> {
         // What the server says about itself depends on who connected (guidance.ts).
         apiKey: Boolean(apiKeyScopeOf(req.auth)),
         wakeshift: await wakeshiftFor?.(req.auth),
+        liveAccess,
       });
       // Answer in the shape the caller named (accept.ts): an event stream when it named one,
       // which is the stream every current client gets, JSON when it only accepts JSON — a format the

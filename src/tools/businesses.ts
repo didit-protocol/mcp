@@ -79,7 +79,7 @@ export const VENDOR_BUSINESS_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:businesses", // GET …/vendor-businesses/ → vendor_business.py:150
+    permission: ["list:businesses", "read:businesses"], // GET …/vendor-businesses/ → vendor_business.py:150
     run: (args) => listBusinesses(args),
     spanAllApplications: (args) => searchVendorBusinesses(args),
   },
@@ -119,7 +119,7 @@ export const VENDOR_BUSINESS_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:businesses", // GET …/vendor-businesses/{vendor_data}/ → vendor_business.py:197
+    permission: ["read:businesses", "list:businesses"], // GET …/vendor-businesses/{vendor_data}/ → vendor_business.py:197
     run: (args) => getBusiness(args.vendor_data),
   },
   {

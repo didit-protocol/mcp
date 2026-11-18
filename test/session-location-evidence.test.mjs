@@ -115,11 +115,13 @@ test("advertised as a read-only tool that needs read:sessions", async () => {
   assert.equal(tool.annotations.destructiveHint, false);
   assert.deepEqual(tool.inputSchema.required, ["session_id"]);
 
-  assert.equal(TOOL_PERMISSIONS.didit_session_get_location_evidence, "read:sessions");
+  // A GET is accepted for read:sessions OR list:sessions (core/permissions.py).
+  assert.deepEqual(TOOL_PERMISSIONS.didit_session_get_location_evidence, ["read:sessions", "list:sessions"]);
   const decide = (scopes) =>
     decidePermission({ tool: "didit_session_get_location_evidence", scopes, mode: "enforce", tokenOrg: "org-1", targetOrg: "org-1" });
   assert.equal(decide(["read:sessions"]), "allow");
-  assert.equal(decide(["list:sessions"]), "deny");
+  assert.equal(decide(["list:sessions"]), "allow");
+  assert.equal(decide(["read:workflows"]), "deny");
 });
 
 test("reads the evidence once and drops each node's map props and map URL", async () => {

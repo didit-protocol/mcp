@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "../dist/index.js";
 import { PRIVILEGED_TOOL_DEFS } from "../dist/privileged-tools.js";
-import { TOOL_PERMISSIONS, decidePermission } from "../dist/permissions.js";
+import { TOOL_PERMISSIONS, acceptedPermissions, decidePermission, currentAccessRefusal } from "../dist/permissions.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
@@ -88,7 +88,9 @@ test("every catalog tool has a permission entry, and every entry names a catalog
   assert.deepEqual(unmapped, [], "tools without a permission entry");
   assert.deepEqual(stale, [], "permission entries for tools that no longer exist");
   for (const [name, permission] of Object.entries(TOOL_PERMISSIONS)) {
-    if (permission !== null) assert.match(permission, /^(read|write|delete|list|create|approve):[a-z-]+$/, name);
+    // A value is one permission, or the set an endpoint accepts any one of.
+    const accepted = permission === null ? [] : typeof permission === "string" ? [permission] : permission;
+    for (const one of accepted) assert.match(one, /^(read|write|delete|list|create|approve):[a-z-]+$/, name);
   }
 });
 
@@ -123,6 +125,121 @@ test("decidePermission: only judges the organization the token's permissions des
   assert.equal(decidePermission(query({ targetOrg: "org-2" })), "allow");
   assert.equal(decidePermission(query({ tokenOrg: undefined, targetOrg: undefined })), "allow");
   assert.equal(decidePermission(query({ tokenOrg: undefined, targetOrg: "org-1" })), "allow");
+});
+
+// the call-time gate decides on the access service-didit-auth states for the
+// organization the call acts in, not on the token that was verified when the connection opened.
+test("currentAccessRefusal: the role, the application and the membership as service-didit-auth states them now", () => {
+  const tool = "didit_webhook_create"; // write:webhooks
+  const admin = { role: "Admin", permissions: ["read:webhooks", "write:webhooks"], accessibleApplications: ["app-1"] };
+  assert.equal(currentAccessRefusal({ tool, access: admin, applicationId: "app-1" }), undefined, "an Admin is served");
+
+  const demoted = currentAccessRefusal({ tool, access: { ...admin, role: "Reader", permissions: ["read:webhooks"] }, applicationId: "app-1" });
+  assert.match(demoted, /Reader/, "the refusal names the role the member has now");
+  assert.match(demoted, /write:webhooks/, "and the permission it lacks");
+  assert.match(demoted, /Ask an organization owner or admin to grant/, "and what to do about it");
+  assert.doesNotMatch(demoted, /changed it/, "no change is claimed: the token's permissions are not part of the question");
+
+  // Only a privilege the connection actually signed in with can be reported as taken away.
+  const taken = currentAccessRefusal({
+    tool,
+    access: { ...admin, role: "Reader", permissions: ["read:webhooks"] },
+    applicationId: "app-1",
+    signedInPermissions: ["read:webhooks", "write:webhooks"],
+  });
+  assert.match(taken, /changed it/);
+  assert.match(taken, /nothing else is needed/i);
+
+  const noApp = currentAccessRefusal({ tool, access: { ...admin, accessibleApplications: [] }, applicationId: "app-1" });
+  assert.match(noApp, /application app-1/);
+  assert.match(noApp, /ask an organization owner or admin to grant it to your role/i, "and what to do about it");
+  assert.doesNotMatch(noApp, /removed it|changed it/, "no removal is asserted without evidence of one");
+
+  // The application check is the call's application: with none named, a stale scope default
+  // cannot refuse an organization-level tool.
+  assert.equal(currentAccessRefusal({ tool, access: { ...admin, accessibleApplications: [] } }), undefined);
+
+  for (const removed of [{ role: null, permissions: [], accessibleApplications: [] }, { role: "Reader", permissions: [], accessibleApplications: [] }]) {
+    assert.match(currentAccessRefusal({ tool, access: removed, applicationId: "app-1" }), /membership/i, JSON.stringify(removed));
+  }
+
+  // An answer that says less than all of it only decides what it actually said.
+  assert.equal(currentAccessRefusal({ tool, access: {}, applicationId: "app-1" }), undefined);
+  assert.equal(currentAccessRefusal({ tool, access: { role: "Admin" }, applicationId: "app-1" }), undefined);
+  assert.match(currentAccessRefusal({ tool, access: { role: "Admin", permissions: ["read:webhooks"] }, applicationId: "app-1" }), /write:webhooks/);
+  assert.equal(currentAccessRefusal({ tool: "didit_context_get", access: admin, applicationId: "app-1" }), undefined, "no permission to check");
+});
+
+// An endpoint can accept either of two privileges (`accepted_org_permissions` on a DRF view): the
+// session views take create:sessions or write:sessions, and holding either must pass.
+test("currentAccessRefusal: an endpoint that accepts any one of several permissions", () => {
+  const tool = "didit_session_create";
+  assert.deepEqual(acceptedPermissions(tool), ["create:sessions", "write:sessions"]);
+
+  const create = { role: "Developer", permissions: ["create:sessions"], accessibleApplications: ["app-1"] };
+  assert.equal(currentAccessRefusal({ tool, access: create, applicationId: "app-1" }), undefined, "create:sessions alone is enough");
+
+  const write = { role: "Admin", permissions: ["write:sessions"], accessibleApplications: ["app-1"] };
+  assert.equal(currentAccessRefusal({ tool, access: write, applicationId: "app-1" }), undefined, "write:sessions alone is enough");
+
+  const reader = { role: "Reader", permissions: ["read:sessions", "list:sessions"], accessibleApplications: ["app-1"] };
+  const refusal = currentAccessRefusal({ tool, access: reader, applicationId: "app-1" });
+  assert.match(refusal, /Reader/);
+  assert.match(refusal, /'create:sessions' or 'write:sessions'/, "the refusal names both accepted privileges");
+
+  // An alias (a wakeshift watch tool) is checked as the tool it reads but named as the caller called it.
+  assert.equal(
+    currentAccessRefusal({
+      tool: "didit_session_watch",
+      permissionFor: "didit_session_get_decision",
+      access: { role: "Admin", permissions: ["read:sessions"] },
+      applicationId: "app-1",
+    }),
+    undefined,
+  );
+  const aliased = currentAccessRefusal({
+    tool: "didit_session_watch",
+    permissionFor: "didit_session_get_decision",
+    // A permission the watched tool does not accept: read:sessions OR list:sessions would pass it.
+    access: { role: "Reader", permissions: ["read:workflows"] },
+    applicationId: "app-1",
+  });
+  assert.match(aliased, /didit_session_watch requires/, "the message names the tool the caller called");
+  assert.doesNotMatch(aliased, /didit_session_get_decision/);
+});
+
+// an internal issue finding 3: an answer that lists no permissions of its own decides only the tools that
+// accept one. A tool with no role check (the membership routes) runs whatever the role grants, so an
+// empty list must not refuse it with the "removed or suspended" message.
+test("currentAccessRefusal: an empty permission list only refuses a tool that accepts a permission", () => {
+  const membershipOnly = { role: "Reader", permissions: [], accessibleApplications: [] };
+  assert.equal(currentAccessRefusal({ tool: "didit_org_list_applications", access: membershipOnly }), undefined, "no role check, nothing to lack");
+
+  // Having no role there is still a removal, whatever the tool checks.
+  assert.match(currentAccessRefusal({ tool: "didit_org_list_applications", access: { ...membershipOnly, role: null } }), /membership/i);
+  // And a tool that accepts one is still refused for an empty list.
+  assert.match(currentAccessRefusal({ tool: "didit_webhook_create", access: membershipOnly }), /membership/i);
+});
+
+// an internal issue finding 4: a GET is accepted by the backend for a role holding read:X OR list:X
+// (core/permissions.py, _accepted_permissions), so the map names both for every read tool.
+test("the map accepts read:X or list:X for a read tool, as the backend does for a safe method", () => {
+  assert.deepEqual(acceptedPermissions("didit_session_list"), ["list:sessions", "read:sessions"]);
+  assert.deepEqual(acceptedPermissions("didit_session_get_decision"), ["read:sessions", "list:sessions"]);
+
+  const readOnly = { role: "Custom", permissions: ["read:sessions"], accessibleApplications: ["app-1"] };
+  assert.equal(currentAccessRefusal({ tool: "didit_session_list", access: readOnly, applicationId: "app-1" }), undefined, "read:sessions alone lists sessions");
+  assert.equal(decidePermission({ ...query({ tool: "didit_session_get_decision", scopes: ["list:sessions"] }) }), "allow");
+
+  // A write is still the exact permission: list: does not stand in for write:.
+  const writer = { role: "Custom", permissions: ["list:webhooks"], accessibleApplications: ["app-1"] };
+  assert.match(currentAccessRefusal({ tool: "didit_webhook_create", access: writer, applicationId: "app-1" }), /write:webhooks/);
+});
+
+test("decidePermission: any one of an accepted set allows the call", () => {
+  assert.equal(decidePermission(query({ tool: "didit_session_create", scopes: ["create:sessions"] })), "allow");
+  assert.equal(decidePermission(query({ tool: "didit_session_create", scopes: ["write:sessions"] })), "allow");
+  assert.equal(decidePermission(query({ tool: "didit_session_create", scopes: ["read:sessions"] })), "deny");
 });
 
 test("enforce mode: a reader calling a delete gets missing_scope and the backend is never called", async () => {

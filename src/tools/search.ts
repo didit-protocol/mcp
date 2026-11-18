@@ -1,4 +1,5 @@
 import { getOrgAppMap, mapWithConcurrency, ORG_APP_PROPS, runForScope, OrgRef, AppRef } from "../orgapp";
+import { leftOutFields, liveReadableScopes } from "../live-access";
 import type { RegisteredTool } from "./registry";
 import { LAST_N_DAYS_PROP, SESSION_SEARCH_DESCRIPTION, SESSION_STATUSES } from "./shared-schema";
 import { applyRelativeWindow } from "../dates";
@@ -94,7 +95,27 @@ async function aggregateSearch(
   }
 
   const map = await getOrgAppMap();
-  const orgs = map.filter((o) => !organization_id || o.orgId === organization_id);
+  // A call that names an APPLICATION acts in that application only: cut the map to the organization
+  // that lists it (when no organization is named) and to that application BEFORE asking the live
+  // membership. One question, not one per organization; another organization's auth failure cannot
+  // fail the call; and liveReadableScopes judges, and can report in left_out_applications, only a
+  // scope the call actually reads (an internal issue review).
+  const namedApp = application_id ? String(application_id).toLowerCase() : undefined;
+  const scopedMap = map
+    .filter((o) => {
+      if (organization_id && o.orgId !== organization_id) return false;
+      return !namedApp || o.apps.some((a) => a.appId.toLowerCase() === namedApp);
+    })
+    .map((o) => (namedApp ? { ...o, apps: o.apps.filter((a) => a.appId.toLowerCase() === namedApp) } : o));
+  // Every organization AND application this fan-out is about to read, minus the ones the caller's
+  // live membership no longer allows: the map is cached for 60 s, so a removal from an
+  // organization, or an application taken off the membership, would otherwise keep returning its
+  // rows for up to a minute. One question per organization, in parallel, and no row is fetched
+  // from an organization or an application left out.
+  const { readable, leftOutOrganizations, leftOutApplications, droppedApps } = await liveReadableScopes(scopedMap);
+  // The map is already cut to the application the call named, so no other application's rows can be
+  // returned in place of the one asked for (an internal issue review).
+  const orgs = readable;
 
   // Leaf calls that actually ran, and how many of them a role refused (403). Every scope
   // refused must not read as "no results" — see allDeniedError.
@@ -145,15 +166,23 @@ async function aggregateSearch(
   // Prefer the org-level endpoint: one query per org, rows already carry app/org attribution.
   // Not for an API key connection: the organization-wide routes only answer to a person, and its
   // one application is exactly what the per-app fan-out below reads.
-  if (orgResourcePath && !requestContext.getStore()?.apiKey) {
+  if (orgResourcePath && !namedApp && !requestContext.getStore()?.apiKey) {
     let fellBack = 0;
     const batches = await mapWithConcurrency(orgs, FANOUT_CONCURRENCY, async (o) => {
+      // A scope that lost an application must take the per-app path: the organization-wide endpoint
+      // answers for EVERY application of the organization, one the membership no longer opens
+      // included, and the result says nothing was read there. Fan out over the applications it may
+      // still open instead (an internal issue review).
+      if (droppedApps.get(o.orgId.toLowerCase())?.size) return fanOutOrg(o);
       try {
         const page = await runForScope(o.orgId, undefined, () =>
           apiRequest(orgPath(orgResourcePath, { organizationId: o.orgId }), {
             params: { ...filters, limit },
           }),
         );
+        // A scope that lost an application takes the per-app path above instead, so the
+        // organization-wide endpoint is only read where every application it answers for is open,
+        // and no row of a lost application is fetched.
         return rowsOf(page).map((r) => ({
           organization_id: o.orgId,
           organization_name: o.orgName,
@@ -174,6 +203,7 @@ async function aggregateSearch(
       aggregated: true,
       scanned_orgs: orgs.length,
       via: fellBack ? `org-endpoint (per-app fallback for ${fellBack} org(s))` : "org-endpoint",
+      ...leftOutFields(leftOutOrganizations, leftOutApplications),
     };
   }
 
@@ -206,6 +236,7 @@ async function aggregateSearch(
     aggregated: true,
     scanned_apps: pairs.length,
     skipped_apps: skipped,
+    ...leftOutFields(leftOutOrganizations, leftOutApplications),
   };
 }
 
@@ -285,10 +316,22 @@ export async function searchWorkflows(args: SearchArgs & { offset?: unknown }): 
   // didit_workflow_list answers from here when it spans applications, and it takes `offset`.
   const offset = pageParams({ offset: args.offset }).offset ?? 0;
   const map = await getOrgAppMap();
-  const orgs = map.filter((o) => !organization_id || o.orgId === organization_id);
-  const pairs = orgs.flatMap((o) =>
-    o.apps.filter((a) => !application_id || a.appId === application_id).map((a) => ({ o, a })),
-  );
+  // As in aggregateSearch: a call that names an application reads that application only — the map
+  // is cut to the organization that lists it (when no organization is named) and to the application
+  // before asking the live membership, so one question is asked and left_out_applications names only
+  // a scope the call reads. When both ids are named, the application filter still applies: the
+  // organization's other applications are not this call's to read (an internal issue review).
+  const namedApp = application_id ? String(application_id).toLowerCase() : undefined;
+  const scopedMap = map
+    .filter((o) => {
+      if (organization_id && o.orgId !== organization_id) return false;
+      return !namedApp || o.apps.some((a) => a.appId.toLowerCase() === namedApp);
+    })
+    .map((o) => (namedApp ? { ...o, apps: o.apps.filter((a) => a.appId.toLowerCase() === namedApp) } : o));
+  // Ask the caller's live membership for each organization before reading it, and leave out the
+  // organizations and applications it no longer allows.
+  const { readable: orgs, leftOutOrganizations, leftOutApplications } = await liveReadableScopes(scopedMap);
+  const pairs = orgs.flatMap((o) => o.apps.map((a) => ({ o, a })));
   let skipped = 0;
   let unfinished = 0;
   let leafAttempts = 0;
@@ -345,6 +388,7 @@ export async function searchWorkflows(args: SearchArgs & { offset?: unknown }): 
     skipped_apps: skipped,
     ...(unfinished ? { partly_read_apps: unfinished } : {}),
     unlistable_orgs: orgs.filter((o) => o.appsError).length,
+    ...leftOutFields(leftOutOrganizations, leftOutApplications),
   };
 }
 
@@ -358,6 +402,7 @@ export interface WorkflowScope {
 
 const scanGaps = (found: any): string[] =>
   [
+    typeof found.left_out_note === "string" ? found.left_out_note : "",
     found.skipped_apps ? `${found.skipped_apps} application(s) returned errors and could not be scanned` : "",
     found.partly_read_apps ? `${found.partly_read_apps} application(s) have more workflows than could be read` : "",
     found.unlistable_orgs ? `the applications of ${found.unlistable_orgs} organization(s) could not be listed` : "",
@@ -483,7 +528,7 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:sessions", // GET /organization/{org}/sessions/ → application.py:448
+    permission: ["list:sessions", "read:sessions"], // GET /organization/{org}/sessions/ → application.py:448
     routingIds: true,
     run: (args) => searchSessions(args),
   },
@@ -506,7 +551,7 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:transactions", // GET /organization/{org}/transactions/ → transactions.py:278
+    permission: ["list:transactions", "read:transactions"], // GET /organization/{org}/transactions/ → transactions.py:278
     routingIds: true,
     run: (args) => searchTransactions(args),
   },
@@ -529,7 +574,7 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:cases", // GET /organization/{org}/cases/ → case_management.py:264
+    permission: ["list:cases", "read:cases"], // GET /organization/{org}/cases/ → case_management.py:264
     routingIds: true,
     run: (args) => searchCases(args),
   },
@@ -553,7 +598,7 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:users", // per-app fan-out over the list endpoint
+    permission: ["list:users", "read:users"], // per-app fan-out over the list endpoint
     routingIds: true,
     run: (args) => searchVendorUsers(args),
   },
@@ -577,7 +622,7 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:businesses", // per-app fan-out over the list endpoint
+    permission: ["list:businesses", "read:businesses"], // per-app fan-out over the list endpoint
     routingIds: true,
     run: (args) => searchVendorBusinesses(args),
   },

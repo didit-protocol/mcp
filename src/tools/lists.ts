@@ -76,7 +76,7 @@ export const LIST_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:lists", // GET …/lists/ → lists.py:40
+    permission: ["read:lists", "list:lists"], // GET …/lists/ → lists.py:40
     run: (args) => listLists(args),
   },
   {
@@ -113,7 +113,7 @@ export const LIST_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:lists", // GET …/lists/{uuid}/ → lists.py:110
+    permission: ["read:lists", "list:lists"], // GET …/lists/{uuid}/ → lists.py:110
     run: (args) => getListDetail(args.list_uuid),
   },
   {
@@ -170,7 +170,7 @@ export const LIST_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:lists", // GET …/lists/{uuid}/entries/ → lists.py:153
+    permission: ["read:lists", "list:lists"], // GET …/lists/{uuid}/entries/ → lists.py:153
     run: ({ list_uuid, ...params }) => listEntries(list_uuid, params),
   },
   {

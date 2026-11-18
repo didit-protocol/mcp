@@ -73,3 +73,23 @@ test("a throttled auth service (429) is retried and then a server error, not an 
   });
   assert.equal(calls(), 2);
 });
+
+// an internal issue review: the per-call answer carries the member's current permissions, and RFC 7662
+// scope values may be a space-delimited string. Reading only the array made `permissions`
+// undefined, which skipped every permission test and forwarded a demotion.
+test("the per-call answer reads org_permissions as an array or a space-delimited string", async () => {
+  const verifier = new IntrospectionTokenVerifier();
+  const answer = (permissions) =>
+    auth([json({ active: true, org_role: "Admin", org_permissions: permissions, accessible_applications: [] })]);
+
+  answer(["read:sessions", "list:sessions"]);
+  assert.deepEqual((await verifier.organizationAccess(TOKEN, "org-1")).permissions, ["read:sessions", "list:sessions"]);
+
+  answer("read:sessions  list:sessions");
+  assert.deepEqual((await verifier.organizationAccess(TOKEN, "org-1")).permissions, ["read:sessions", "list:sessions"]);
+
+  // Absent is unknown (undeclared), never "this role has no permissions": the two must not be
+  // confused, or a tool with no role check would be refused for a role that was merely not listed.
+  answer(undefined);
+  assert.equal((await verifier.organizationAccess(TOKEN, "org-1")).permissions, undefined);
+});

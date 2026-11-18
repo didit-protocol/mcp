@@ -28,8 +28,12 @@ export interface RegisteredTool {
   access: ToolAccess;
   /** Reaches outside the Didit workspace: sends mail, registers an endpoint Didit delivers to, shares data. */
   openWorld?: boolean;
-  /** The role permission the backend checks for it (permissions.ts); null when it has no per-role check. */
-  permission: string | null;
+  /**
+   * The role permission the backend checks for it (permissions.ts): one string, or the set the
+   * endpoint accepts any one of (a DRF view's `accepted_org_permissions`). Null when
+   * it has no per-role check.
+   */
+  permission: string | readonly string[] | null;
   /** Runs a call. The routing ids and blank optional arguments are already removed (index.ts). */
   run(args: Record<string, any>): Promise<unknown>;
   /**
@@ -59,7 +63,7 @@ export function registeredAnnotations(tool: RegisteredTool, title: string) {
 }
 
 /** The permission entries of a set of tools, in the shape of permissions.ts's table. */
-export function permissionsOf(tools: readonly RegisteredTool[]): Record<string, string | null> {
+export function permissionsOf(tools: readonly RegisteredTool[]): Record<string, string | readonly string[] | null> {
   return Object.fromEntries(tools.map((tool) => [tool.def.name, tool.permission]));
 }
 

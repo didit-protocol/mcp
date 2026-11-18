@@ -81,7 +81,8 @@ async function withClient(fn) {
 const callAuditLogList = (args) => withClient((client) => client.callTool({ name: "didit_audit_log_list", arguments: args }));
 
 test("the audit log is the organization's /audit/{org}/audit-logs/, guarded by read:audit-logs", () => {
-  assert.equal(TOOL_PERMISSIONS.didit_audit_log_list, "read:audit-logs");
+  // A GET accepts either permission: read:audit-logs or list:audit-logs.
+  assert.deepEqual(TOOL_PERMISSIONS.didit_audit_log_list, ["read:audit-logs", "list:audit-logs"]);
 });
 
 test("every argument maps onto the backend's list filter of the same name", async () => {

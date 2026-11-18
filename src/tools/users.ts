@@ -69,7 +69,7 @@ export const VENDOR_USER_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "list:users", // GET …/vendor-users/ → vendor_user.py:283
+    permission: ["list:users", "read:users"], // GET …/vendor-users/ → vendor_user.py:283
     run: (args) => listUsers(args),
     spanAllApplications: (args) => searchVendorUsers(args),
   },
@@ -112,7 +112,7 @@ export const VENDOR_USER_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:users", // GET …/vendor-users/{vendor_data}/ → vendor_user.py:763
+    permission: ["read:users", "list:users"], // GET …/vendor-users/{vendor_data}/ → vendor_user.py:763
     run: (args) => getUser(args.vendor_data),
   },
   {

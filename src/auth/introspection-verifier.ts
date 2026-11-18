@@ -3,6 +3,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { InvalidTokenError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 import { apiKeyAuthInfo, looksLikeApiKey } from "../api-key-connection";
+import type { OrganizationAccess } from "../permissions";
 import { isAcceptedToken, unsupportedCredentialError } from "./accepted-credentials";
 import {
   MCP_OAUTH_INTROSPECT_URL,
@@ -123,6 +124,43 @@ export class IntrospectionTokenVerifier implements OAuthTokenVerifier {
         is_privileged: data.is_staff === true,
         has_2fa_enabled: data.has_2fa_enabled === true,
       },
+    };
+  }
+
+  /**
+   * The caller's access to ONE organization, introspected fresh for this call (never cached).
+   *
+   * `requested_org` is what makes the answer organization-scoped: service-didit-auth resolves
+   * the member's CURRENT role there, its permissions and the applications the membership can
+   * open, and it re-derives that per introspection (its own response cache is version-keyed and
+   * invalidated on every membership, role and application-access change). Without it an MCP
+   * token carries no organization at all, so the server could not judge a single permission and
+   * forwarded everything.
+   *
+   * Returns null when the service says the token is no longer active or has expired.
+   */
+  async organizationAccess(token: string, organizationId: string): Promise<OrganizationAccess | null> {
+    const data = await this.introspect({ token, requested_org: organizationId });
+    if (!data || data.active !== true) return null;
+    const exp = typeof data.exp === "number" ? data.exp : undefined;
+    if (exp !== undefined && exp * 1000 <= Date.now()) return null;
+
+    return {
+      // `org_role` is null — not absent — when the service names no role for this person in this
+      // organization (get_empty_organization_data: removed, suspended, or outside the grant).
+      role: "org_role" in data ? (typeof data.org_role === "string" && data.org_role ? data.org_role : null) : undefined,
+      // An ARRAY is what the service sends today, but a space-delimited string is the other shape
+      // RFC 7662 scope values arrive in, and `verifyAccessToken` above accepts it for the same field.
+      // Reading only the array left `permissions` undefined for a string, which made every permission
+      // test below skip and forwarded a demotion (an internal issue review). Absent is not "no permissions":
+      // anything else stays undefined, so a tool with no role check is still not refused.
+      permissions:
+        typeof data.org_permissions === "string" || Array.isArray(data.org_permissions)
+          ? coerceList(data.org_permissions)
+          : undefined,
+      accessibleApplications: Array.isArray(data.accessible_applications)
+        ? data.accessible_applications.filter((v): v is string => typeof v === "string")
+        : undefined,
     };
   }
 }

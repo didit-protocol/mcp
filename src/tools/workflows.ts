@@ -93,7 +93,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
     },
     // With no application named, it lists the workflows of every application of the organization.
     access: "read",
-    permission: "read:workflows", // GET …/verification-settings/ → verification_settings.py:74
+    permission: ["read:workflows", "list:workflows"], // GET …/verification-settings/ → verification_settings.py:74
     spanAllApplications: (args) => withAgeAssurance(searchWorkflows(args), args),
     run: (args) => withAgeAssurance(listWorkflowVersions(pageParams(args)), args),
   },
@@ -147,7 +147,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:workflows", // GET …/verification-settings/{uuid}/ (+ …/{workflow_id}/versions/) → verification_settings.py:214
+    permission: ["read:workflows", "list:workflows"], // GET …/verification-settings/{uuid}/ (+ …/{workflow_id}/versions/) → verification_settings.py:214
     run: (args) => getWorkflowVersion(args.workflow_id),
   },
   {
@@ -213,7 +213,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
     },
     // The routing ids narrow the search to one organization or application.
     access: "read",
-    permission: "read:workflows", // per-app fan-out over the list endpoint
+    permission: ["read:workflows", "list:workflows"], // per-app fan-out over the list endpoint
     routingIds: true,
     run: (args) => searchWorkflows(args),
   },
@@ -232,7 +232,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:workflows", // GET …/verification-settings/{uuid}/workflow-graph/ → workflow_graph.py:44
+    permission: ["read:workflows", "list:workflows"], // GET …/verification-settings/{uuid}/workflow-graph/ → workflow_graph.py:44
     run: (args) => getWorkflowGraph(args.workflow_id, args, Boolean(args.include_config)),
   },
   {
@@ -250,7 +250,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:workflows", // GET …/workflow-graph/field-definitions/ → workflow_graph.py:451
+    permission: ["read:workflows", "list:workflows"], // GET …/workflow-graph/field-definitions/ → workflow_graph.py:451
     run: (args) => getWorkflowFieldDefinitions(args.workflow_id, args),
   },
   {
@@ -301,7 +301,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "read",
-    permission: "read:workflows", // GET …/workflow-graph/id-verification-methods-catalog/ → workflow_graph.py
+    permission: ["read:workflows", "list:workflows"], // GET …/workflow-graph/id-verification-methods-catalog/ → workflow_graph.py
     run: (args) => getIdVerificationMethodsCatalog(args.workflow_id, args),
   },
   {

@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { DiditError, parseErrorBody, statusToCode, statusToHint, resolveFileSource, pathSegment } from "./security";
 import type { FileSource } from "./security";
 import type { ApiKeyScope } from "./api-key-connection";
+import type { LiveAccessReader } from "./live-access";
+import type { OrganizationAccess } from "./permissions";
 
 // Single source of truth for the version: package.json (falls back if unreadable).
 function readPackageVersion(): string {
@@ -25,6 +27,9 @@ export function setServerVersion(version: string): void {
  * Per-tool permission pre-check (permissions.ts): `shadow` (default) only records what
  * WOULD be denied on the audit line, `enforce` refuses the call and hides the tool from
  * tools/list, `off` disables the check. Read per call so a deployment can flip it by env.
+ * The check on the caller's CURRENT membership, read from service-didit-auth on the call,
+ * refuses in `shadow` and `enforce` alike (permissions.ts currentAccessRefusal);
+ * `off` is the debug switch for both, so it turns that live check off as well.
  */
 export function permissionMode(): "shadow" | "enforce" | "off" {
   const mode = process.env.MCP_PERMISSION_MODE;
@@ -164,6 +169,16 @@ export interface RequestCredentials {
   scopeChoices?: ScopeChoice[];
   /** An organization's applications could not be listed, so `scopeChoices` may not be all of them. */
   scopeChoicesPartial?: boolean;
+  /** The permissions the dispatched tool accepts (permissions.ts): a cross-organisation fan-out
+   *  judges each organisation it is about to read against them (live-access.ts). */
+  acceptedPermissions?: readonly string[];
+  /** The caller's CURRENT access to one organisation, asked of service-didit-auth for this call
+   *  (live-access.ts). Set only where such a read exists: a hosted OAuth connection with the live
+   *  check on. */
+  liveAccess?: LiveAccessReader;
+  /** What `liveAccess` has already answered on this call, one entry per organisation, so the
+   *  dispatcher's check and a fan-out's checks are a single request each (live-access.ts). */
+  liveAnswers?: Map<string, Promise<OrganizationAccess | null>>;
 }
 
 /** One application of the caller, with the two ids a console path needs. */

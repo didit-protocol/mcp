@@ -146,7 +146,7 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
     },
     // The auth service path is built from the organization the caller sent; the ids never reach the request body.
     access: "read",
-    permission: "list:members", // GET auth /organizations/{org}/members/ → member.py:141
+    permission: ["list:members", "read:members"], // GET auth /organizations/{org}/members/ → member.py:141
     routingIds: true,
     run: ({ organization_id, application_id: _app, ...params }) => listMembers(organization_id, params),
   },
@@ -220,7 +220,7 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
     },
     access: "read",
-    permission: "list:roles", // GET auth /organizations/{org}/roles/ → roles.py:55
+    permission: ["list:roles", "read:roles"], // GET auth /organizations/{org}/roles/ → roles.py:55
     routingIds: true,
     run: (args) => listRoles(args.organization_id),
   },
@@ -271,7 +271,7 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS }, required: ["application_id"] },
     },
     access: "read",
-    permission: "read:applications", // GET auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py:24
+    permission: ["read:applications", "list:applications"], // GET auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py:24
     routingIds: true,
     run: (args) => listApiKeys(args.organization_id, args.application_id),
   },
