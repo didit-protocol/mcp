@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "didit": {
+      "type": "http",
       "url": "https://mcp.didit.me/mcp"
     }
   }

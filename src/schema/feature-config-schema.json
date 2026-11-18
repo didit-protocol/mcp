@@ -1,5 +1,5 @@
 {
-  "checksum": "sha256:3df917c2503102db29867d1aabd2f78d78b440163e47b4044fc85aaf0c7de26a",
+  "checksum": "sha256:420b7b24ac86be17505a0966b1b601675ff047dc04eb8ed922035c32f16fc673",
   "features": {
     "AGE_ESTIMATION": {
       "description": "Configuration for Age Estimation feature.",
@@ -4105,6 +4105,16 @@
           "nullable": true,
           "required": false,
           "type": "integer"
+        },
+        "document_selfie_portrait_match_not_computed_action": {
+          "description": "Verdict when is_document_selfie_portrait_match_enabled is on but the client scanning the document reported that it captured no front-camera image (front_camera_image_unavailable is true) and neither side of the document produced a selfie-to-portrait score, so the comparison never ran. Defaults to REVIEW: an absent comparison is not a passed one. Set DECLINE for an application that treats the missing mandatory check as a failed one. A missing frame alone never raises it: gallery uploads and the standalone ID verification API do not report the flag, so the risk does not apply to them.",
+          "enum": [
+            "DECLINE",
+            "REVIEW"
+          ],
+          "nullable": true,
+          "required": false,
+          "type": "string"
         },
         "document_selfie_portrait_match_review_threshold": {
           "maximum": 100,

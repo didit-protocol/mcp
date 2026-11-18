@@ -53,7 +53,7 @@ configuration produces an actionable tool error instead of inline PDF data.
 
 ### Hosted (recommended)
 
-No install, no API key — point your client at the hosted URL and sign in via the browser:
+No install: point your client at the hosted URL and sign in via the browser. An agent with no person present can [connect with an API key](#connect-with-an-api-key-headless-agents-and-ci) instead.
 
 ```
 https://mcp.didit.me/mcp
@@ -69,6 +69,8 @@ A client that was given the address without the path, `https://mcp.didit.me`, re
 | **Cursor** | [Add Didit to Cursor](https://cursor.com/install-mcp?name=didit&config=eyJ1cmwiOiJodHRwczovL21jcC5kaWRpdC5tZS9tY3AifQ%3D%3D) |
 | **VS Code** (GitHub Copilot) | [Add Didit to VS Code](https://vscode.dev/redirect/mcp/install?name=didit&config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.didit.me%2Fmcp%22%7D) |
 | **OpenAI Codex** | `codex mcp add didit --url https://mcp.didit.me/mcp` |
+
+**Claude plugin:** `/plugin install didit --marketplace didit-protocol/skills` installs the Didit plugin (this server + 8 skills). Source: https://github.com/didit-protocol/skills/tree/main/plugins/didit
 
 **Cursor** (`~/.cursor/mcp.json`), by hand
 
@@ -376,7 +378,7 @@ A key that is not listed here is not part of the contract and is dropped silentl
 
 <!-- BEGIN GENERATED FEATURE CONFIG REFERENCE -->
 
-_Generated from `schema/feature-config-schema.json` (contract `sha256:3df917c2503102db29867d1aabd2f78d78b440163e47b4044fc85aaf0c7de26a`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
+_Generated from `schema/feature-config-schema.json` (contract `sha256:420b7b24ac86be17505a0966b1b601675ff047dc04eb8ed922035c32f16fc673`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
 
 ### AGE_ESTIMATION
 
@@ -815,6 +817,7 @@ Configuration for OCR/ID Verification feature.
 | `document_selfie_duplicated_face_name_mismatch_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the document-capture selfie matches a user already verified under a different name. Can only escalate document_selfie_duplicated_face_action. |
 | `document_selfie_face_search_enabled` | boolean \| null | boolean | Run the 1:N Face Search on the selfie taken during document capture (needs is_document_selfie_portrait_match_enabled): match it against the face blocklist and previously verified users. The selfie is a probe only, its template is never stored. On by default. Off skips the search and leaves the document-selfie duplicate-face actions with nothing to act on; face_search_enabled off on the LIVENESS step skips it too, since that opt-out covers every selfie of the session. |
 | `document_selfie_portrait_match_decline_threshold` | integer \| null | integer >=0 <=100 |  |
+| `document_selfie_portrait_match_not_computed_action` | string \| null | 'REVIEW'\|'DECLINE' | Verdict when is_document_selfie_portrait_match_enabled is on but the client scanning the document reported that it captured no front-camera image (front_camera_image_unavailable is true) and neither side of the document produced a selfie-to-portrait score, so the comparison never ran. Defaults to REVIEW: an absent comparison is not a passed one. Set DECLINE for an application that treats the missing mandatory check as a failed one. A missing frame alone never raises it: gallery uploads and the standalone ID verification API do not report the flag, so the risk does not apply to them. |
 | `document_selfie_portrait_match_review_threshold` | integer \| null | integer >=0 <=100 |  |
 | `document_without_portrait_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the scanned document family carries no portrait on any side. Node-config only - there is no account-level setting; the runtime default is REVIEW. |
 | `documents_allowed` | json \| null | {"<ISO3>": {"<DOC_CODE>": {"enabled": 0\|1, "sides"?: 1\|2, "subtypes"?: ["<SUBTYPE_CODE>", ...]}}} | Which identity documents are accepted, per issuing country. Omit the key entirely to accept the full catalog; an empty object means the same thing. At least one document must end up enabled or the save is rejected. |

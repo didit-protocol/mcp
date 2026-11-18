@@ -199,8 +199,10 @@ test("the tool list stays within its budget", async () => {
     // in: without them every import call a person made was refused. By 200 bytes when
     // merge_node_config said that a config map merges by entry, and by 300 when the workflow and
     // session tools said which id an integration uses (the stable workflow_id; a version uuid pins
-    // one version).
-    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 272_500],
+    // one version). By 100 bytes for the OCR setting document_selfie_portrait_match_not_computed_action
+    // (backend v5.1.223): it costs 52 bytes, its name once in the graph manual of the saving tool,
+    // and the list stood 36 bytes under the number before it.
+    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 272_600],
     ["an API key connection", { hosted: true, apiKey: true }, KEY, 207_000],
     ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 31_500],
   ];
