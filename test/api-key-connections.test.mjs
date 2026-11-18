@@ -110,7 +110,7 @@ test("the verifier introspects a key as api_key and a token as token, one reques
   assert.equal(info.extra.api_key.restricted, false);
   assert.equal(info.extra.is_privileged, false);
 
-  const forToken = backend(() => json({ active: true, sub: "u-1", organization_id: ORG, exp: Math.floor(Date.now() / 1000) + 600 }));
+  const forToken = backend(() => json({ active: true, sub: "u-1", organization_id: ORG, token_use: "mcp", exp: Math.floor(Date.now() / 1000) + 600 }));
   const person = await new IntrospectionTokenVerifier().verifyAccessToken(JWT);
   assert.deepEqual(JSON.parse(forToken[0].body), { token: JWT });
   assert.equal(person.extra.credential, undefined);

@@ -337,7 +337,7 @@ test("the token introspection call carries it too", async () => {
   let headers;
   globalThis.fetch = async (_url, init) => {
     headers = init.headers;
-    return json({ active: true, sub: "u" });
+    return json({ active: true, sub: "u", token_use: "mcp" });
   };
   await new IntrospectionTokenVerifier().verifyAccessToken("header.payload.signature");
   assert.equal(headers["X-Didit-Agent"], "mcp");
@@ -374,7 +374,7 @@ function stubHttpFetch() {
         scopes_supported: ["didit:management"],
       });
     }
-    if (target === process.env.MCP_OAUTH_INTROSPECT_URL) return json({ active: true, sub: "u-1", organization_id: "org-1", exp: Math.floor(Date.now() / 1000) + 3600 });
+    if (target === process.env.MCP_OAUTH_INTROSPECT_URL) return json({ active: true, sub: "u-1", organization_id: "org-1", token_use: "mcp", exp: Math.floor(Date.now() / 1000) + 3600 });
     return json({});
   };
 }

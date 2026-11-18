@@ -44,6 +44,7 @@ globalThis.fetch = async (url) => {
   if (String(url) === process.env.MCP_OAUTH_INTROSPECT_URL) {
     return json({
       active: true,
+      token_use: "mcp",
       sub: "5bfe5319-625d-487c-a9c3-8f3cf50750b8",
       client_id: "client-of-the-application",
       organization_id: "69f2b990-24e3-4892-bbe7-1a6a628943b3",

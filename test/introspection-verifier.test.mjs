@@ -13,7 +13,7 @@ const { IntrospectionTokenVerifier } = await import("../dist/auth/introspection-
 // A person's access token is a JWT. A string with no dot would be introspected as an API key.
 const TOKEN = "header.payload.signature";
 
-const active = { active: true, sub: "u-1", organization_id: "org-1", org_permissions: ["read:workflows"] };
+const active = { active: true, token_use: "mcp", sub: "u-1", organization_id: "org-1", org_permissions: ["read:workflows"] };
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 

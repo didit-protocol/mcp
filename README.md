@@ -207,6 +207,11 @@ Such a connection is one application with the key's own access, not a user with 
 > On a sign-in the MCP reads that key with your sign-in (a role with `create:sessions` and the `didit:management` scope, or an organization owner or admin for a local `didit_account_login` token); on an API key connection it uses the connection's own key.
 > The key is never returned, stored or logged.
 
+Those are the only two credentials the hosted server accepts. A token minted for an application rather than
+for a connection — the one `POST /auth/v2/programmatic/login` returns, for example — is refused at the first
+request, tool list included, with an error that names both ways in and links the same page, so an accepted-but-useless
+credential never looks like an empty account.
+
 See [Authentication](https://docs.didit.me/integration/mcp/authentication).
 
 ## Toolsets

@@ -58,6 +58,14 @@ export const MCP_OAUTH_INTROSPECT_URL =
   process.env.MCP_OAUTH_INTROSPECT_URL || "https://apx.didit.me/auth/v2/introspect/";
 // Optional: for single-org MCP deployments, the org to scope introspection to.
 export const MCP_DEFAULT_ORG = process.env.MCP_DEFAULT_ORG || "";
+
+// The client ids (token `aud`) of the first-party Didit console sessions this deployment serves
+// (auth/accepted-credentials.ts). The console's copilot relays the person's console token to this
+// server, so a deployment that serves it names the console's client ids here
+// (service-didit-auth APP_CONSOLE_CLIENT_ID / STAFF_CONSOLE_CLIENT_ID, see deploy/*.tfvars).
+// Empty: only a "Log in with Didit" grant and an application API key are accepted, which is the
+// whole contract the hosted server documents.
+export const MCP_CONSOLE_CLIENT_IDS = process.env.MCP_CONSOLE_CLIENT_IDS || "";
 // How long an accepted token is remembered before it is introspected again (auth/cached-verifier.ts).
 // Every MCP request is its own authenticated POST; 0 introspects every one of them.
 // A mistyped or negative value falls back to the default rather than turning the cache off.

@@ -3,6 +3,7 @@ import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/p
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { InvalidTokenError, OAuthError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
+import { isAcceptedToken, unsupportedCredentialError } from "./accepted-credentials";
 import {
   DIDIT_AUTH_ISSUER,
   DIDIT_JWKS_URL,
@@ -41,6 +42,17 @@ export class DiditTokenVerifier implements OAuthTokenVerifier {
       // them as InvalidTokenError so the bearer middleware answers 401 (not 500).
       if (err instanceof OAuthError) throw err;
       throw new InvalidTokenError(err instanceof Error ? err.message : "Invalid access token");
+    }
+
+    // The same credential decision as the introspection verifier (accepted-credentials.ts): a
+    // token minted for an application is not a Didit MCP connection, whatever its signature says.
+    const credential = {
+      token_use: payload.token_use,
+      client_id: payload.client_id,
+      aud: Array.isArray(payload.aud) ? payload.aud[0] : payload.aud,
+    };
+    if (!isAcceptedToken(credential)) {
+      throw unsupportedCredentialError();
     }
 
     const scopes = extractScopes(payload);

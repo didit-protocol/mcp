@@ -184,7 +184,7 @@ test("Claude Code and Codex are woken by the Didit backend's signed events", { s
       }
       const sub = TOKENS[body.token];
       if (!sub) return json(200, { active: false });
-      return json(200, { active: true, sub, organization_id: sub === "eve" ? "org-2" : ORG, exp: Math.floor(Date.now() / 1000) + 3600 });
+      return json(200, { active: true, sub, token_use: "mcp", organization_id: sub === "eve" ? "org-2" : ORG, exp: Math.floor(Date.now() / 1000) + 3600 });
     }
     if (path === "/auth/v2/organizations/me/") return json(200, [{ uuid: user === "eve" ? "org-2" : ORG, name: "Acme" }]);
     if (path.endsWith("/applications/")) return json(200, [{ uuid: user === "eve" ? "app-2" : APP, name: "Acme", mode: "live" }]);

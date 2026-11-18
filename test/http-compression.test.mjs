@@ -35,7 +35,7 @@ globalThis.fetch = async (url) => {
     });
   }
   if (target === process.env.MCP_OAUTH_INTROSPECT_URL) {
-    return json({ active: true, sub: "u-1", organization_id: "org-1", exp: Math.floor(Date.now() / 1000) + 3600 });
+    return json({ active: true, sub: "u-1", organization_id: "org-1", token_use: "mcp", exp: Math.floor(Date.now() / 1000) + 3600 });
   }
   return json({});
 };

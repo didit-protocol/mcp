@@ -214,6 +214,7 @@ test("an Accept header the transport cannot answer is logged as such", async () 
   introspection = () =>
     json({
       active: true,
+      token_use: "mcp",
       sub: "u-1",
       organization_id: "org-1",
       exp: Math.floor(Date.now() / 1000) + 3600,
@@ -311,7 +312,7 @@ test("a request cut off before its answer is logged, with how long it stayed ope
 });
 
 test("a request that works leaves no refusal line, and neither does an unrelated path", async () => {
-  introspection = () => json({ active: true, sub: "u-1", organization_id: "org-1", exp: Math.floor(Date.now() / 1000) + 3600 });
+  introspection = () => json({ active: true, sub: "u-1", organization_id: "org-1", token_use: "mcp", exp: Math.floor(Date.now() / 1000) + 3600 });
   await withApp(async (server) => {
     const { answer, lines } = await refusalsOf(() =>
       request(server, { body: INITIALIZE, headers: { Authorization: "Bearer person.access.token" } }),

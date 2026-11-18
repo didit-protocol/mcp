@@ -3,6 +3,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { InvalidTokenError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 import { apiKeyAuthInfo, looksLikeApiKey } from "../api-key-connection";
+import { isAcceptedToken, unsupportedCredentialError } from "./accepted-credentials";
 import {
   MCP_OAUTH_INTROSPECT_URL,
   MCP_OAUTH_CLIENT_ID,
@@ -88,6 +89,16 @@ export class IntrospectionTokenVerifier implements OAuthTokenVerifier {
     const exp = typeof data.exp === "number" ? data.exp : undefined;
     if (exp !== undefined && exp * 1000 <= Date.now()) {
       throw new InvalidTokenError("Token has expired");
+    }
+
+    // `active` only says the auth service knows this token. Which CREDENTIAL it is
+    // decides whether it can ever run a tool here: a "Log in with Didit" grant (token_use "mcp")
+    // or a first-party console session are served, an application token minted by
+    // `POST /programmatic/login` is not (accepted-credentials.ts). Said here, at the first
+    // request and before tools/list, so a token this server does not accept is never answered
+    // as if the account had no data.
+    if (!isAcceptedToken(data)) {
+      throw unsupportedCredentialError();
     }
 
     const scopes = coerceList(data.org_permissions).concat(coerceList(data.claims), coerceList(data.scope));

@@ -43,6 +43,7 @@ globalThis.fetch = async (url) => {
   if (String(url) === process.env.MCP_OAUTH_INTROSPECT_URL) {
     return json({
       active: true,
+      token_use: "mcp",
       sub: "0e2f8a56-1d54-4c7b-9a57-5f0f6d1f2b11",
       client_id: "https://claude.ai/oauth/mcp-oauth-client-metadata",
       scope: "didit:management didit:verification",
