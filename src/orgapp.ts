@@ -1,4 +1,6 @@
-import { requestContext } from "./config";
+import { DIDIT_AUTH_BASE_URL, apiRequest, requestContext } from "./config";
+import { everyPage } from "./paging";
+import { pathSegment } from "./security";
 import { listOrganizations, listApplications } from "./tools/auth";
 
 // Cross-org/app context layer. The Didit management API is resource-path-scoped
@@ -23,6 +25,9 @@ export interface OrgRef {
   apps: AppRef[];
   /** listApplications failed for this org — its apps are UNKNOWN, not empty. */
   appsError?: boolean;
+  /** Where `apps` came from when the organization's application list was refused: the signed-in
+   *  member's own row in the member list. Those applications carry no `mode`. */
+  appsSource?: "membership";
 }
 
 interface CacheEntry {
@@ -49,25 +54,122 @@ const nameOf = (o: any): string => o?.name ?? o?.display_name ?? idOf(o) ?? "";
 const modeOf = (o: any): { mode?: string } =>
   typeof o?.mode === "string" && o.mode ? { mode: o.mode } : {};
 
+const toAppRef = (a: any): AppRef | null => {
+  const appId = idOf(a);
+  return appId ? { appId, appName: nameOf(a), ...modeOf(a) } : null;
+};
+const toAppRefs = (payload: any): AppRef[] =>
+  extractResults(payload).map(toAppRef).filter((a): a is AppRef => a !== null);
+
+/**
+ * The applications on the signed-in member's own row, or undefined when any of them is unreadable.
+ *
+ * The read shape of `accessible_applications` is expanded objects (`OrganizationApplicationSerializer`,
+ * `{ uuid, name }`); the write shape is a list of bare UUIDs (`OrganizationMemberUpdateSerializer`).
+ * Both are accepted, so a row that answers in either shape gives the person their applications.
+ *
+ * One entry that is neither an object carrying an id nor a non-empty string makes the whole list
+ * UNKNOWN. Dropping it would answer a shorter list, or an empty one, and "your organization has no
+ * applications" is the answer this fallback exists to stop giving: unreadable is not none.
+ */
+function membershipAppRefs(entries: any[]): AppRef[] | undefined {
+  const refs: AppRef[] = [];
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      const appId = entry.trim();
+      if (!appId) return undefined;
+      // A bare id carries no name and no mode. The id is the only label the row gave, the same
+      // fallback toAppRef uses for an object whose name the API omitted.
+      refs.push({ appId, appName: appId });
+      continue;
+    }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const ref = toAppRef(entry);
+    if (!ref) return undefined;
+    refs.push(ref);
+  }
+  return refs;
+}
+
+/** The signed-in member's identifier (their e-mail/SSO id), to find their own row in a member list. */
+async function memberIdentifier(): Promise<string | undefined> {
+  const me = await apiRequest("/users/me/", { baseUrl: DIDIT_AUTH_BASE_URL });
+  return typeof me?.identifier === "string" && me.identifier ? me.identifier : undefined;
+}
+
+/**
+ * The applications the signed-in member may open, read from their OWN row in the member list.
+ *
+ * GET /organizations/me/{org}/applications/ answers 403 to every role but Owner and Admin
+ * ("Only organization owners and admins can manage applications."), while the same person can
+ * list the team (list:members) and their row carries `accessible_applications` — the ids the
+ * app-scoped tools already accept. Reading it separates "refused" from "none": before this,
+ * every non-admin role was shown an empty organization and told it had no applications.
+ *
+ * The member list is paged (`?limit=` / `?offset=`, answering `{count, next, previous, results}`),
+ * and the caller's own row is not necessarily on the first page: in a large organization that
+ * row can be on page 2 or later, so reading one page answered "could not be determined" for
+ * exactly the teams this fallback exists for. everyPage (paging.ts) is the same reader the
+ * organization and application discovery use; its callback hands back only the page holding the
+ * caller's row, with no `next`, so paging stops there. The read keeps that helper's page cap, so
+ * a list that never ends cannot hang the call. A page that cannot be read, or a read the cap
+ * stopped before the end, answers undefined (UNKNOWN), never "no applications".
+ *
+ * The row has no `mode`, so these applications carry none. Undefined means the row could not be
+ * read (not that it is empty): the caller must report the organization's apps as UNKNOWN.
+ */
+async function appsFromOwnMembership(orgId: string, identifier: string): Promise<AppRef[] | undefined> {
+  // Called directly rather than through tools/members.listMembers: that module imports ORG_APP_PROPS
+  // from here, and importing it back would be a cycle.
+  const path = `/organizations/${pathSegment(orgId, "organization_id")}/members/`;
+  const wanted = identifier.toLowerCase();
+  const ownRow = (rows: any[]): any =>
+    rows.find((m) => typeof m?.identifier === "string" && m.identifier.toLowerCase() === wanted);
+  const whole = await everyPage(async (page) => {
+    const answer = await apiRequest(path, { baseUrl: DIDIT_AUTH_BASE_URL, params: page });
+    // A bare array is a list the API did not page; everyPage returns it whole, so nothing to trim.
+    if (Array.isArray(answer)) return answer;
+    const found = ownRow(extractResults(answer));
+    // Stop at the page that has the row: everyPage ends a paged read on a page with no `next`.
+    return found ? { ...answer, results: [found], next: null } : answer;
+  });
+  if (!whole.complete) return undefined;
+  const mine = ownRow(whole.rows);
+  if (!mine || !Array.isArray(mine.accessible_applications)) return undefined;
+  return membershipAppRefs(mine.accessible_applications);
+}
+
 async function buildOrgAppMap(): Promise<OrgRef[]> {
   const orgs = extractResults(await listOrganizations());
+  // Fetched at most once per map, and only when an organization's applications are refused.
+  let identifier: Promise<string | undefined> | undefined;
+  const ownIdentifier = () => (identifier ??= memberIdentifier().catch(() => undefined));
   const refs = await Promise.all(
     orgs.map(async (o): Promise<OrgRef | null> => {
       const orgId = idOf(o);
       if (!orgId) return null;
       let apps: AppRef[] = [];
       let appsError = false;
+      let appsSource: OrgRef["appsSource"];
       try {
-        apps = extractResults(await listApplications(orgId))
-          .map((a): AppRef | null => {
-            const appId = idOf(a);
-            return appId ? { appId, appName: nameOf(a), ...modeOf(a) } : null;
-          })
-          .filter((a): a is AppRef => a !== null);
+        apps = toAppRefs(await listApplications(orgId));
       } catch {
-        appsError = true; // org whose apps the caller can't list — leave it appless but flagged
+        // Refused or failed, which is UNKNOWN, not "none". A non-admin role is refused here by
+        // design, so ask the member list for the applications this person can actually open.
+        try {
+          const own = await ownIdentifier();
+          const fromMembership = own ? await appsFromOwnMembership(orgId, own) : undefined;
+          if (fromMembership) {
+            apps = fromMembership;
+            appsSource = "membership";
+          } else {
+            appsError = true;
+          }
+        } catch {
+          appsError = true;
+        }
       }
-      return { orgId, orgName: nameOf(o), apps, ...(appsError ? { appsError } : {}) };
+      return { orgId, orgName: nameOf(o), apps, ...(appsSource ? { appsSource } : {}), ...(appsError ? { appsError } : {}) };
     }),
   );
   return refs.filter((r): r is OrgRef => r !== null);
