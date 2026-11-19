@@ -120,14 +120,30 @@ MULTILINGUAL.graph.nodes["company-name"].title = { en: "Company name", es: "Nomb
 
 /** A fake console resource: GET answers the stored questionnaire, PATCH stores the graph it is
  * given and answers it back, so a second read shows what the write did. */
-function fakeBackend(t, initial = STORED) {
+function fakeBackend(t, initial = STORED, options = {}) {
   const calls = [];
   let stored = initial;
   t.mock.method(globalThis, "fetch", async (url, init = {}) => {
     const method = init.method ?? "GET";
     const request = { url: new URL(String(url)), method, body: init.body ? JSON.parse(init.body) : undefined };
     calls.push(request);
+    if (method === "GET" && options.forbidReads) {
+      return Response.json({ detail: "You do not have permission to perform this action." }, { status: 403 });
+    }
     if (method === "PATCH") {
+      // The real backend checks every translatable field against the languages the PATCH would
+      // leave stored (its own, or the request's) and refuses a graph that lacks one.
+      if (options.refuseMissingTranslations) {
+        const languages = Array.isArray(request.body.languages) ? request.body.languages : stored.languages;
+        const missing = languages.filter((language) =>
+          Object.values(request.body.graph?.nodes ?? {}).some(
+            (node) => !(node?.title && typeof node.title === "object" && node.title[language]),
+          ),
+        );
+        if (missing.length) {
+          return Response.json([`missing translations for: ${missing.join(", ")}`], { status: 400 });
+        }
+      }
       stored = {
         ...stored,
         graph: request.body.graph,
@@ -352,4 +368,304 @@ test("the get, update and delete tools say what a caller can send back and what 
   assert.match(languages, /update without it keeps the stored/i, "and that an update keeps the stored ones");
   assert.doesNotMatch(languages, /Defaults to/i, "it no longer claims a default an update does not apply");
   assert.match(get.inputSchema.properties.include_translations.description, /form_elements/, "include_translations names what keeps every locale");
+});
+
+// since an internal issue an update that names no `languages` keeps the stored ones. A title,
+// placeholder, description or choice label sent as a plain string is then written as that same
+// text in every stored language, and the answer says nothing about it. A respondent in the other
+// language reads the wrong text, and translation-completeness views count it as translated.
+// The example below is the issue's: a questionnaire stored in English and Spanish, one question
+// whose title is sent as "What is your occupation?".
+const OCCUPATION = {
+  questionnaire_id: "q-3",
+  title: { en: "Acme onboarding" },
+  status: "draft",
+  languages: ["en", "es"],
+  default_language: "en",
+  graph: {
+    start_node: "occupation",
+    nodes: {
+      occupation: {
+        element_type: "SHORT_TEXT",
+        title: { en: "Occupation", es: "Ocupación" },
+        is_required: false,
+        next: null,
+      },
+    },
+  },
+  sections: [{ items: [{ value: "occupation" }] }],
+};
+
+// The same question with every translatable field filled in both languages, for the no-warning
+// case: a caller that sends objects carrying every stored language is translating, not broadcasting.
+const OCCUPATION_TRANSLATED = structuredClone(OCCUPATION);
+OCCUPATION_TRANSLATED.questionnaire_id = "q-4";
+OCCUPATION_TRANSLATED.graph.nodes.occupation = {
+  element_type: "SINGLE_CHOICE",
+  title: { en: "Occupation", es: "Ocupación" },
+  placeholder: { en: "Pick one", es: "Elige uno" },
+  choices: [
+    { value: "employed", label: { en: "Employed", es: "Empleado" } },
+    { value: "student", label: { en: "Student", es: "Estudiante" } },
+  ],
+  is_required: false,
+  next: null,
+};
+
+function update(id, data) {
+  return requestContext.run(CTX, () => tool("didit_questionnaire_update").run({ questionnaire_id: id, ...data }));
+}
+
+test("an update that writes a plain-string title into every stored language warns and names the field and languages", async (t) => {
+  const calls = fakeBackend(t, OCCUPATION);
+
+  const result = await update("q-3", {
+    form_elements: [{ id: "occupation", element_type: "SHORT_TEXT", title: "What is your occupation?" }],
+  });
+
+  const writes = calls.filter((call) => call.method === "PATCH");
+  assert.equal(writes.length, 1, "the update is written");
+  assert.deepEqual(
+    writes[0].body.graph.nodes.occupation.title,
+    { en: "What is your occupation?", es: "What is your occupation?" },
+    "the plain string is stored as the same text in both languages",
+  );
+
+  assert.ok(Array.isArray(result.warnings) && result.warnings.length === 1, "the answer carries one warning for the broadcast");
+  assert.match(result.warnings[0], /occupation\.title/, "the warning names the question and field");
+  assert.match(result.warnings[0], /\ben, es\b/, "the warning names the languages it was written in");
+  assert.match(result.warnings[0], /same text/i, "the warning says the text is the same in every language");
+  assert.match(result.warnings[0], /Send \{ "en": \.\.\., "es": \.\.\. \} to translate it\./, "the warning says how to send a translation");
+
+  const after = await requestContext.run(CTX, () =>
+    tool("didit_questionnaire_get").run({ questionnaire_id: "q-3" }),
+  );
+  assert.deepEqual(
+    after.form_elements[0].title,
+    { en: "What is your occupation?", es: "What is your occupation?" },
+    "the Spanish respondent now reads the English title",
+  );
+});
+
+test("a broadcast over several fields is one grouped warning, naming each field once", async (t) => {
+  fakeBackend(t, OCCUPATION_TRANSLATED);
+
+  const result = await update("q-4", {
+    form_elements: [
+      {
+        id: "occupation",
+        element_type: "SINGLE_CHOICE",
+        title: "What is your occupation?",
+        placeholder: "Your job",
+        choices: [
+          { value: "employed", label: "Employed" },
+          { value: "student", label: { en: "Student", es: "Estudiante" } },
+        ],
+      },
+    ],
+  });
+
+  assert.ok(Array.isArray(result.warnings) && result.warnings.length === 1, "one grouped warning, not one per field");
+  for (const field of ["occupation.title", "occupation.placeholder", "occupation.choices[0].label"]) {
+    assert.match(result.warnings[0], new RegExp(field.replace(/[.[\]]/g, "\\$&")), `the warning names ${field}`);
+  }
+  assert.match(result.warnings[0], /\ben, es\b/);
+  assert.match(result.warnings[0], /to translate/i);
+});
+
+test("an update that writes a plain string into a questionnaire stored in one language is not warned about", async (t) => {
+  fakeBackend(t);
+  const form_elements = firstReadOrder(["has_company", "company-name", "comments"]).map((element) =>
+    element.id === "company-name" ? { ...element, title: "Legal name" } : element,
+  );
+
+  const result = await update("q-1", { form_elements });
+
+  assert.equal(result.warnings, undefined, "there is no other language to translate into");
+});
+
+test("an update that sends every translatable field as an object with every stored language is not warned about", async (t) => {
+  fakeBackend(t, OCCUPATION_TRANSLATED);
+
+  const result = await update("q-4", {
+    form_elements: [
+      {
+        id: "occupation",
+        element_type: "SINGLE_CHOICE",
+        title: { en: "Occupation", es: "Ocupación" },
+        placeholder: { en: "Pick one", es: "Elige uno" },
+        choices: [
+          { value: "employed", label: { en: "Employed", es: "Empleado" } },
+          { value: "student", label: { en: "Student", es: "Estudiante" } },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(result.warnings, undefined, "the caller sent a translation, not a broadcast");
+});
+
+test("a plain string equal to the text stored in every language is not warned about", async (t) => {
+  const sameEverywhere = structuredClone(OCCUPATION);
+  sameEverywhere.questionnaire_id = "q-5";
+  sameEverywhere.graph.nodes.occupation.title = { en: "Occupation", es: "Occupation" };
+  fakeBackend(t, sameEverywhere);
+
+  const result = await update("q-5", {
+    form_elements: [{ id: "occupation", element_type: "SHORT_TEXT", title: "Occupation" }],
+  });
+
+  assert.equal(result.warnings, undefined, "an unchanged read-back of a questionnaire with the same text everywhere is not a new broadcast");
+});
+
+test("a connection that may write but not read still updates a one-language questionnaire, without the warning", async (t) => {
+  // No read is needed to know this questionnaire's only language, so the swallowed 403 costs
+  // nothing. A multilingual one is a different case: the test below.
+  const calls = fakeBackend(t, STORED, { forbidReads: true });
+
+  const result = await update("q-1", {
+    form_elements: [{ id: "comments", element_type: "LONG_TEXT", title: "Comments" }],
+  });
+
+  const writes = calls.filter((call) => call.method === "PATCH");
+  assert.equal(writes.length, 1, "the write is not refused because the read was");
+  assert.deepEqual(
+    writes[0].body.graph.nodes.comments.title,
+    { en: "Comments" },
+    "the update goes out with the languages it could build without a read",
+  );
+  assert.equal(result.warnings, undefined, "with no read there is no warning to give");
+});
+
+test("a write-only connection sending a plain string to a multilingual questionnaire is refused with the missing locale", async (t) => {
+  // Without a read the tool cannot know the stored languages, so it sends the English-only graph
+  // and names no `languages`; the backend refuses and names the locale. It must not reset the
+  // questionnaire to English (v5.1.75's `languages: ["en"]`) to make the write pass.
+  const calls = fakeBackend(t, OCCUPATION, { forbidReads: true, refuseMissingTranslations: true });
+
+  await assert.rejects(
+    () =>
+      update("q-3", {
+        form_elements: [{ id: "occupation", element_type: "SHORT_TEXT", title: "What is your occupation?" }],
+      }),
+    (error) => {
+      assert.match(error.message, /missing translations for: es/, "the refusal reaches the caller and names the missing locale");
+      return true;
+    },
+  );
+
+  const writes = calls.filter((call) => call.method === "PATCH");
+  assert.equal(writes.length, 1, "the update is attempted exactly once");
+  assert.equal("languages" in writes[0].body, false, "the tool cannot know the stored languages, so the PATCH names none");
+  assert.ok(
+    !calls.some((call) => JSON.stringify(call.body?.languages) === '["en"]'),
+    "no request resets the questionnaire to English",
+  );
+});
+
+// The broadcast is a property of the write, not of leaving `languages` out: an update that names
+// the stored languages explicitly still copies a plain string into each of them, so it is reported
+// the same way. (Review of revision 0fe4a51, finding 1.)
+test("an update that names several languages explicitly and writes a plain string warns about it too", async (t) => {
+  const calls = fakeBackend(t, OCCUPATION);
+
+  const result = await update("q-3", {
+    languages: ["en", "es"],
+    form_elements: [{ id: "occupation", element_type: "SHORT_TEXT", title: "Job" }],
+  });
+
+  const writes = calls.filter((call) => call.method === "PATCH");
+  assert.deepEqual(writes[0].body.languages, ["en", "es"], "the update keeps both languages");
+  assert.deepEqual(
+    writes[0].body.graph.nodes.occupation.title,
+    { en: "Job", es: "Job" },
+    "the plain string is still stored as the same text in both languages",
+  );
+  assert.ok(Array.isArray(result.warnings) && result.warnings.length === 1, "the answer carries the warning");
+  assert.match(result.warnings[0], /occupation\.title/);
+  assert.match(result.warnings[0], /\ben, es\b/);
+});
+
+test("an update that names several languages explicitly but changes no text is not warned about", async (t) => {
+  const sameEverywhere = structuredClone(OCCUPATION);
+  sameEverywhere.questionnaire_id = "q-6";
+  sameEverywhere.graph.nodes.occupation.title = { en: "Occupation", es: "Occupation" };
+  fakeBackend(t, sameEverywhere);
+
+  const result = await update("q-6", {
+    languages: ["en", "es"],
+    form_elements: [{ id: "occupation", element_type: "SHORT_TEXT", title: "Occupation" }],
+  });
+
+  assert.equal(result.warnings, undefined, "the text already stands in both languages");
+});
+
+test("an update that names one language writes no broadcast", async (t) => {
+  fakeBackend(t, OCCUPATION);
+
+  const result = await update("q-3", {
+    languages: ["en"],
+    form_elements: [{ id: "occupation", element_type: "SHORT_TEXT", title: "Occupation" }],
+  });
+
+  assert.equal(result.warnings, undefined, "one language is not a broadcast");
+});
+
+// A choice is identified by its value, not by its position: reordering choices (or inserting one
+// before them) must not report labels that are already the same text in every language.
+// (Review of revision 0fe4a51, finding 2.)
+const OCCUPATION_SAME_LABELS = structuredClone(OCCUPATION);
+OCCUPATION_SAME_LABELS.questionnaire_id = "q-7";
+OCCUPATION_SAME_LABELS.graph.nodes.occupation = {
+  element_type: "SINGLE_CHOICE",
+  title: { en: "Occupation", es: "Ocupación" },
+  choices: [
+    { value: "employed", label: { en: "Employed", es: "Employed" } },
+    { value: "student", label: { en: "Student", es: "Student" } },
+  ],
+  is_required: false,
+  next: null,
+};
+
+test("reordering choices whose labels are the same in every language is not warned about", async (t) => {
+  fakeBackend(t, OCCUPATION_SAME_LABELS);
+
+  const result = await update("q-7", {
+    form_elements: [
+      {
+        id: "occupation",
+        element_type: "SINGLE_CHOICE",
+        title: { en: "Occupation", es: "Ocupación" },
+        choices: [
+          { value: "student", label: "Student" },
+          { value: "employed", label: "Employed" },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(result.warnings, undefined, "each label already stands in every language, whatever the position");
+});
+
+test("inserting a choice before unchanged ones warns about the new choice only", async (t) => {
+  fakeBackend(t, OCCUPATION_SAME_LABELS);
+
+  const result = await update("q-7", {
+    form_elements: [
+      {
+        id: "occupation",
+        element_type: "SINGLE_CHOICE",
+        title: { en: "Occupation", es: "Ocupación" },
+        choices: [
+          { value: "retired", label: "Retired" },
+          { value: "employed", label: "Employed" },
+          { value: "student", label: "Student" },
+        ],
+      },
+    ],
+  });
+
+  assert.ok(Array.isArray(result.warnings) && result.warnings.length === 1, "one grouped warning");
+  assert.match(result.warnings[0], /occupation\.choices\[0\]\.label/, "the new choice is named");
+  assert.doesNotMatch(result.warnings[0], /choices\[[12]\]/, "the choices that moved are not");
 });

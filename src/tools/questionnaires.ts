@@ -328,6 +328,83 @@ function hasPlainTranslatable(elements: FormElementInput[] | undefined): boolean
   );
 }
 
+/** The part of a stored questionnaire the broadcast warning compares against. */
+type StoredQuestion = {
+  id?: string;
+  title?: unknown;
+  placeholder?: unknown;
+  description?: unknown;
+  choices?: Array<{ value?: unknown; label?: unknown }>;
+};
+
+/** The warning for an update that writes a plain string into more than one language. The payload
+ * carries those languages (the caller's, else the stored ones), and a plain string has to carry
+ * every one of them or the node is refused, so `translatable` copies that same text into each: a
+ * Spanish respondent then reads the English text, and translation-completeness views count the
+ * question as translated.
+ * The example is an internal issue's: an English/Spanish questionnaire, `title: "What is your occupation?"`
+ * stored as `{"en": "What is your occupation?", "es": "What is your occupation?"}`.
+ *
+ * One grouped warning for the whole update, not one per field. `languages` are the ones the
+ * payload writes: the caller's when the update names them, else the stored ones. Nothing is warned
+ * when only one language is written, when a field is sent as an object carrying every one of them
+ * (a translation, not a broadcast), or when the plain string is already stored under every one (an
+ * unchanged read-back of text that really is the same everywhere). Best effort: this needs the
+ * stored questionnaire, so a read the connection may not make leaves the update unwarned. Such a
+ * connection still updates when its fields are sent per language, when it names `languages`, or
+ * when the questionnaire is stored in one language; a plain string on a questionnaire stored in
+ * several is refused by the backend, which names the missing locale (see updateQuestionnaire). */
+function languageBroadcastWarning(
+  elements: FormElementInput[] | undefined,
+  stored: { form_elements?: StoredQuestion[] } | undefined,
+  languages: string[],
+): string | undefined {
+  if (languages.length < 2 || !elements?.length) return undefined;
+  const names = languages.map(String);
+  // The uncompacted `form_elements` of the read keeps every locale; `graph` is summarized for
+  // display, so comparing against it would call an unchanged read-back a broadcast.
+  const known = new Map<string, StoredQuestion>(
+    (Array.isArray(stored?.form_elements) ? stored.form_elements : [])
+      .filter((element) => typeof element?.id === "string")
+      .map((element) => [String(element.id), element]),
+  );
+  const kept = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === "object" && !Array.isArray(value);
+  const sameInEveryLanguage = (storedValue: unknown, text: string) =>
+    kept(storedValue) && names.every((name) => storedValue[name] === text);
+  // `translatable` copies any string as it stands, so "" is the one value that is not a broadcast.
+  const plain = (value: unknown): value is string => typeof value === "string" && value !== "";
+  const keys = writtenKeys(elements);
+  const broadcast: string[] = [];
+  elements.forEach((element, index) => {
+    const question = known.get(keys[index]);
+    for (const field of ["title", "placeholder", "description"] as const) {
+      const value = element?.[field];
+      if (plain(value) && !sameInEveryLanguage(question?.[field], value)) broadcast.push(`${keys[index]}.${field}`);
+    }
+    if (Array.isArray(element?.choices)) {
+      const storedChoices = Array.isArray(question?.choices) ? question.choices : [];
+      // `toChoice` labels a choice from its `value` when it sends no `label`, so that string is
+      // broadcast as the label too; the stored choice it replaces is the one with the same value,
+      // which is what identifies a choice across a reorder or an insertion.
+      const choiceValue = (choice: { value?: unknown; label?: unknown }) =>
+        String(choice?.value ?? "").trim() || Object.values(translatable(choice?.label, names) ?? {})[0] || "";
+      element.choices.forEach((choice, at) => {
+        const label = choice?.label ?? choice?.value;
+        if (!plain(label)) return;
+        const storedChoice = storedChoices.find((candidate) => candidate?.value === choiceValue(choice));
+        if (!sameInEveryLanguage(storedChoice?.label, label)) {
+          broadcast.push(`${keys[index]}.choices[${at}].label`);
+        }
+      });
+    }
+  });
+  if (!broadcast.length) return undefined;
+  const shape = names.map((name) => `"${name}": ...`).join(", ");
+  return `These fields were written as the same text in ${names.join(", ")}: ${broadcast.join(", ")}. ` +
+    `Send { ${shape} } to translate it.`;
+}
+
 /** The wire payload: `form_elements` become the graph, everything else passes through. The
  * org/app selectors are routing, not content — they are already in the path. A PATCH without
  * `languages` keeps the stored ones (backend QuestionnaireCreateSerializer.validate), so an update
@@ -587,23 +664,36 @@ export async function updateQuestionnaire(uuid: string, data: QuestionnaireWrite
   let json = toGraphPayload(data, true);
   // Everything below that needs the stored questionnaire reads it at most once. The rename guard
   // needs it when a question has no id; the reorder warning when no question states its `next`;
-  // the language broadcast when a plain string is sent without `languages`. Only the guard's
-  // refusal is fatal: without a read a warning is simply not given and the write still goes out,
-  // so a connection that may write but not read still updates.
+  // the language broadcast when a plain string is sent and more than one language is written.
+  // Only the guard's refusal is fatal: without a read no warning is given and the write goes out
+  // exactly as built, which still updates when the caller sends fields per language, names
+  // `languages`, or the questionnaire is stored in one language. A plain string on a questionnaire
+  // stored in several is refused by the backend, which names the missing locale — the same answer
+  // development gives, since without a read the stored languages are unknowable.
   let stored: Promise<any> | undefined;
   const readStored = () => (stored ??= getQuestionnaire(uuid));
-  if (!data.languages?.length && hasPlainTranslatable(data.form_elements)) {
-    // This PATCH names no languages, so the backend checks each translatable field against the
-    // STORED set: a plain string written in English alone is refused on a multilingual
-    // questionnaire ("missing translations for: es"). Write it in every stored language instead
-    // of resetting the questionnaire to English to make it pass.
+  let broadcast: string | undefined;
+  // A plain string is copied into every language of the payload, whether the caller names them or
+  // the update keeps the stored ones; only a payload with one language is not a broadcast.
+  const namedLanguages = data.languages?.length ? data.languages : undefined;
+  if ((!namedLanguages || namedLanguages.length > 1) && hasPlainTranslatable(data.form_elements)) {
+    // The warning has to know the stored questionnaire to leave an unchanged read-back alone. When
+    // the update names no languages it needs it for the write too: the backend checks each
+    // translatable field against the STORED set, so a plain string written in English alone is
+    // refused on a multilingual questionnaire ("missing translations for: es"). Write it in every
+    // stored language instead of resetting the questionnaire to English to make it pass.
     try {
-      const storedLanguages = (await readStored())?.languages;
-      if (Array.isArray(storedLanguages) && storedLanguages.length) {
+      const storedQuestionnaire = await readStored();
+      const storedLanguages = storedQuestionnaire?.languages;
+      if (namedLanguages) {
+        broadcast = languageBroadcastWarning(data.form_elements, storedQuestionnaire, namedLanguages);
+      } else if (Array.isArray(storedLanguages) && storedLanguages.length) {
         json = toGraphPayload(data, true, storedLanguages);
+        broadcast = languageBroadcastWarning(data.form_elements, storedQuestionnaire, storedLanguages);
       }
     } catch {
-      // No read: the write goes out as built and the backend names the missing locale.
+      // No read: the write goes out as built and the backend names the missing locale; the
+      // broadcast is simply not reported (best effort, like the other warnings).
     }
   }
   let warnings: string[] | undefined;
@@ -626,6 +716,7 @@ export async function updateQuestionnaire(uuid: string, data: QuestionnaireWrite
       // Best effort: a read this connection may not make leaves the update unwarned, not refused.
     }
   }
+  if (broadcast) warnings = [...(warnings ?? []), broadcast];
   await assertNoStoredIdsAreRenamed(data.form_elements, readStored);
   const result = withDroppedFieldsWarning(
     json,
