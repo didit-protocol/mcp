@@ -5,13 +5,18 @@ import { getOrgAppMap } from "../orgapp";
 // nested, plus an unambiguous default org/app when there is only one. Replaces the
 // didit_org_list + N×didit_org_list_applications round-trips with a single call.
 
-// Said beside applications read from the member's own row: they are the person's access, and the
-// member list does not carry each application's environment.
+// Said beside applications read from the member's own row: they are the person's access.
 const MEMBERSHIP_NOTE =
   "These applications come from this member's own membership of the organization (their row in the member list), " +
   "not from the organization's application list, which only Owner and Admin may read. They are the applications " +
-  "this connection can open. Their mode (live or sandbox) is not known here: do not guess it from the name - " +
-  "a live application bills every session. Read it in the Didit console before a live action.";
+  "this connection can open.";
+// Added only when an application of that row carries no `mode`: the member row gives it since
+// service-didit-auth v3.197, but an entry written as a bare id, or an older answer,
+// has none. Saying "not known" beside applications that do carry a mode made an assistant doubt
+// the field it had just been given.
+const MODE_UNKNOWN_NOTE =
+  " An application listed here without a `mode` field has an unknown mode (live or sandbox): do not guess it from " +
+  "the name - a live application bills every session. Read it in the Didit console before a live action.";
 // Said when neither route produced a list: UNKNOWN, which must never be read as none.
 const UNKNOWN_NOTE =
   "The applications of at least one organization could not be listed, and this member's own access could not be read " +
@@ -38,7 +43,10 @@ export async function getContext(): Promise<any> {
             ...(a.mode ? { mode: a.mode } : {}),
           })),
           ...(o.appsSource === "membership"
-            ? { applications_source: "membership", applications_note: MEMBERSHIP_NOTE }
+            ? {
+                applications_source: "membership",
+                applications_note: MEMBERSHIP_NOTE + (o.apps.every((a) => a.mode) ? "" : MODE_UNKNOWN_NOTE),
+              }
             : {}),
         }),
   }));

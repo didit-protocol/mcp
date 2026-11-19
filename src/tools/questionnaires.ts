@@ -1,7 +1,7 @@
 import { apiRequest, orgAppPath } from "../config";
 import type { RegisteredTool } from "./registry";
 import { ORG_APP_PROPS } from "../orgapp";
-import { pathSegment } from "../security";
+import { DiditError, pathSegment } from "../security";
 import { PAGE_PROPS, pageParams } from "../paging";
 
 // The schema pieces of the questionnaire tools' definitions (below), moved here with them.
@@ -39,10 +39,15 @@ const FORM_ELEMENTS_PROP = {
   form_elements: {
     type: "array",
     description:
-      "REQUIRED. Array of form-element objects, in the order the user answers them. Each: { element_type (uppercase, one of the allowed types), title (a plain string, or an object of locale→string e.g. {\"en\":\"Your name\"}), is_required (bool), placeholder (hint text), and for choice types a `choices` array }. A per-question hint goes in `placeholder`: `description` is only accepted on HEADING, SECTION_HEADER and PARAGRAPH elements.",
+      "REQUIRED. Array of form-element objects, in the order the user answers them. Each: { element_type (uppercase, one of the allowed types), title (a plain string, or an object of locale→string e.g. {\"en\":\"Your name\"}), is_required (bool), placeholder (hint text), and for choice types a `choices` array }. A per-question hint goes in `placeholder`: `description` is only accepted on HEADING, SECTION_HEADER and PARAGRAPH elements. Conditional logic is kept if well formed, else refused: `required_if: {rules:[{field:<id>,operator,value}]}`, `branches: [{id,rules,goto:<id>}]`, `repeatable_config` (REPEATABLE_GROUP needs it). `next` follows the order.",
     items: {
       type: "object",
       properties: {
+        id: {
+          type: "string",
+          description:
+            "Optional stable question id: the key this question's answer is stored and returned under. Kept as given (hyphens survive; the public API documents lowercase letters, numbers and underscores). Omit to derive q1, q2, …",
+        },
         element_type: { type: "string", enum: FORM_ELEMENT_TYPES, description: "Element type (UPPERCASE)" },
         title: { type: "object", description: "Locale → label, e.g. {\"en\":\"Question text\"}" },
         is_required: { type: "boolean" },
@@ -104,16 +109,133 @@ function toChoice(choice: Record<string, unknown>, languages: string[]) {
   return { ...choice, value, label };
 }
 
-/** `{start_node, nodes}` from an ordered list of questions: node ids are positional and each
- * node points at the next one, which is exactly the linear form the questions describe. */
+/** Conditional fields travel inside the graph this tool posts to the console resource, and that
+ * resource KEEPS them when they are well formed. Measured on the real backend (2026-11-19, sandbox
+ * application): `required_if: {rules:[{field,operator,value}]}`, `branches: [{id, rules, goto}]`
+ * and `repeatable_config` (which a REPEATABLE_GROUP cannot be created without) all come back as
+ * sent. What it does not do is refuse a malformed one on UPDATE: a `required_if` with no `rules`
+ * (`{field, operator, value}`, `{question, value}`) is stored as `{}` and answered with success,
+ * which the customer read as "saved". So the shape is checked here, before any
+ * request, and a field that cannot be stored is refused with the shape that can. `next` is the one
+ * field this tool always writes itself, from the order of the questions. */
+type Rule = { field?: unknown; operator?: unknown };
+
+function conditionalError(index: number, element: FormElementInput, field: string, problem: string, shape: string): DiditError {
+  const named = typeof element.id === "string" && element.id.trim() ? ` ("${element.id.trim()}")` : "";
+  return new DiditError({
+    code: "bad_request",
+    message: `form_elements[${index}]${named}.${field} ${problem}`,
+    field: `form_elements[${index}].${field}`,
+    hint: `Nothing was written. ${shape}`,
+  });
+}
+
+/** `rules` must be there and be a list; an empty list is a real value (the "otherwise" branch,
+ * a required_if that never applies), a missing one is what the backend stores as `{}`. */
+function rulesProblem(rules: unknown): string | undefined {
+  if (!Array.isArray(rules)) return "needs a `rules` array.";
+  const bad = rules.findIndex((rule: Rule) => {
+    const named = (value: unknown) => typeof value === "string" && value.trim() !== "";
+    return !rule || typeof rule !== "object" || !named(rule.field) || !named(rule.operator);
+  });
+  return bad === -1 ? undefined : `has a rule (rules[${bad}]) without a \`field\` and an \`operator\`.`;
+}
+
+const REQUIRED_IF_SHAPE =
+  "Send required_if as { rules: [{ field: <question id>, operator: \"equals\", value: <answer> }] } (optional logic: \"and\" | \"or\").";
+const BRANCHES_SHAPE =
+  "Send branches as [{ id: <branch id>, rules: [{ field: <question id>, operator: \"equals\", value: <answer> }], goto: <question id> }]; " +
+  "rules: [] is the otherwise path (put it last) and goto: null ends the questionnaire.";
+
+function assertConditionalFields(elements: FormElementInput[]) {
+  elements.forEach((element, index) => {
+    if (!element || typeof element !== "object") return;
+    if ("next" in element) {
+      throw conditionalError(index, element, "next", "is not accepted: the order of form_elements decides which question follows.",
+        "Remove `next`; to jump to another question on an answer, use `branches` with a `goto`.");
+    }
+    if ("required_if" in element) {
+      // null clears the condition; the backend takes it.
+      const value = element.required_if as { rules?: unknown } | null;
+      const problem = value === null ? undefined : typeof value !== "object" || Array.isArray(value) ? "must be an object." : rulesProblem(value.rules);
+      if (problem) throw conditionalError(index, element, "required_if", problem, REQUIRED_IF_SHAPE);
+    }
+    if ("branches" in element) {
+      const value = element.branches;
+      if (!Array.isArray(value)) throw conditionalError(index, element, "branches", "must be an array.", BRANCHES_SHAPE);
+      value.forEach((branch: { id?: unknown; rules?: unknown; goto?: unknown } | null, at: number) => {
+        // `goto` must be stated: a question id, or null for a path that ends the questionnaire.
+        // An update takes a branch without one and reads it as null, a destination nobody chose.
+        const gotoStated = branch?.goto === null || (typeof branch?.goto === "string" && branch.goto.trim() !== "");
+        const problem =
+          !branch || typeof branch !== "object"
+            ? "must be an object."
+            : typeof branch.id !== "string" || !branch.id.trim()
+              ? "needs an `id`."
+              : rulesProblem(branch.rules) ?? (gotoStated ? undefined : "needs a `goto`: a question id, or null to end the questionnaire there.");
+        if (problem) throw conditionalError(index, element, `branches[${at}]`, problem, BRANCHES_SHAPE);
+      });
+    }
+  });
+}
+
+const KEPT_FIELDS = ["required_if", "branches", "repeatable_config"] as const;
+
+function isEmpty(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  return typeof value === "object" && Object.keys(value as object).length === 0;
+}
+
+/** The last line of defence against a write that answers success for something it did not keep:
+ * every conditional field that was sent non-empty must come back non-empty in the stored graph.
+ * When the answer carries no graph there is nothing to compare, and the result passes through. */
+function withDroppedFieldsWarning(payload: Record<string, any>, result: any): any {
+  const sent = payload?.graph?.nodes;
+  const stored = result?.graph?.nodes;
+  if (!sent || !stored || typeof stored !== "object") return result;
+  const dropped: string[] = [];
+  for (const [key, node] of Object.entries(sent as Record<string, Record<string, unknown>>)) {
+    for (const field of KEPT_FIELDS) {
+      if (!isEmpty(node[field]) && isEmpty(stored[key]?.[field])) dropped.push(`${key}.${field}`);
+    }
+  }
+  if (!dropped.length) return result;
+  return {
+    ...result,
+    warning:
+      `The questionnaire was written, but these fields were NOT stored: ${dropped.join(", ")}. ` +
+      "Do not tell the user the conditional logic is saved. Check their shape (didit_questionnaire_get shows what is stored) and send them again.",
+  };
+}
+
+/** `{start_node, nodes}` from an ordered list of questions. A question's `id`, when given, is
+ * its node key — the key its answer is stored under, and the name `required_if` rules and
+ * `branches[].goto` refer to it by — so a stable id is preserved verbatim rather than replaced
+ * by a positional `qN`; each node points at the next one in the list. */
 export function buildQuestionnaireGraph(elements: FormElementInput[], languages: string[]) {
-  const ids = elements.map((_, index) => `q${index + 1}`);
+  assertConditionalFields(elements);
+
+  const keys = elements.map((element, index) => {
+    const supplied = typeof element.id === "string" ? element.id.trim() : "";
+    return supplied || `q${index + 1}`;
+  });
+  keys.forEach((key, index) => {
+    if (keys.indexOf(key) !== index) {
+      throw new DiditError({
+        code: "bad_request",
+        message: `form_elements[${index}] would use the question id "${key}", which another question already uses.`,
+        field: `form_elements[${index}].id`,
+        hint: "Question ids are the stored answer keys and must be unique: give each question its own id, or omit the id on the questions that do not need a stable key.",
+      });
+    }
+  });
   const nodes = Object.fromEntries(
     elements.map((element, index) => {
-      const { title, placeholder, description, choices, ...rest } = element;
+      const { id: _id, title, placeholder, description, choices, ...rest } = element;
 
       return [
-        ids[index],
+        keys[index],
         {
           ...rest,
           is_required: element.is_required ?? false,
@@ -127,13 +249,13 @@ export function buildQuestionnaireGraph(elements: FormElementInput[], languages:
           ...(Array.isArray(choices) && {
             choices: choices.map((choice) => toChoice(choice as Record<string, unknown>, languages)),
           }),
-          next: ids[index + 1] ?? null,
+          next: keys[index + 1] ?? null,
         },
       ];
     }),
   );
 
-  return { start_node: ids[0], nodes };
+  return { start_node: keys[0], nodes };
 }
 
 /** The wire payload: `form_elements` become the graph, everything else passes through. The
@@ -157,7 +279,8 @@ export async function listQuestionnaires(params?: Record<string, any>): Promise<
 }
 
 export async function createQuestionnaire(data: QuestionnaireWrite): Promise<any> {
-  return apiRequest(orgAppPath("/questionnaires/"), { method: "POST", json: toGraphPayload(data) });
+  const json = toGraphPayload(data);
+  return withDroppedFieldsWarning(json, await apiRequest(orgAppPath("/questionnaires/"), { method: "POST", json }));
 }
 
 function compactTranslations(value: any): any {
@@ -173,21 +296,39 @@ function compactTranslations(value: any): any {
   return Object.fromEntries(entries.map(([key, nested]) => [key, compactTranslations(nested)]));
 }
 
+/** The keys of `graph.nodes` are question ids, and a caller may name two questions `ar` and `br`:
+ * read as a locale map, that pair lost every question but the first. So the map of questions is
+ * walked key by key and only what is inside a question is compacted. */
+function compactQuestionnaire(result: any): any {
+  const nodes = result?.graph?.nodes;
+  if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return compactTranslations(result);
+  const { graph, ...rest } = result;
+  const { nodes: _nodes, ...graphRest } = graph;
+  return {
+    ...compactTranslations(rest),
+    graph: {
+      ...compactTranslations(graphRest),
+      nodes: Object.fromEntries(Object.entries(nodes).map(([key, node]) => [key, compactTranslations(node)])),
+    },
+  };
+}
+
 export async function getQuestionnaire(uuid: string, includeTranslations = false): Promise<any> {
   const result = await apiRequest(orgAppPath(`/questionnaires/${pathSegment(uuid, "questionnaire_id")}/`));
   if (includeTranslations) return result;
   return {
-    ...compactTranslations(result),
+    ...compactQuestionnaire(result),
     translations_summarized: true,
     hint: "Translations are limited to English (or the first available locale). Pass include_translations:true for every locale.",
   };
 }
 
 export async function updateQuestionnaire(uuid: string, data: QuestionnaireWrite): Promise<any> {
-  return apiRequest(orgAppPath(`/questionnaires/${pathSegment(uuid, "questionnaire_id")}/`), {
-    method: "PATCH",
-    json: toGraphPayload(data),
-  });
+  const json = toGraphPayload(data);
+  return withDroppedFieldsWarning(
+    json,
+    await apiRequest(orgAppPath(`/questionnaires/${pathSegment(uuid, "questionnaire_id")}/`), { method: "PATCH", json }),
+  );
 }
 
 type ChoiceInput = NonNullable<FormElementInput["choices"]>[number];
@@ -302,7 +443,7 @@ export const QUESTIONNAIRE_TOOLS: readonly RegisteredTool[] = [
           node_id: {
             type: "string",
             description:
-              "Graph node id of the question (e.g. 'q1', positional from the create call). Optional when exactly one question has choices.",
+              "Graph node id of the question: the `id` given to it in the create call, or its positional 'q1', 'q2'. Optional when exactly one question has choices.",
           },
           choices: {
             type: "array",

@@ -5,8 +5,11 @@ import { resolveWorkflowScope, withWorkflowResolution } from "./search";
 import { DiditError, pathSegment } from "../security";
 import {
   assertKycKybSegregation,
+  canReach,
+  nodeSuccessors,
   carriesSettings,
   droppedSettingsNote,
+  type GraphNodes,
   lostSettings,
   normalizeFeatureConfigs,
   operationCarriesSettings,
@@ -542,15 +545,109 @@ export async function getWorkflowBranchFields(
   graph: any,
   branchNodeId?: string,
   scope: Scope = {},
+  questionnaireUuid?: unknown,
 ): Promise<any> {
   requireBranchFieldsArgs(graph, branchNodeId);
   normalizeFeatureConfigs(graph);
-  return inScope(workflowId, scope, (wf) =>
-    apiRequest(orgAppPath(`/verification-settings/${pathSegment(wf.uuid, "workflow_id")}/workflow-graph/branch-fields/`), {
-      method: "POST",
-      json: { graph, branch_node_id: branchNodeId },
-    }),
-  );
+  const questionnaire = resolveQuestionnaireUuid(graph, branchNodeId as string, questionnaireUuid);
+  return inScope(workflowId, scope, async (wf) => {
+    const result = await apiRequest(
+      orgAppPath(`/verification-settings/${pathSegment(wf.uuid, "workflow_id")}/workflow-graph/branch-fields/`),
+      {
+        method: "POST",
+        json: { graph, branch_node_id: branchNodeId, ...(questionnaire.uuid ? { questionnaire_uuid: questionnaire.uuid } : {}) },
+      },
+    );
+    // The backend only offers answers when the QUESTIONNAIRE completes on EVERY path reaching the
+    // branch; a questionnaire on one path only would answer with status alone, which again reads as
+    // "not supported". Say why the answers are missing instead.
+    const notOnEveryPath =
+      questionnaire.uuid && !(Array.isArray(result?.completed_features) && result.completed_features.includes("QUESTIONNAIRE"))
+        ? `questionnaire_uuid was sent, but no QUESTIONNAIRE node completes on every path before '${branchNodeId}', so its answers are not guaranteed at this branch and questionnaire.answers.* fields are not offered here. Branch on the feature's status, or put the questionnaire on every path that reaches the branch.`
+        : "";
+    // A uuid the application cannot read (another application's, a deleted one) answers [] instead
+    // of failing (workflow_graph.py:459), which again leaves status alone with no reason.
+    const noAnswerFields =
+      questionnaire.uuid &&
+      !notOnEveryPath &&
+      !(Array.isArray(result?.fields) ? result.fields : []).some((field: { field?: unknown }) => String(field?.field ?? "").startsWith("questionnaire.answers."))
+        ? "questionnaire_uuid was sent but no questionnaire.answers.* fields came back. Check the uuid belongs to this application and its questionnaire has branchable questions — dropdown, single/multiple choice, text, number, date, email, phone, country or consent (didit_questionnaire_get)."
+        : "";
+    const note = [questionnaire.note, notOnEveryPath, noAnswerFields].filter(Boolean).join(" ");
+    return note ? { ...result, note } : result;
+  });
+}
+
+/** Every node the session can be on before it arrives at `branchNodeId`: what is reachable from
+ *  `start_node` following next + branches[].goto, never walking past the branch node itself. A
+ *  node nothing leads to, or one only reached after the branch (a loop back), is not in it. With
+ *  no usable start_node the graph cannot say what runs first, so every node stays a candidate. */
+function nodesBeforeBranch(graph: { start_node?: unknown; nodes?: GraphNodes }, nodes: GraphNodes, branchNodeId: string): Set<string> {
+  const start = typeof graph?.start_node === "string" ? graph.start_node : "";
+  if (!start || !nodes[start]) return new Set(Object.keys(nodes));
+  const seen = new Set<string>([start]);
+  const stack = [start];
+  while (stack.length) {
+    const id = stack.pop() as string;
+    if (id === branchNodeId) continue;
+    for (const next of nodeSuccessors(nodes[id])) {
+      if (nodes[next] && !seen.has(next)) {
+        seen.add(next);
+        stack.push(next);
+      }
+    }
+  }
+  return seen;
+}
+
+/** The QUESTIONNAIRE nodes that run before `branchNodeId` (on a path from start_node, following
+ *  next + branches[].goto, the same edges feature-config uses to place branch rules), and the
+ *  questionnaire_uuid each names. A node with no uuid is counted: it is the case where the agent
+ *  must pass one. */
+function upstreamQuestionnaires(graph: { start_node?: unknown; nodes?: GraphNodes }, branchNodeId: string): { uuids: string[]; unnamed: number } {
+  const nodes: GraphNodes = graph?.nodes && typeof graph.nodes === "object" ? graph.nodes : {};
+  const before = nodesBeforeBranch(graph, nodes, branchNodeId);
+  const found: string[] = [];
+  let unnamed = 0;
+  for (const [id, node] of Object.entries(nodes)) {
+    if (node?.node_type !== "feature" || String(node.feature ?? "").toUpperCase() !== "QUESTIONNAIRE") continue;
+    if (!before.has(id)) continue;
+    // A QUESTIONNAIRE node that owns the branches is itself available at the branch point.
+    if (id !== branchNodeId && !canReach(nodes, id, branchNodeId)) continue;
+    const config = node.config as { questionnaire_uuid?: unknown } | undefined;
+    const uuid = typeof config?.questionnaire_uuid === "string" ? config.questionnaire_uuid.trim() : "";
+    if (uuid) found.push(uuid);
+    else unnamed += 1;
+  }
+  return { uuids: [...new Set(found)], unnamed };
+}
+
+/** The backend reads `questionnaire_uuid` from the POST body and only then resolves the questions
+ *  (applications/views/workflow_graph.py:257,298), turning them into `questionnaire.answers.<id>`
+ *  fields. Without it a branch after a QUESTIONNAIRE node only ever lists `questionnaire.status`,
+ *  which reads as "branching on an answer is impossible". So pass the caller's uuid through, or
+ *  resolve it from the graph when exactly one questionnaire runs before the branch; when several
+ *  different ones do, say which parameter chooses instead of silently describing none. */
+function resolveQuestionnaireUuid(
+  graph: any,
+  branchNodeId: string,
+  requested: unknown,
+): { uuid?: string; note?: string } {
+  const explicit = typeof requested === "string" ? requested.trim() : "";
+  if (explicit) return { uuid: explicit };
+  const { uuids, unnamed } = upstreamQuestionnaires(graph, branchNodeId);
+  if (uuids.length === 0 && unnamed === 0) return {};
+  // One named questionnaire is only the answer when no other questionnaire node is left unnamed:
+  // that one may run a different form, and its fields would be described from the wrong questions.
+  if (uuids.length === 1 && unnamed === 0) return { uuid: uuids[0] };
+  const named = uuids.length > 0 ? uuids.join(", ") : "none";
+  return {
+    note:
+      `No questionnaire_uuid was passed and the graph runs ${uuids.length > 1 ? "more than one different questionnaire" : "a questionnaire that does not name its uuid"} ` +
+      `before '${branchNodeId}' (questionnaire_uuid: ${named}), so questionnaire.answers.* fields cannot be attributed. ` +
+      "Pass questionnaire_uuid (the uuid of that questionnaire, e.g. from didit_questionnaire_list) to get its answer fields; " +
+      "branching on a questionnaire answer is supported once it is named.",
+  };
 }
 
 function requireBranchFieldsArgs(graph: any, branchNodeId: string | undefined): void {

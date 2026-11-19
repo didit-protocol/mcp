@@ -142,7 +142,7 @@ test("a Reader gets their applications from their own membership row, not an emp
   assert.equal(payload.application_count, 2);
   assert.equal(org.applications_source, "membership");
   assert.match(org.applications_note, /membership/i);
-  assert.match(org.applications_note, /mode/i);
+  assert.match(org.applications_note, /unknown mode/i, "this row carries no mode: the warning stays");
   assert.equal(org.applications_unknown, undefined);
   assert.equal(payload.applications_unknown, undefined);
   assert.ok(
@@ -219,6 +219,44 @@ test("a member row whose applications are bare id strings gives those applicatio
   assert.equal(payload.application_count, 2);
   assert.equal(org.applications_source, "membership");
   assert.equal(org.applications_unknown, undefined);
+});
+
+test("a member row that carries each application's mode gives the modes, and no warning that they are unknown", async () => {
+  const payload = await membershipApplications(
+    [
+      { uuid: "app-1", name: "Acme Prod", mode: "live" },
+      { uuid: "app-2", name: "Acme Sandbox", mode: "sandbox" },
+    ],
+    "tok-reader-modes",
+  );
+
+  const org = payload.organizations[0];
+  assert.deepEqual(org.applications, [
+    { application_id: "app-1", application_name: "Acme Prod", mode: "live" },
+    { application_id: "app-2", application_name: "Acme Sandbox", mode: "sandbox" },
+  ]);
+  assert.equal(org.applications_source, "membership");
+  assert.match(org.applications_note, /membership/i);
+  assert.doesNotMatch(
+    org.applications_note,
+    /unknown|not known|console/i,
+    "every application carries its mode: the note must not tell the assistant to doubt it",
+  );
+});
+
+test("a member row where one application has no mode still warns about that one", async () => {
+  const payload = await membershipApplications(
+    [{ uuid: "app-1", name: "Acme Prod", mode: "live" }, UUID_2],
+    "tok-reader-one-mode",
+  );
+
+  const org = payload.organizations[0];
+  assert.deepEqual(org.applications, [
+    { application_id: "app-1", application_name: "Acme Prod", mode: "live" },
+    { application_id: UUID_2, application_name: UUID_2 },
+  ]);
+  assert.match(org.applications_note, /without a `mode` field has an unknown mode/);
+  assert.match(org.applications_note, /bills every session/);
 });
 
 test("a mixed member row (one expanded object, one id string) gives both applications", async () => {

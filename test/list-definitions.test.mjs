@@ -201,9 +201,19 @@ test("the tool list stays within its budget", async () => {
     // session tools said which id an integration uses (the stable workflow_id; a version uuid pins
     // one version). By 100 bytes for the OCR setting document_selfie_portrait_match_not_computed_action
     // (backend v5.1.223): it costs 52 bytes, its name once in the graph manual of the saving tool,
-    // and the list stood 36 bytes under the number before it.
-    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 272_600],
-    ["an API key connection", { hosted: true, apiKey: true }, KEY, 207_000],
+    // and the list stood 36 bytes under the number before it. By 900 bytes when a questionnaire
+    // question could carry a stable `id` (the graph node key its answer is stored under) and the
+    // two write tools began stating the shapes of the conditional fields a questionnaire keeps
+    // (and refusing a malformed one instead of writing a questionnaire that silently lacked it):
+    // their shared `form_elements` schema, with the list 84 bytes under the number before it and
+    // 4 under this one. By 700 bytes for questionnaire_uuid on didit_workflow_get_branch_fields:
+    // the backend only generates questionnaire.answers.* fields when the request names the
+    // questionnaire, so without the parameter the Copilot concluded that branching on an answer
+    // was impossible; field_definitions now points there for those fields.
+    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 274_200],
+    // Raised by 200 bytes with them: the questionnaire shapes (980) and questionnaire_uuid (651)
+    // reach an API key connection too, and together took its list to 207,087.
+    ["an API key connection", { hosted: true, apiKey: true }, KEY, 207_200],
     ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 31_500],
   ];
   for (const [label, options, authInfo, budget] of budgets) {

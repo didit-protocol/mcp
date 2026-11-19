@@ -26,7 +26,8 @@ export interface OrgRef {
   /** listApplications failed for this org — its apps are UNKNOWN, not empty. */
   appsError?: boolean;
   /** Where `apps` came from when the organization's application list was refused: the signed-in
-   *  member's own row in the member list. Those applications carry no `mode`. */
+   *  member's own row in the member list. An application there carries a `mode` when the row gives one
+   *  (service-didit-auth v3.197 and later); an entry written as a bare id has none. */
   appsSource?: "membership";
 }
 
@@ -115,7 +116,8 @@ async function memberIdentifier(): Promise<string | undefined> {
  * a list that never ends cannot hang the call. A page that cannot be read, or a read the cap
  * stopped before the end, answers undefined (UNKNOWN), never "no applications".
  *
- * The row has no `mode`, so these applications carry none. Undefined means the row could not be
+ * Each application keeps the `mode` its entry in the row carries, and has none when the entry gives
+ * none (a bare id, or an older auth answer). Undefined means the row could not be
  * read (not that it is empty): the caller must report the organization's apps as UNKNOWN.
  */
 async function appsFromOwnMembership(orgId: string, identifier: string): Promise<AppRef[] | undefined> {

@@ -238,7 +238,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_workflow_get_field_definitions",
-      description: "List every field you can branch on plus the operators valid for each (e.g. kyc.status, kyc.extra_fields.profession with `fuzzy_match`, document_ai.<key>, aml.risk_score). Call this before building branch rules so the field/operator pairs are valid.",
+      description: "List every field you can branch on plus the operators valid for each (e.g. kyc.status, kyc.extra_fields.profession with `fuzzy_match`, document_ai.<key>, aml.risk_score). Call this before building branch rules so the field/operator pairs are valid. Questionnaire answers (questionnaire.answers.*) are not listed here: they depend on which questionnaire runs, so get them from didit_workflow_get_branch_fields with questionnaire_uuid.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -338,7 +338,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_workflow_get_branch_fields",
-      description: "Given a candidate graph and a branch node, return the fields actually available at that point (only features that completed on every path reaching the branch, plus dynamically-derived Document-AI/questionnaire fields).",
+      description: "Given a candidate graph and a branch node, return the fields actually available at that point (only features that completed on every path reaching the branch, plus dynamically-derived Document-AI/questionnaire fields). Branching on a questionnaire answer IS supported: pass questionnaire_uuid to get its questionnaire.answers.* fields.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -348,6 +348,12 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
             description: "REQUIRED. The candidate graph to evaluate: the `graph` object returned by didit_workflow_get_graph / ui_workflow_get_graph (start_node + nodes), optionally with your unsaved edits applied.",
           },
           branch_node_id: { type: "string", description: "REQUIRED. The id of a branch node in that graph (a key of graph.nodes whose node_type is 'branch') — availability is evaluated at that point." },
+          questionnaire_uuid: {
+            type: "string",
+            description:
+              "Optional. The questionnaire whose QUESTIONNAIRE node runs before this branch node; its answers come back as questionnaire.answers.<question value> fields. " +
+              "Omit it when the graph names exactly one questionnaire before the branch; pass it when several different ones run, or none names its uuid.",
+          },
           ...ORG_APP_PROPS,
         },
         required: ["workflow_id", "graph", "branch_node_id"],
@@ -355,7 +361,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
     },
     access: "read",
     permission: "read:workflows", // POST …/workflow-graph/branch-fields/ → workflow_graph.py:202
-    run: (args) => getWorkflowBranchFields(args.workflow_id, args.graph, args.branch_node_id ?? args.node_id, args),
+    run: (args) => getWorkflowBranchFields(args.workflow_id, args.graph, args.branch_node_id ?? args.node_id, args, args.questionnaire_uuid),
   },
   {
     def: {

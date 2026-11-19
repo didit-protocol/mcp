@@ -263,9 +263,9 @@ const FIELD_PREFIX_TO_FEATURE: Record<string, string> = {
   geolocation: "GEOLOCATION",
 };
 
-type GraphNodes = Record<string, Record<string, unknown>>;
+export type GraphNodes = Record<string, Record<string, unknown>>;
 
-function nodeSuccessors(node: Record<string, unknown> | undefined): string[] {
+export function nodeSuccessors(node: Record<string, unknown> | undefined): string[] {
   if (!node) return [];
   const out: string[] = [];
   if (typeof node.next === "string") out.push(node.next as string);
@@ -280,7 +280,7 @@ function nodeSuccessors(node: Record<string, unknown> | undefined): string[] {
 }
 
 /** True if `targetId` is reachable from `fromId` following next + branches[].goto. */
-function canReach(nodes: GraphNodes, fromId: string, targetId: string): boolean {
+export function canReach(nodes: GraphNodes, fromId: string, targetId: string): boolean {
   const seen = new Set<string>();
   const stack = [fromId];
   while (stack.length) {
