@@ -317,13 +317,15 @@ test("an update that sends the id of every question it keeps needs no read", asy
   assert.deepEqual(Object.keys(writes[0].body.graph.nodes), ["income"]);
 });
 
-test("a new question that carries its own id is added without a read", async (t) => {
+test("a new question that carries its own id is added, and the rename guard makes no read", async (t) => {
   const calls = interceptFetch(t, () => ({ questionnaire_id: "q-1" }));
   await requestContext.run(CTX, () =>
     updateQuestionnaire("q-1", { form_elements: [{ id: "income", ...IDLESS }, { id: "phone", ...IDLESS }] }),
   );
 
-  assert.equal(calls.filter((call) => call.method === "GET").length, 0, "no stored read when every question carries its id");
+  // One read, and it is only the order check below: every question carries its id,
+  // so the rename guard has nothing to look up — the next test shows that read is not required.
+  assert.equal(calls.filter((call) => call.method === "GET").length, 1, "one read, for the reorder warning");
   const writes = calls.filter((call) => call.method === "PATCH");
   assert.equal(writes.length, 1);
   assert.deepEqual(Object.keys(writes[0].body.graph.nodes), ["income", "phone"]);
@@ -491,14 +493,14 @@ test("a stored read refused for lack of permission refuses an id-less update ins
   assert.equal(calls.filter((call) => call.method === "PATCH").length, 0, "nothing is written");
 });
 
-test("a write-only connection updates by sending every id, with no read at all", async (t) => {
+test("a write-only connection updates by sending every id, even though the stored read is refused", async (t) => {
   const calls = interceptReadFailure(t, 403);
   await requestContext.run(CTX, () =>
     updateQuestionnaire("q-1", { form_elements: [{ id: "income", ...IDLESS }, { id: "phone", ...IDLESS }] }),
   );
-  assert.equal(calls.filter((call) => call.method === "GET").length, 0, "no stored read when every question carries its id");
+  assert.equal(calls.filter((call) => call.method === "GET").length, 1, "the order check tried the read");
   const writes = calls.filter((call) => call.method === "PATCH");
-  assert.equal(writes.length, 1, "the allowed update is written");
+  assert.equal(writes.length, 1, "a read that only feeds the reorder warning never blocks the write");
   assert.deepEqual(Object.keys(writes[0].body.graph.nodes), ["income", "phone"]);
 });
 

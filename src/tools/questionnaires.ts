@@ -15,9 +15,13 @@ const QUESTIONNAIRE_LANG_PROPS = {
   languages: {
     type: "array",
     items: { type: "string" },
-    description: "Locales the questionnaire is offered in. Defaults to [\"en\"]; \"en\" must always be included.",
+    description:
+      "Locales the questionnaire is offered in. A create without it uses [\"en\"]; an update without it keeps the stored ones and writes a plain string in all of them. \"en\" must always be included.",
   },
-  default_language: { type: "string", description: "Locale shown by default (must be in `languages`). Defaults to the first language." },
+  default_language: {
+    type: "string",
+    description: "Locale shown by default (must be in `languages`). Defaults to the first language; an update that changes `languages` without it uses the first of the new list.",
+  },
 } as const;
 
 // A create with no status publishes immediately (backend QuestionnaireCreateSerializer.create),
@@ -257,15 +261,21 @@ function withDroppedFieldsWarning(payload: Record<string, any>, result: any): an
   };
 }
 
+/** The keys an update stores: each question's trimmed `id`, else the positional `q${index+1}`
+ * `buildQuestionnaireGraph` derives. */
+function writtenKeys(elements: FormElementInput[]): string[] {
+  return elements.map((element, index) => {
+    const supplied = typeof element?.id === "string" ? element.id.trim() : "";
+    return supplied || `q${index + 1}`;
+  });
+}
+
 /** `{start_node, nodes}` from an ordered list of questions. A question's `id`, when given, is
  * its node key — the key its answer is stored under, and the name `required_if` rules and
  * `branches[].goto` refer to it by — so a stable id is preserved verbatim rather than replaced
  * by a positional `qN`; each node points at the next one in the list. */
 export function buildQuestionnaireGraph(elements: FormElementInput[], languages: string[]) {
-  const keys = elements.map((element, index) => {
-    const supplied = typeof element.id === "string" ? element.id.trim() : "";
-    return supplied || `q${index + 1}`;
-  });
+  const keys = writtenKeys(elements);
   assertConditionalFields(elements, keys);
   keys.forEach((key, index) => {
     if (keys.indexOf(key) !== index) {
@@ -305,17 +315,39 @@ export function buildQuestionnaireGraph(elements: FormElementInput[], languages:
   return { start_node: keys[0], nodes };
 }
 
+/** True when a field `translatable` expands is a plain string: those are written in the payload's
+ * languages, so an update that names none has to know the stored ones (see updateQuestionnaire). */
+function hasPlainTranslatable(elements: FormElementInput[] | undefined): boolean {
+  const plain = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  return !!elements?.some(
+    (element) =>
+      plain(element?.title) ||
+      plain(element?.placeholder) ||
+      plain(element?.description) ||
+      (Array.isArray(element?.choices) && element.choices.some((choice) => plain(choice?.label ?? choice?.value))),
+  );
+}
+
 /** The wire payload: `form_elements` become the graph, everything else passes through. The
- * org/app selectors are routing, not content — they are already in the path. */
-function toGraphPayload(data: QuestionnaireWrite): Record<string, any> {
+ * org/app selectors are routing, not content — they are already in the path. A PATCH without
+ * `languages` keeps the stored ones (backend QuestionnaireCreateSerializer.validate), so an update
+ * that does not name them leaves a multilingual questionnaire alone instead of PATCHing it down to
+ * English — which is what an unchanged `form_elements` read-back must do. Create still sends
+ * English when nothing is given. `storedLanguages` are the ones such an update keeps: a plain
+ * string has to carry every one of them or the backend refuses the node ("missing translations"). */
+function toGraphPayload(data: QuestionnaireWrite, forUpdate = false, storedLanguages?: string[]): Record<string, any> {
   const { form_elements, languages, organization_id, application_id, ...rest } = data;
-  const langs = languages?.length ? languages : ["en"];
+  const langs = languages?.length ? languages : storedLanguages?.length ? storedLanguages : ["en"];
   if (!form_elements) return { ...rest, ...(languages && { languages }) };
 
+  const sendLanguages = !forUpdate || !!languages?.length;
+  // A new `languages` list without a `default_language` would leave the stored default outside it:
+  // the backend checks the default it is given (English when absent) and keeps the stored one.
+  const sendDefaultLanguage = !forUpdate || data.default_language !== undefined || !!languages?.length;
   return {
     ...rest,
-    languages: langs,
-    default_language: data.default_language ?? langs[0],
+    ...(sendLanguages && { languages: langs }),
+    ...(sendDefaultLanguage && { default_language: data.default_language ?? langs[0] }),
     graph: buildQuestionnaireGraph(form_elements, langs),
   };
 }
@@ -362,12 +394,77 @@ function compactQuestionnaire(result: any): any {
 
 export async function getQuestionnaire(uuid: string, includeTranslations = false): Promise<any> {
   const result = await apiRequest(orgAppPath(`/questionnaires/${pathSegment(uuid, "questionnaire_id")}/`));
-  if (includeTranslations) return result;
+  // `form_elements` is built from the UNCOMPACTED read: it is the list an update sends back, so it
+  // keeps every locale a title carries even when `graph` and `sections` are summarized for display.
+  const full = withFormElements(result);
+  if (includeTranslations) return full;
   return {
     ...compactQuestionnaire(result),
+    ...(full.form_elements && { form_elements: full.form_elements }),
+    ...(full.form_elements_round_trip === false && {
+      form_elements_round_trip: false,
+      form_elements_note: full.form_elements_note,
+    }),
     translations_summarized: true,
-    hint: "Translations are limited to English (or the first available locale). Pass include_translations:true for every locale.",
+    hint:
+      "Translations are summarized in `graph` and `sections`; `form_elements` keeps every locale so it can be sent back. Pass include_translations:true for every locale. " +
+      "To change the questionnaire, edit `form_elements` and send the whole list back with didit_questionnaire_update: it is the stored list, " +
+      "in the order a respondent answers it." +
+      (full.form_elements_round_trip === false ? ` ${full.form_elements_note}` : ""),
   };
+}
+
+/** Every stored question in the one shape the write tools accept: `id` plus every stored field, in
+ * the order a respondent meets it: the `start_node` → `next` chain, with a branch target that is
+ * not on it placed straight after the question that branches to it. `sections[].items` is grouped
+ * for display (the backend walks it breadth-first, so a branch target can come before the next
+ * question) and is not a list to send back. Sending the list back is an exact round trip only when
+ * `form_elements_round_trip` is not false; a graph whose branches leave the main path cannot be one
+ * ordered list, because an update writes each question's `next` from that order. A questionnaire
+ * whose graph is not readable answers without `form_elements`. */
+function withFormElements(result: any): any {
+  const nodes = result?.graph?.nodes;
+  if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return result;
+  const order = questionOrder(result.graph);
+  const form_elements = order.keys.map((key) => ({ id: key, ...nodes[key] }));
+  if (order.roundTrip) return { ...result, form_elements };
+  return {
+    ...result,
+    form_elements,
+    form_elements_round_trip: false,
+    form_elements_note:
+      "This questionnaire's branches leave the main path (a branch target is not the next question), " +
+      "so this list cannot be sent back unchanged: an update writes every question's `next` from the list order. " +
+      "Edit this questionnaire in Console Advanced Mode, or read `graph` as before.",
+  };
+}
+
+/** Every stored question in the order a respondent meets it. The `next` chain from `start_node` is
+ * the main path; an off-path branch target (and whatever only it reaches: its own `next` chain and
+ * branch targets) follows the question that branches to it. A node no path reaches is appended.
+ * `roundTrip` is true only when the list is the whole `next` chain, the one shape an ordered update
+ * can write back unchanged. */
+function questionOrder(graph: any): { keys: string[]; roundTrip: boolean } {
+  const nodes = graph?.nodes;
+  if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return { keys: [], roundTrip: true };
+  const chain = storedOrder(graph);
+  const onChain = new Set(chain);
+  const keys: string[] = [];
+  const placed = new Set<string>();
+  const branchesOf = (key: string) => (Array.isArray(nodes[key]?.branches) ? nodes[key].branches : []);
+  const appendOffChain = (start: unknown) => {
+    if (typeof start !== "string" || !nodes[start] || onChain.has(start) || placed.has(start)) return;
+    placed.add(start);
+    keys.push(start);
+    appendOffChain(nodes[start].next);
+    for (const branch of branchesOf(start)) appendOffChain(branch?.goto);
+  };
+  for (const key of chain) {
+    keys.push(key);
+    for (const branch of branchesOf(key)) appendOffChain(branch?.goto);
+  }
+  for (const key of Object.keys(nodes)) appendOffChain(key);
+  return { keys, roundTrip: keys.length === chain.length };
 }
 
 /** The keys of the stored questions in the order a respondent meets them: start at `start_node`
@@ -434,19 +531,18 @@ function unreadableStoredIds(error: unknown): DiditError {
  *      questionnaire that numbers its questions by position);
  *    - any missing stored key is not positional at its place: refuse, naming those keys and the
  *      two ways out: send that question's id again, or give the new question an id of its own. */
-async function assertNoStoredIdsAreRenamed(uuid: string, elements: FormElementInput[] | undefined) {
+async function assertNoStoredIdsAreRenamed(elements: FormElementInput[] | undefined, readStored: () => Promise<any>) {
   if (!elements?.length) return;
-  const idOf = (element: FormElementInput) => (typeof element?.id === "string" ? element.id.trim() : "");
-  if (elements.every((element) => idOf(element))) return;
+  if (elements.every((element) => typeof element?.id === "string" && element.id.trim())) return;
   let stored: any;
   try {
-    stored = await getQuestionnaire(uuid);
+    stored = await readStored();
   } catch (error) {
     throw unreadableStoredIds(error);
   }
   const nodes = stored?.graph?.nodes;
   if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return;
-  const finalKeys = new Set(elements.map((element, index) => idOf(element) || `q${index + 1}`));
+  const finalKeys = new Set(writtenKeys(elements));
   const missing = Object.keys(nodes).filter((key) => !finalKeys.has(key));
   if (!missing.length) return;
   const order = storedOrder(stored.graph);
@@ -462,15 +558,80 @@ async function assertNoStoredIdsAreRenamed(uuid: string, elements: FormElementIn
   });
 }
 
+/** An update that states no `next` anywhere leaves the order implicit: the same stored questions
+ * in another order are then a reorder nobody said out loud, which is the one an answer has to
+ * name. A single question cannot be reordered, and a read (which carries `next` on every question)
+ * already states the order it was read in. */
+function statesNoOrder(elements: FormElementInput[] | undefined): boolean {
+  return (
+    !!elements &&
+    elements.length > 1 &&
+    elements.every((element) => !(element && typeof element === "object" && "next" in element))
+  );
+}
+
+/** The warning for an update that keeps every stored question but in another order and says no
+ * `next`: the reorder is a legitimate edit, so it is written, and the caller is told which order
+ * it was before. A different set of questions is not a reorder (the ids say so). */
+function reorderWarning(stored: string[], elements: FormElementInput[]): string | undefined {
+  const keys = writtenKeys(elements);
+  const storedKeys = new Set(stored);
+  const sameQuestions = keys.length === stored.length && keys.every((key) => storedKeys.has(key));
+  if (!sameQuestions || keys.join("\u0000") === stored.join("\u0000")) return undefined;
+  return `The order of ${keys.length} questions changed: ${keys.join(", ")} (was ${stored.join(", ")}). The questions and their ids are unchanged.`;
+}
+
 export async function updateQuestionnaire(uuid: string, data: QuestionnaireWrite): Promise<any> {
-  // Build (and so validate) the graph before the rename guard's read: a malformed conditional
-  // field is still refused before any request, as it was before.
-  const json = toGraphPayload(data);
-  await assertNoStoredIdsAreRenamed(uuid, data.form_elements);
-  return withDroppedFieldsWarning(
+  // Build (and so validate) the graph before any read: a malformed conditional field is still
+  // refused before any request, as it was before.
+  let json = toGraphPayload(data, true);
+  // Everything below that needs the stored questionnaire reads it at most once. The rename guard
+  // needs it when a question has no id; the reorder warning when no question states its `next`;
+  // the language broadcast when a plain string is sent without `languages`. Only the guard's
+  // refusal is fatal: without a read a warning is simply not given and the write still goes out,
+  // so a connection that may write but not read still updates.
+  let stored: Promise<any> | undefined;
+  const readStored = () => (stored ??= getQuestionnaire(uuid));
+  if (!data.languages?.length && hasPlainTranslatable(data.form_elements)) {
+    // This PATCH names no languages, so the backend checks each translatable field against the
+    // STORED set: a plain string written in English alone is refused on a multilingual
+    // questionnaire ("missing translations for: es"). Write it in every stored language instead
+    // of resetting the questionnaire to English to make it pass.
+    try {
+      const storedLanguages = (await readStored())?.languages;
+      if (Array.isArray(storedLanguages) && storedLanguages.length) {
+        json = toGraphPayload(data, true, storedLanguages);
+      }
+    } catch {
+      // No read: the write goes out as built and the backend names the missing locale.
+    }
+  }
+  let warnings: string[] | undefined;
+  if (statesNoOrder(data.form_elements)) {
+    try {
+      const order = questionOrder((await readStored())?.graph);
+      if (!order.roundTrip) {
+        // A graph whose branches leave the main path cannot come back as one ordered list: writing
+        // this one puts its branch-only questions on a single `next` chain. Say so, do not flatten
+        // it in silence.
+        warnings = [
+          "This stored questionnaire's branches leave the main path, so a form_elements update without `next` " +
+            "writes one chain: its branch-only questions move onto that chain. Check the result with didit_questionnaire_get.",
+        ];
+      } else {
+        const warning = reorderWarning(order.keys, data.form_elements!);
+        if (warning) warnings = [warning];
+      }
+    } catch {
+      // Best effort: a read this connection may not make leaves the update unwarned, not refused.
+    }
+  }
+  await assertNoStoredIdsAreRenamed(data.form_elements, readStored);
+  const result = withDroppedFieldsWarning(
     json,
     await apiRequest(orgAppPath(`/questionnaires/${pathSegment(uuid, "questionnaire_id")}/`), { method: "PATCH", json }),
   );
+  return warnings ? { ...result, warnings } : result;
 }
 
 type ChoiceInput = NonNullable<FormElementInput["choices"]>[number];
@@ -609,13 +770,14 @@ export const QUESTIONNAIRE_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_questionnaire_get",
-      description: "Get questionnaire questions and options. Translations are summarized to one locale by default to keep the response consumable; pass include_translations:true for every locale.",
+      description:
+        "Get a questionnaire. `form_elements` is every stored question, in answering order and in the shape didit_questionnaire_update takes: to change it, edit that list and send the whole list back. `sections` is grouped for display, not the question order. Translations are summarized except in `form_elements`, which keeps every locale.",
       inputSchema: {
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
           questionnaire_id: { type: "string", description: "Questionnaire UUID" },
-          include_translations: { type: "boolean", description: "Return every locale translation (default false returns English or the first available locale)" },
+          include_translations: { type: "boolean", description: "Return every locale in `graph` and `sections` too (default false summarizes them for display; `form_elements` always keeps every locale)" },
         },
         required: ["questionnaire_id"],
       },
@@ -627,7 +789,7 @@ export const QUESTIONNAIRE_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_questionnaire_update",
-      description: "Overwrite a questionnaire's supplied settings. Read the current questions with didit_questionnaire_get first: sending form_elements REPLACES the entire question list, removing omitted questions, so pass every question to keep, in order, with its stored `id` and UPPERCASE element_type. A question sent without `id` gets a positional q1, q2, … key; an update that would leave out a stored id that way is refused. Omitted status preserves the current draft/published state; publication changes only when status is explicitly passed. Before calling, show the questionnaire and proposed changes and obtain explicit user confirmation, including the full replacement when form_elements is supplied.",
+      description: "Overwrite a questionnaire's supplied settings. Read the current questions with didit_questionnaire_get first, edit its `form_elements` and send the whole list back: sending form_elements REPLACES the entire question list, removing omitted questions, so pass every question to keep, in order, with its stored `id` and UPPERCASE element_type. An order that differs from the stored one is written and reported in `warnings`. Omit `languages` to keep the stored ones. A question sent without `id` gets a positional q1, q2, … key; an update that would leave out a stored id that way is refused. Omitted status preserves the current draft/published state; publication changes only when status is explicitly passed. Before calling, show the questionnaire and proposed changes and obtain explicit user confirmation, including the full replacement when form_elements is supplied.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -650,7 +812,8 @@ export const QUESTIONNAIRE_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_questionnaire_delete",
-      description: "Delete a questionnaire.",
+      description:
+        "Delete a DRAFT VERSION of a questionnaire, not the questionnaire itself. A published version is immutable and cannot be deleted. Neither can the only version of a questionnaire (that would erase it): a draft with no other version, such as one created and never published, has to stay a draft instead, which respondents never see. Only a draft with another version of the same questionnaire is deleted.",
       inputSchema: {
         type: "object" as const,
         properties: {

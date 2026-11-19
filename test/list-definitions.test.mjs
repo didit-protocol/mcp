@@ -213,12 +213,19 @@ test("the tool list stays within its budget", async () => {
     // questionnaire write tools accepted a `next` the order implies (so a didit_questionnaire_get
     // read can be sent back), refused a dangling `goto`/rule `field`, and said that an update must
     // send each stored question's id again: their shared form_elements schema and the update
-    // description carry it, and the list stood 842 bytes over the old number.
-    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 275_200],
+    // description carry it, and the list stood 842 bytes over the old number. By 1.6 KB when
+    // didit_questionnaire_get began returning `form_elements` and naming it as the list to send
+    // back (with `sections` marked as display grouping, not the question order), the update tool
+    // said to send that list back and that a reorder is reported in `warnings`, and delete said
+    // what it deletes: the three descriptions carry it. The get description was then cut back to
+    // four sentences and `languages` now says an update keeps the stored ones (a plain string is
+    // written in all of them): the list stood 176 bytes under this number.
+    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 276_400],
     // Raised by 200 bytes with them: the questionnaire shapes (980) and questionnaire_uuid (651)
     // reach an API key connection too, and together took its list to 207,087. By 1 KB with the
-    // questionnaire round-trip text above: the API key list moved to 207,982.
-    ["an API key connection", { hosted: true, apiKey: true }, KEY, 208_200],
+    // questionnaire round-trip text above: the API key list moved to 207,982. By 1 KB with the
+    // questionnaire `form_elements`/delete text: the API key list moved to 209,164.
+    ["an API key connection", { hosted: true, apiKey: true }, KEY, 209_200],
     ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 31_500],
   ];
   for (const [label, options, authInfo, budget] of budgets) {

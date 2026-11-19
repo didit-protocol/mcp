@@ -33,7 +33,7 @@ function tool(name) {
 function interceptFetch(t, respond) {
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, init = {}) => {
-    calls.push({ url: new URL(String(url)), body: JSON.parse(init.body ?? "{}") });
+    calls.push({ url: new URL(String(url)), method: init.method ?? "GET", body: JSON.parse(init.body ?? "{}") });
     return Response.json(respond ? respond(calls.at(-1).body) : { questionnaire_id: "q-1" }, { status: 201 });
   });
   return calls;
@@ -106,8 +106,11 @@ test("a well-formed required_if is posted as sent, on create and on update", asy
   await requestContext.run(CTX, () => tool("didit_questionnaire_create").run({ title: "Acme onboarding", form_elements }));
   await requestContext.run(CTX, () => tool("didit_questionnaire_update").run({ questionnaire_id: "q-1", form_elements }));
 
-  for (const call of calls) assert.deepEqual(call.body.graph.nodes["acme-ar-cuit"].required_if, WHEN_COMPANY);
-  assert.equal(calls.length, 2);
+  const writes = calls.filter((call) => call.method !== "GET");
+  for (const call of writes) assert.deepEqual(call.body.graph.nodes["acme-ar-cuit"].required_if, WHEN_COMPANY);
+  // The create and the update; the update's own stored read (for the reorder warning)
+  // is not a write.
+  assert.equal(writes.length, 2);
 });
 
 test("well-formed branches are posted as sent and can jump to a question by its stable id", async (t) => {
@@ -150,7 +153,8 @@ test("an otherwise path (no rules) that ends the questionnaire (goto null) is po
     tool("didit_questionnaire_update").run({ questionnaire_id: "q-1", form_elements: [{ ...TYPE, branches }, CUIT, CPF] }),
   );
 
-  assert.deepEqual(calls[0].body.graph.nodes.tipo_cliente.branches, branches);
+  const patch = calls.find((call) => call.method === "PATCH");
+  assert.deepEqual(patch.body.graph.nodes.tipo_cliente.branches, branches);
 });
 
 test("required_if null (clear the condition) and an empty rules list are posted as sent", async (t) => {
@@ -162,8 +166,9 @@ test("required_if null (clear the condition) and an empty rules list are posted 
     }),
   );
 
-  assert.equal(calls[0].body.graph.nodes["acme-ar-cuit"].required_if, null);
-  assert.deepEqual(calls[0].body.graph.nodes["acme-br-cpf"].required_if, { rules: [] });
+  const patch = calls.find((call) => call.method === "PATCH");
+  assert.equal(patch.body.graph.nodes["acme-ar-cuit"].required_if, null);
+  assert.deepEqual(patch.body.graph.nodes["acme-br-cpf"].required_if, { rules: [] });
 });
 
 test("questions whose ids look like locale codes are all read back, each with its own title", async (t) => {
