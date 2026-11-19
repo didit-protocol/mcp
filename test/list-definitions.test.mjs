@@ -209,11 +209,16 @@ test("the tool list stays within its budget", async () => {
     // 4 under this one. By 700 bytes for questionnaire_uuid on didit_workflow_get_branch_fields:
     // the backend only generates questionnaire.answers.* fields when the request names the
     // questionnaire, so without the parameter the Copilot concluded that branching on an answer
-    // was impossible; field_definitions now points there for those fields.
-    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 274_200],
+    // was impossible; field_definitions now points there for those fields. By 1 KB when the
+    // questionnaire write tools accepted a `next` the order implies (so a didit_questionnaire_get
+    // read can be sent back), refused a dangling `goto`/rule `field`, and said that an update must
+    // send each stored question's id again: their shared form_elements schema and the update
+    // description carry it, and the list stood 842 bytes over the old number.
+    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 275_200],
     // Raised by 200 bytes with them: the questionnaire shapes (980) and questionnaire_uuid (651)
-    // reach an API key connection too, and together took its list to 207,087.
-    ["an API key connection", { hosted: true, apiKey: true }, KEY, 207_200],
+    // reach an API key connection too, and together took its list to 207,087. By 1 KB with the
+    // questionnaire round-trip text above: the API key list moved to 207,982.
+    ["an API key connection", { hosted: true, apiKey: true }, KEY, 208_200],
     ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 31_500],
   ];
   for (const [label, options, authInfo, budget] of budgets) {

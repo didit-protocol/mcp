@@ -202,11 +202,13 @@ test("a REPEATABLE_GROUP keeps its repeatable_config: the backend refuses the gr
   assert.deepEqual(calls[0].body.graph.nodes.owners.repeatable_config, repeatable_config);
 });
 
-test("a supplied next is refused: the order of the questions decides it", async (t) => {
+test("a supplied next that disagrees with the order is refused: the order decides it", async (t) => {
+  // The matching value is accepted so a didit_questionnaire_get read can be sent back unchanged
+  //; a disagreement is still refused, with the implied id in the error.
   await refused(
     t,
     "didit_questionnaire_create",
-    { title: "Acme onboarding", form_elements: [{ ...CUIT, next: "acme-br-cpf" }, CPF] },
+    { title: "Acme onboarding", form_elements: [{ ...CUIT, next: "acme-ar-cuit" }, CPF] },
     "form_elements[0].next",
     /branches/,
   );

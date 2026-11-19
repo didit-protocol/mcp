@@ -39,14 +39,14 @@ const FORM_ELEMENTS_PROP = {
   form_elements: {
     type: "array",
     description:
-      "REQUIRED. Array of form-element objects, in the order the user answers them. Each: { element_type (uppercase, one of the allowed types), title (a plain string, or an object of locale→string e.g. {\"en\":\"Your name\"}), is_required (bool), placeholder (hint text), and for choice types a `choices` array }. A per-question hint goes in `placeholder`: `description` is only accepted on HEADING, SECTION_HEADER and PARAGRAPH elements. Conditional logic is kept if well formed, else refused: `required_if: {rules:[{field:<id>,operator,value}]}`, `branches: [{id,rules,goto:<id>}]`, `repeatable_config` (REPEATABLE_GROUP needs it). `next` follows the order.",
+      "REQUIRED. Array of form-element objects, in the order the user answers them. Each: { element_type (uppercase, one of the allowed types), title (a plain string, or an object of locale→string e.g. {\"en\":\"Your name\"}), is_required (bool), placeholder (hint text), and for choice types a `choices` array }. A per-question hint goes in `placeholder`: `description` is only accepted on HEADING, SECTION_HEADER and PARAGRAPH elements. Conditional logic is kept if well formed, else refused: `required_if: {rules:[{field:<id>,operator,value}]}`, `branches: [{id,rules,goto:<id>}]`, `repeatable_config` (REPEATABLE_GROUP needs it). `next` follows the order. An update replaces the whole list: send every stored question again with the `id` that `didit_questionnaire_get` returns.",
     items: {
       type: "object",
       properties: {
         id: {
           type: "string",
           description:
-            "Optional stable question id: the key this question's answer is stored and returned under. Kept as given (hyphens survive; the public API documents lowercase letters, numbers and underscores). Omit to derive q1, q2, …",
+            "Optional stable question id: the key this question's answer is stored and returned under. Kept as given (hyphens survive; the public API documents lowercase letters, numbers and underscores). An update replaces the whole list, so send each stored question's id again exactly as `didit_questionnaire_get` returns it; a question sent without `id` gets a positional q1, q2, … key, and an update is refused when that would leave out a stored id of its own. Omit only on create.",
         },
         element_type: { type: "string", enum: FORM_ELEMENT_TYPES, description: "Element type (UPPERCASE)" },
         title: { type: "object", description: "Locale → label, e.g. {\"en\":\"Question text\"}" },
@@ -116,8 +116,11 @@ function toChoice(choice: Record<string, unknown>, languages: string[]) {
  * sent. What it does not do is refuse a malformed one on UPDATE: a `required_if` with no `rules`
  * (`{field, operator, value}`, `{question, value}`) is stored as `{}` and answered with success,
  * which the customer read as "saved". So the shape is checked here, before any
- * request, and a field that cannot be stored is refused with the shape that can. `next` is the one
- * field this tool always writes itself, from the order of the questions. */
+ * request, and a field that cannot be stored is refused with the shape that can. `next` is written
+ * from the order of the questions, so a value the order implies (as didit_questionnaire_get returns
+ * it) is accepted and only a disagreeing one is refused. A `goto` or a rule `field` that names a
+ * question outside this request is refused too: the backend rejects it ("references non-existent
+ * node"), and a rule may only name a question of the same questionnaire (measured 2026-11-19). */
 type Rule = { field?: unknown; operator?: unknown };
 
 function conditionalError(index: number, element: FormElementInput, field: string, problem: string, shape: string): DiditError {
@@ -147,13 +150,29 @@ const BRANCHES_SHAPE =
   "Send branches as [{ id: <branch id>, rules: [{ field: <question id>, operator: \"equals\", value: <answer> }], goto: <question id> }]; " +
   "rules: [] is the otherwise path (put it last) and goto: null ends the questionnaire.";
 
-function assertConditionalFields(elements: FormElementInput[]) {
+function unknownReference(index: number, element: FormElementInput, field: string, value: unknown, keys: string[], shape: string): DiditError {
+  return conditionalError(
+    index,
+    element,
+    field,
+    `names "${String(value)}", which is not a question in this request.`,
+    `The questions in this request are: ${keys.join(", ")}. ${shape}`,
+  );
+}
+
+function assertRuleFields(index: number, element: FormElementInput, rules: unknown, base: string, keys: string[]) {
+  const known = new Set(keys);
+  (rules as Rule[]).forEach((rule, at) => {
+    if (!known.has(String(rule.field))) {
+      throw unknownReference(index, element, `${base}[${at}].field`, rule.field, keys,
+        "A rule `field` must name a question of the same questionnaire.");
+    }
+  });
+}
+
+function assertConditionalFields(elements: FormElementInput[], keys: string[]) {
   elements.forEach((element, index) => {
     if (!element || typeof element !== "object") return;
-    if ("next" in element) {
-      throw conditionalError(index, element, "next", "is not accepted: the order of form_elements decides which question follows.",
-        "Remove `next`; to jump to another question on an answer, use `branches` with a `goto`.");
-    }
     if ("required_if" in element) {
       // null clears the condition; the backend takes it.
       const value = element.required_if as { rules?: unknown } | null;
@@ -174,6 +193,35 @@ function assertConditionalFields(elements: FormElementInput[]) {
               ? "needs an `id`."
               : rulesProblem(branch.rules) ?? (gotoStated ? undefined : "needs a `goto`: a question id, or null to end the questionnaire there.");
         if (problem) throw conditionalError(index, element, `branches[${at}]`, problem, BRANCHES_SHAPE);
+      });
+    }
+    // A read returns `next` on every question. Accept exactly the value the order implies, so a
+    // read can be sent back unchanged; refuse a disagreement and name the implied value.
+    if ("next" in element) {
+      const implied = keys[index + 1] ?? null;
+      if (element.next !== implied) {
+        throw conditionalError(index, element, "next",
+          `is ${JSON.stringify(element.next)} but the order implies ${implied === null ? "null (this is the last question)" : `"${implied}"`}.`,
+          "Remove `next` (the order decides it) or set it to the implied value. To jump to another question on an answer, use `branches` with a `goto`.");
+      }
+    }
+    // Every reference must resolve to a question in this request: the backend refuses a `goto` or
+    // rule `field` that names a node outside the graph, and a rule may only name a question of the
+    // same questionnaire. `goto: null` and `rules: []` are real values and stay allowed.
+    if ("required_if" in element) {
+      const value = element.required_if as { rules?: unknown } | null;
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        assertRuleFields(index, element, value.rules, "required_if.rules", keys);
+      }
+    }
+    if ("branches" in element) {
+      const known = new Set(keys);
+      (element.branches as Array<{ rules?: unknown; goto?: unknown }>).forEach((branch, at) => {
+        if (branch?.goto !== null && !known.has(String(branch.goto))) {
+          throw unknownReference(index, element, `branches[${at}].goto`, branch.goto, keys,
+            "A `goto` must name a question of the same questionnaire; null ends it there.");
+        }
+        assertRuleFields(index, element, branch.rules, `branches[${at}].rules`, keys);
       });
     }
   });
@@ -214,12 +262,11 @@ function withDroppedFieldsWarning(payload: Record<string, any>, result: any): an
  * `branches[].goto` refer to it by — so a stable id is preserved verbatim rather than replaced
  * by a positional `qN`; each node points at the next one in the list. */
 export function buildQuestionnaireGraph(elements: FormElementInput[], languages: string[]) {
-  assertConditionalFields(elements);
-
   const keys = elements.map((element, index) => {
     const supplied = typeof element.id === "string" ? element.id.trim() : "";
     return supplied || `q${index + 1}`;
   });
+  assertConditionalFields(elements, keys);
   keys.forEach((key, index) => {
     if (keys.indexOf(key) !== index) {
       throw new DiditError({
@@ -323,8 +370,103 @@ export async function getQuestionnaire(uuid: string, includeTranslations = false
   };
 }
 
+/** The keys of the stored questions in the order a respondent meets them: start at `start_node`
+ * and follow each node's `next` until null. A node this walk does not reach has no position. */
+function storedOrder(graph: any): string[] {
+  const nodes = graph?.nodes;
+  if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return [];
+  const order: string[] = [];
+  for (
+    let key: any = graph?.start_node;
+    typeof key === "string" && key && nodes[key] && !order.includes(key);
+    key = nodes[key].next
+  ) {
+    order.push(key);
+  }
+  return order;
+}
+
+/** Positional at its place: a stored question at 0-based index `i` of the stored order whose key
+ * is exactly `q${i + 1}`. Nothing else is positional: `q99` in first place is not, `q3` in second
+ * place is not, and a node the walk does not reach has no place at all. */
+function isPositionalAtItsPlace(key: string, position: number | undefined): boolean {
+  return position !== undefined && key === `q${position + 1}`;
+}
+
+/** The refusal for a rename guard whose stored read did not answer. The reason is our own words
+ * (a refused read, or a failed one); the upstream body is never echoed, and the hint carries the
+ * way out that needs no read at all. */
+function unreadableStoredIds(error: unknown): DiditError {
+  const refused = error instanceof DiditError && (error.shape.status === 403 || error.shape.code === "forbidden");
+  return new DiditError({
+    code: "bad_request",
+    message:
+      `This update sends a question without an id, so the stored ids had to be read to check that none ` +
+      `is renamed, and the read did not answer: ${refused ? "no read permission" : "the read failed"}.`,
+    field: "form_elements",
+    hint:
+      "Nothing was written. Send an id for every question and no read is needed: the id each stored " +
+      "question already has, exactly as didit_questionnaire_get returns it, or q1, q2, … in order for a " +
+      "questionnaire whose own ids are positional.",
+  });
+}
+
+/** An update must never change, in silence, the key under which a stored question's answers are
+ * kept. The rule, with every term defined:
+ *
+ * - Stored order: the stored questions in the order a respondent meets them: start at
+ *   `start_node` and follow each node's `next` until null. A stored node this walk does not reach
+ *   has no position.
+ * - Positional at its place: a stored question at index `i` of the stored order (0-based) whose
+ *   key is exactly `q${i + 1}`. Nothing else is positional: `q99` in first place is not, `q3` in
+ *   second place is not, a node the walk does not reach is not.
+ * - Final keys of the update: for each question of the update, its trimmed `id` when given, else
+ *   `q${index + 1}`: the keys `buildQuestionnaireGraph` will write.
+ * - Missing: a stored key that is not among the final keys.
+ *
+ * 1. No stored key is missing: allow.
+ * 2. Every question of the update carries an id: allow, with NO read (a missing stored key was
+ *    deleted on purpose), so a connection that may write but not read always works.
+ * 3. Otherwise (at least one question has no id) read the stored questionnaire once:
+ *    - the read is refused or fails: refuse the update, naming the way out that needs no read;
+ *    - no stored key is missing: allow;
+ *    - every missing stored key is positional at its place: allow (questions were removed from a
+ *      questionnaire that numbers its questions by position);
+ *    - any missing stored key is not positional at its place: refuse, naming those keys and the
+ *      two ways out: send that question's id again, or give the new question an id of its own. */
+async function assertNoStoredIdsAreRenamed(uuid: string, elements: FormElementInput[] | undefined) {
+  if (!elements?.length) return;
+  const idOf = (element: FormElementInput) => (typeof element?.id === "string" ? element.id.trim() : "");
+  if (elements.every((element) => idOf(element))) return;
+  let stored: any;
+  try {
+    stored = await getQuestionnaire(uuid);
+  } catch (error) {
+    throw unreadableStoredIds(error);
+  }
+  const nodes = stored?.graph?.nodes;
+  if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return;
+  const finalKeys = new Set(elements.map((element, index) => idOf(element) || `q${index + 1}`));
+  const missing = Object.keys(nodes).filter((key) => !finalKeys.has(key));
+  if (!missing.length) return;
+  const order = storedOrder(stored.graph);
+  const positionOf = new Map(order.map((key, index) => [key, index]));
+  const renamed = missing.filter((key) => !isPositionalAtItsPlace(key, positionOf.get(key)));
+  if (!renamed.length) return;
+  throw new DiditError({
+    code: "bad_request",
+    message: `This update sends a question without an id while the stored ${renamed.length === 1 ? "key" : "keys"} ${renamed.map((key) => `"${key}"`).join(", ")} would be renamed, so the key under which ${renamed.length === 1 ? "that question's answers are" : "those questions' answers are"} kept would change in silence.`,
+    field: "form_elements",
+    hint:
+      `Nothing was written. Send the stored questions again with their ids, exactly as didit_questionnaire_get returns them (${renamed.join(", ")}); if the question without an id is a new one, give it an id of its own.`,
+  });
+}
+
 export async function updateQuestionnaire(uuid: string, data: QuestionnaireWrite): Promise<any> {
+  // Build (and so validate) the graph before the rename guard's read: a malformed conditional
+  // field is still refused before any request, as it was before.
   const json = toGraphPayload(data);
+  await assertNoStoredIdsAreRenamed(uuid, data.form_elements);
   return withDroppedFieldsWarning(
     json,
     await apiRequest(orgAppPath(`/questionnaires/${pathSegment(uuid, "questionnaire_id")}/`), { method: "PATCH", json }),
@@ -485,7 +627,7 @@ export const QUESTIONNAIRE_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_questionnaire_update",
-      description: "Overwrite a questionnaire's supplied settings. Sending form_elements REPLACES the entire question list, removing omitted questions; pass every question to keep, in order, with UPPERCASE element_type. Omitted status preserves the current draft/published state; publication changes only when status is explicitly passed. Before calling, show the questionnaire and proposed changes and obtain explicit user confirmation, including the full replacement when form_elements is supplied.",
+      description: "Overwrite a questionnaire's supplied settings. Read the current questions with didit_questionnaire_get first: sending form_elements REPLACES the entire question list, removing omitted questions, so pass every question to keep, in order, with its stored `id` and UPPERCASE element_type. A question sent without `id` gets a positional q1, q2, … key; an update that would leave out a stored id that way is refused. Omitted status preserves the current draft/published state; publication changes only when status is explicitly passed. Before calling, show the questionnaire and proposed changes and obtain explicit user confirmation, including the full replacement when form_elements is supplied.",
       inputSchema: {
         type: "object" as const,
         properties: {
