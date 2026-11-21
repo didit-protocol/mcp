@@ -221,6 +221,8 @@ test("the tool list stays within its budget", async () => {
     // four sentences and `languages` now says an update keeps the stored ones (a plain string is
     // written in all of them): the list stood 176 bytes under this number.
     ["a signed-in person on the hosted server", { hosted: true }, PERSON, 276_400],
+    // A management grant also receives the six Authentication setup schemas.
+    ["a hosted management grant", { hosted: true }, { ...PERSON, scopes: ["didit:management"] }, 282_800],
     // Raised by 200 bytes with them: the questionnaire shapes (980) and questionnaire_uuid (651)
     // reach an API key connection too, and together took its list to 207,087. By 1 KB with the
     // questionnaire round-trip text above: the API key list moved to 207,982. By 1 KB with the

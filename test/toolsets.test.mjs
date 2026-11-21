@@ -166,7 +166,10 @@ test("every tool belongs to a toolset, so no tool can be missing from every sele
   });
 });
 
-test("toolset ids are unique, lowercase and described; every toolset holds at least one tool", async () => {
+test("toolset ids are unique, lowercase and described; every toolset holds at least one tool", async (t) => {
+  const claims = Buffer.from(JSON.stringify({ scope: "didit:management" })).toString("base64url");
+  process.env.DIDIT_ACCESS_TOKEN = `local.${claims}.fixture`;
+  t.after(() => { delete process.env.DIDIT_ACCESS_TOKEN; });
   const ids = TOOLSETS.map((toolset) => toolset.id);
   assert.equal(new Set(ids).size, ids.length);
   for (const toolset of TOOLSETS) {

@@ -104,7 +104,7 @@ const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
  */
 export async function exportToolCatalog() {
   // A signed-in person on the hosted server: a remote Bearer, no staff flag.
-  const person = { token: "catalog.export.token", clientId: "export-tool-catalog", scopes: [], extra: {} };
+  const person = { token: "catalog.export.token", clientId: "export-tool-catalog", scopes: ["didit:management"], extra: {} };
   const staffEnv = process.env.DIDIT_IS_STAFF;
   delete process.env.DIDIT_IS_STAFF;
   try {

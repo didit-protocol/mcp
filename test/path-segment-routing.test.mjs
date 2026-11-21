@@ -7,6 +7,7 @@ import { requestContext, orgAppPath, orgPath } from "../dist/config.js";
 import { pathSegment, DiditError } from "../dist/security.js";
 import { scope, inScope, interceptFetch, testRoutingHandlers } from "./helpers/path-routing.mjs";
 import * as lists from "../dist/tools/lists.js";
+import * as authentication from "../dist/tools/authentication.js";
 import * as members from "../dist/tools/members.js";
 import * as questionnaires from "../dist/tools/questionnaires.js";
 import * as reports from "../dist/tools/reports.js";
@@ -32,6 +33,7 @@ testRoutingHandlers([
   ["member removal", (id) => members.removeMember(id)],
   ["member organization", (id) => members.listMembers(id), true],
   ["API-key organization", (id) => members.listApiKeys(id, "app"), true],
+  ["authentication method name", (id) => authentication.setAuthenticationMethod({ name: id, enabled: true })],
   ["questionnaire read", (id) => questionnaires.getQuestionnaire(id)],
   ["questionnaire update", (id) => questionnaires.updateQuestionnaire(id, { title: "test" })],
   ["questionnaire delete", (id) => questionnaires.deleteQuestionnaire(id)],

@@ -25,7 +25,7 @@ const API = "https://verification.didit.me/v3";
 const ORG = "0d6b5c1e-2f3a-4b7c-8d9e-1a2b3c4d5e6f";
 const APP = "a1b2c3d4-0000-4000-8000-000000000002";
 const DESTINATION = "5e55aaaa-2222-4333-8444-555555555555";
-const PERSON = { token: "person.access.token", clientId: "registry-test", scopes: [], extra: { organization_id: ORG } };
+const PERSON = { token: "person.access.token", clientId: "registry-test", scopes: ["didit:management"], extra: { organization_id: ORG } };
 
 async function withClient(options, authInfo, run) {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -49,6 +49,11 @@ async function withClient(options, authInfo, run) {
 const AREAS = {
   webhooks: ["didit_webhook_list", "didit_webhook_create", "didit_webhook_get", "didit_webhook_update", "didit_webhook_delete"],
   branding: ["didit_branding_get", "didit_branding_update"],
+  authentication: [
+    "didit_authentication_get", "didit_authentication_method_set",
+    "didit_authentication_settings_get", "didit_authentication_settings_update",
+    "didit_authentication_onboarding_get", "didit_authentication_onboarding_update",
+  ],
   questionnaires: [
     "didit_questionnaire_list", "didit_questionnaire_create", "didit_questionnaire_append_choices",
     "didit_questionnaire_get", "didit_questionnaire_update", "didit_questionnaire_delete",
@@ -117,7 +122,10 @@ test("the registry holds the tools of every moved area, each once", () => {
   assert.throws(() => byName([REGISTERED_TOOL_LIST[0], REGISTERED_TOOL_LIST[0]]), /registered twice/);
 });
 
-test("every registered tool is listed once, with the annotations it declares", async () => {
+test("every registered tool is listed once, with the annotations it declares", async (t) => {
+  const claims = Buffer.from(JSON.stringify({ scope: "didit:management" })).toString("base64url");
+  process.env.DIDIT_ACCESS_TOKEN = `local.${claims}.fixture`;
+  t.after(() => { delete process.env.DIDIT_ACCESS_TOKEN; });
   for (const [label, options, authInfo] of [["local", {}, undefined], ["hosted", { hosted: true }, PERSON]]) {
     const { tools } = await withClient(options, authInfo, (client) => client.listTools());
     for (const registered of REGISTERED_TOOL_LIST) {

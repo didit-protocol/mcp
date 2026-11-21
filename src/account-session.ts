@@ -225,6 +225,25 @@ export async function accountSessionToken(
   }
 }
 
+/** Only advertise the scope of the local credential that dispatch will actually use. */
+export function localGrantScopes(selectedToken?: string): string[] {
+  const envToken = process.env.DIDIT_ACCESS_TOKEN;
+  if (envToken) {
+    const scope = claimsOf(envToken).scope;
+    return typeof scope === "string" ? scope.split(/\s+/) : [];
+  }
+  const file = credentialsFilePath();
+  const device = loadCredentials(MCP_AUTHORIZATION_SERVER_ORIGIN, file);
+  if (!device?.refresh_token) return [];
+  if (selectedToken !== undefined) {
+    if (device.access_token !== selectedToken) return [];
+  } else {
+    const account = load(DIDIT_AUTH_BASE_URL, file);
+    if (account?.access_token && (account.signed_in_at ?? 0) >= (device.signed_in_at ?? 0)) return [];
+  }
+  return device.scope?.split(/\s+/) ?? [];
+}
+
 /**
  * The access token of the local server's sign-in: the device-code one or the account-tools one,
  * whichever the person did last. Returns undefined when neither exists.

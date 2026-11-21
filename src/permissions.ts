@@ -64,6 +64,24 @@ export const TOOL_PERMISSIONS: Record<string, ToolPermission> = {
   ...INTERNAL_TOOL_PERMISSIONS,
 };
 
+export function isAuthenticationSetup(tool: string): boolean {
+  const permission = TOOL_PERMISSIONS[tool];
+  return permission === "read:authentication" || permission === "write:authentication";
+}
+
+/** Authentication setup requires an owner-approved management grant or an explicitly scoped key. */
+export function setupCredentialRefusal(tool: string, scopes: readonly string[], key?: { authenticationAccess?: "read" | "write" }): string | undefined {
+  if (!isAuthenticationSetup(tool)) return;
+  if (key) {
+    const needed = TOOL_PERMISSIONS[tool] === "read:authentication" ? "read" : "write";
+    if (key.authenticationAccess !== "write" && key.authenticationAccess !== needed) {
+      return `This application needs a named key with ${needed} access to authentication.`;
+    }
+  } else if (!scopes.includes("didit:management")) {
+    return "Authentication setup requires the didit:management scope. Reconnect with owner approval.";
+  }
+}
+
 /** The permissions any one of which lets a call run: one entry, a set, or none when the map
  * has no entry for the tool (never judged). */
 export function acceptedPermissions(tool: string): readonly string[] {
@@ -117,10 +135,11 @@ export function decidePermission({ tool, scopes, mode, tokenOrg, targetOrg }: Pe
   const judgeable = Boolean(tokenOrg) && (!targetOrg || targetOrg === tokenOrg);
   const permissions = tokenPermissions(scopes);
 
-  if (mode === "off" || accepted.length === 0 || !judgeable || permissions.length === 0) return "allow";
+  const effectiveMode = isAuthenticationSetup(tool) ? "enforce" : mode;
+  if (effectiveMode === "off" || accepted.length === 0 || !judgeable || permissions.length === 0) return "allow";
   if (permissions.some((permission) => accepted.includes(permission))) return "allow";
 
-  return mode === "enforce" ? "deny" : "would_deny";
+  return effectiveMode === "enforce" ? "deny" : "would_deny";
 }
 
 export function missingPermissionError(tool: string): DiditError {

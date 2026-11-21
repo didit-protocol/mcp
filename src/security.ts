@@ -23,6 +23,8 @@ export interface DiditErrorShape {
   next_step?: Record<string, unknown>;
   /** The organization behind a 403 `sso_required` (name and slug as the backend names them). */
   sso_organization?: { name?: string; slug?: string };
+  /** On a 403 from the API: whether its body blames the caller's role (see isRoleRefusal). */
+  role_refusal?: boolean;
 }
 
 /**
@@ -644,6 +646,19 @@ export function statusToCode(status: number): string {
   }
 }
 
+/**
+ * Whether a 403 body blames the caller's role: service-didit-verification's PermissionRequired answers
+ * `code: "permission_denied"` (core/exceptions.py) and DRF's default refusal is a bare `{detail}`. Any
+ * other code (insufficient_credits, plan_upgrade_required, …) or a reason under `error` (the live AML
+ * balance check) is a refusal no role change fixes.
+ */
+export function isRoleRefusal(body: any): boolean {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return true;
+  if (typeof body.code === "string" && body.code) return body.code === "permission_denied";
+
+  return typeof body.error !== "string";
+}
+
 /** Per-status remediation hint so the model knows what to do next. */
 export function statusToHint(status: number, body: any): string | undefined {
   switch (status) {
@@ -656,7 +671,9 @@ export function statusToHint(status: number, body: any): string | undefined {
         ? "Invalid enum value — choose one of the values in `allowed`."
         : "A field value was rejected. Check the field constraints and retry.";
     case 403:
-      return "This action is not permitted with the current credentials (it may require a different role).";
+      return isRoleRefusal(body)
+        ? "This action is not permitted with the current credentials (it may require a different role)."
+        : "Refused for the reason in the message, which no role change fixes: tell the person what it asks for (for example a top-up or a plan) instead of retrying the same call.";
     case 401:
       return "Authentication failed. Check the api key / access token.";
     case 409:

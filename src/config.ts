@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { DiditError, parseErrorBody, statusToCode, statusToHint, resolveFileSource, pathSegment } from "./security";
+import { DiditError, isRoleRefusal, parseErrorBody, statusToCode, statusToHint, resolveFileSource, pathSegment } from "./security";
 import type { FileSource } from "./security";
 import type { ApiKeyScope } from "./api-key-connection";
 import type { LiveAccessReader } from "./live-access";
@@ -431,6 +431,7 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
       field: parsed.field,
       allowed: parsed.allowed,
       status: res.status,
+      ...(res.status === 403 ? { role_refusal: isRoleRefusal(body) } : {}),
       ...backendAction(body),
     });
   }

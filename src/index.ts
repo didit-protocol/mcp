@@ -25,6 +25,7 @@ import { VENDOR_USER_TOOLS } from "./tools/users";
 import { VENDOR_BUSINESS_TOOLS } from "./tools/businesses";
 import { TRANSACTION_RULE_TOOLS, TRANSACTION_TOOLS } from "./tools/transactions";
 import { BRANDING_TOOLS } from "./tools/customization";
+import { AUTHENTICATION_TOOLS } from "./tools/authentication";
 import { WEBHOOK_TOOLS } from "./tools/webhooks";
 import { REGISTERED_TOOLS } from "./tools/registered";
 import { ENTITY_STATUSES, LAST_N_DAYS_PROP, SESSION_STATUSES, WORKFLOW_GRAPH_SCHEMA } from "./tools/shared-schema";
@@ -72,7 +73,7 @@ import { SEARCH_TOOLS } from "./tools/search";
 import * as analytics from "./tools/analytics";
 import * as compliance from "./tools/compliance";
 import { DeviceLoginError } from "./device-login";
-import { keepSignIn, localSignInToken } from "./account-session";
+import { keepSignIn, localGrantScopes, localSignInToken } from "./account-session";
 import {
   PERSON_ONLY_TOOLS,
   apiKeyApplication,
@@ -95,6 +96,8 @@ import {
   acceptedPermissions,
   currentAccessRefusal,
   decidePermission,
+  isAuthenticationSetup,
+  setupCredentialRefusal,
   missingPermissionError,
   tokenPermissions,
   type LiveAccess,
@@ -925,6 +928,10 @@ export function createServer(
     // Declared with what they do, their permission and their handler in tools/members.ts.
     ...ORG_MEMBER_TOOLS.map((tool) => tool.def),
 
+    // ── Didit Authentication setup (apx/auth/v2) ────────────────────────
+    // Declared with what they do, their permission and their handler in tools/authentication.ts.
+    ...AUTHENTICATION_TOOLS.map((tool) => tool.def),
+
     // ── Compliance ──────────────────────────────────────────────────────
     ...internalToolDefs("compliance"),
 
@@ -1089,6 +1096,9 @@ export function createServer(
     // only in enforce mode — shadow mode lists everything and just records the verdicts.
     const tokenOrg = (authInfo?.extra as Record<string, unknown> | undefined)?.organization_id as string | undefined;
     const query = { scopes: authInfo?.scopes, mode: permissionMode(), tokenOrg, targetOrg: tokenOrg };
+    const grantScopes = authInfo?.scopes ?? (hosted ? [] : localGrantScopes());
+    const key = apiKeyScopeOf(authInfo);
+    catalog = catalog.filter((t) => !setupCredentialRefusal(t.name, grantScopes, key));
     catalog = catalog.filter((t) => decidePermission({ ...query, tool: wakeshift?.permissionAs(t.name) ?? t.name }) !== "deny");
     const visible = isPrivileged ? catalog : catalog.filter((t) => !isPrivilegedToolName(t.name));
     // A read-only connection has no use for a tool that changes data: it is neither listed nor
@@ -1318,6 +1328,12 @@ export function createServer(
     const outOfScope = apiKeyScopeRefusal(keyScope, argOrg, argApp);
     if (outOfScope) return refuse(outOfScope);
     if (PERSON_ONLY_TOOLS.has(name)) return refuse(personOnlyRefusal(name));
+  }
+  if (isAuthenticationSetup(name)) {
+    const localToken = !hosted && (process.env.DIDIT_ACCESS_TOKEN || storedToken);
+    const grantScopes = authInfo?.scopes ?? (localToken ? localGrantScopes(localToken) : []);
+    const refusal = setupCredentialRefusal(name, grantScopes, keyScope);
+    if (refusal) return refuse(refusal);
   }
   // The read proxy is annotated read-only, so it only ever runs a tool that is.
   if (via === TOOL_CALL_READ && !annotate(name).readOnlyHint) {
@@ -1663,8 +1679,9 @@ export function createServer(
     // refuses with a bare 403 until it expires. Say what that means instead of passing it on. The
     // copy names no change of its own: the connect introspection answers without permissions, so a
     // raised role cannot be told apart from a stale downstream copy, and a 403 for another reason
-    // must not be reported as a promotion.
-    if (liveConfirmed && shape.status === 403) {
+    // must not be reported as a promotion. A 403 whose body names another reason (no balance, a plan
+    // gate) is passed on as it is: called a role delay, it sent the agent into identical retries.
+    if (liveConfirmed && !isAuthenticationSetup(name) && shape.status === 403 && shape.role_refusal !== false) {
       return refuse(
         `Didit's verification service refused ${name}, although your current role in this organization carries ` +
           "the permission it needs. That service keeps its own copy of a role for up to 10 minutes (600 seconds), so a " +
@@ -1672,13 +1689,14 @@ export function createServer(
           "If it still refuses then, this call is being refused for another reason.",
       );
     }
+    const codeLine = shape.backend_code ? `\nCode: ${shape.backend_code}` : "";
     const fieldLine = shape.field ? `\nField: ${shape.field}` : "";
     const hintLine = shape.hint ? `\nHint: ${shape.hint}` : "";
     const allowedLine = shape.allowed && shape.allowed.length ? `\nAllowed: ${shape.allowed.join(", ")}` : "";
     // A backend refusal that names where a person finishes the action (agent top-ups) passes it on unchanged.
     const nextStepLine = shape.next_step ? `\nNext step: ${JSON.stringify(shape.next_step)}` : "";
     return {
-      content: [{ type: "text", text: `Error [${shape.code}]: ${shape.message}${fieldLine}${hintLine}${allowedLine}${nextStepLine}` }],
+      content: [{ type: "text", text: `Error [${shape.code}]: ${shape.message}${codeLine}${fieldLine}${hintLine}${allowedLine}${nextStepLine}` }],
       isError: true,
     };
   }

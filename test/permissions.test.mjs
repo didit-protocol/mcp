@@ -74,14 +74,15 @@ async function withMode(mode, fn) {
 
 test("every catalog tool has a permission entry, and every entry names a catalog tool", async () => {
   const staff = new Set(PRIVILEGED_TOOL_DEFS.map((t) => t.name));
-  // A staff Bearer keeps the full catalog (staff tools included, filtered below). In the
-  // public build the privileged module is the empty stub, so that Bearer would read as an
-  // ordinary hosted user and lose the account-bootstrap / checkout tools: list as a bare
-  // stdio client there instead.
-  const asStaff = staff.size ? { authInfo: STAFF } : {};
-  const catalog = await withClient({ hosted: false, ...asStaff }, async (c) =>
-    (await c.listTools()).tools.map((t) => t.name).filter((name) => !staff.has(name)),
-  );
+  // Bootstrap tools are local. Authentication setup needs a management grant.
+  // Take the union so this checks both credential-specific catalogs in either build.
+  const catalog = [];
+  for (const authInfo of [undefined, { ...STAFF, scopes: ["didit:management"] }]) {
+    await withClient({ hosted: false, authInfo }, async (client) => {
+      const { tools } = await client.listTools();
+      catalog.push(...tools.map(({ name }) => name).filter((name) => !staff.has(name)));
+    });
+  }
 
   const unmapped = catalog.filter((name) => !(name in TOOL_PERMISSIONS));
   const stale = Object.keys(TOOL_PERMISSIONS).filter((name) => !catalog.includes(name));

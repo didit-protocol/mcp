@@ -11,7 +11,8 @@ import { exportToolCatalog, toolCatalogMarkdown } from "../scripts/export-tool-c
 // row). These pin what the export promises: it is exactly what the hosted server lists to a
 // signed-in person, typed the way a client groups tools, and stable from one run to the next.
 
-delete process.env.DIDIT_ACCESS_TOKEN;
+const claims = Buffer.from(JSON.stringify({ scope: "didit:management" })).toString("base64url");
+process.env.DIDIT_ACCESS_TOKEN = `local.${claims}.fixture`;
 
 async function listed(options, authInfo) {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -35,7 +36,7 @@ const catalog = await exportToolCatalog();
 const TYPES = new Set(["read", "write", "destructive"]);
 
 test("the hosted part is exactly what the hosted server lists to a signed-in person", async () => {
-  const person = { token: "person.access.token", clientId: "client", scopes: [], extra: {} };
+  const person = { token: "person.access.token", clientId: "client", scopes: ["didit:management"], extra: {} };
   const tools = await listed({ hosted: true }, person);
   assert.deepEqual(
     catalog.hosted.tools.map((tool) => tool.name),

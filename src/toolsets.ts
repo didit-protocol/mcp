@@ -138,6 +138,11 @@ const PUBLIC_TOOLSETS: readonly Toolset[] = [
     groups: [["branding_", "Branding"]],
   },
   {
+    id: "authentication",
+    description: "Didit Authentication setup: the configuration and sign-in methods, product settings and onboarding.",
+    groups: [["authentication_", "Authentication"]],
+  },
+  {
     id: "verification",
     description:
       "Standalone verification APIs: ID document, face, AML, proof of address, phone, email, database and business checks.",

@@ -258,6 +258,7 @@ It covers your organizations and applications, sessions (create, find, decide, e
 | `webhooks` | Webhook destinations and alerts. |
 | `reports` | Analytics, exports and the audit log. |
 | `branding` | White-label branding of the verification flow. |
+| `authentication` | Didit Authentication setup: the configuration and sign-in methods, product settings and onboarding. |
 | `verification` | Standalone verification APIs: ID document, face, AML, proof of address, phone, email, database and business checks. |
 | `docs` | Search the Didit documentation. |
 | `all` | Every tool your role may use. The default. |

@@ -160,7 +160,11 @@ const sessionWritable = () => backendPermissions().some((p) => p === "create:ses
 // A safe method accepts read:X or list:X (core/permissions.py, _accepted_permissions), as the MCP's
 // own map now says.
 const sessionReadable = () => backendPermissions().some((p) => p === "list:sessions" || p === "read:sessions");
-const forbid = () => json({ detail: "You do not have permission to perform this action." }, 403);
+// The body core/exceptions.py PermissionRequired answers: a role refusal always carries its code.
+const forbid = () =>
+  json({ detail: "You do not have permission to perform this action.", code: "permission_denied", missing_permissions: [] }, 403);
+// A 403 the session create answers for a reason that is not the role (balance, plan), or null.
+let sessionRefusal = null;
 
 function reset() {
   organization.role = "admin";
@@ -182,6 +186,7 @@ function reset() {
   sessionOnlyCalls.length = 0;
   backendCache.clear();
   backendIntrospections = 0;
+  sessionRefusal = null;
 }
 
 globalThis.fetch = async (url, init = {}) => {
@@ -260,6 +265,7 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (path === "https://api.example.test/v3/session/") {
     sessionPosts.push({ at: Date.now(), role: organization.role });
+    if (sessionRefusal) return json(sessionRefusal, 403);
     if (!sessionWritable()) return forbid();
     sessionsCreated.push({ at: Date.now() });
     return json({ session_id: "55555555-5555-4555-8555-555555555555", url: "https://verify.example.test/s/1", status: "Not Started" });
@@ -512,6 +518,37 @@ test("a promotion the verification service has not applied yet says so instead o
     assert.equal(sessionsCreated.length, 1);
   } finally {
     server.close();
+  }
+});
+
+// Production 18-20 Nov 2026: a live AML screen without balance, a wallet screen and a network read
+// on a plan without them were all answered "your role has not reached the service yet, retry in 10
+// minutes"; the agent retried the same call and gave up. Only `permission_denied` is about the role.
+test("a refusal that is not about the role passes the backend's reason on, never the role-cache wait", async () => {
+  const refusals = [
+    { error: "You don't have enough credits to perform this request. Please top up at https://business.didit.me" },
+    { detail: "Not enough credits for this screening.", code: "insufficient_credits" },
+    { detail: "Network investigation is available on the Scale plan.", code: "plan_upgrade_required" },
+  ];
+
+  for (const body of refusals) {
+    reset();
+    sessionRefusal = body;
+    const server = await connect();
+    try {
+      const attempt = await createSession(server);
+      const attemptText = text(attempt);
+      evidence.push({ step: `Admin, backend 403 ${body.code ?? "uncoded"}`, result: refused(attempt) ? "refused" : "allowed", text: attemptText });
+      assert.equal(refused(attempt), true);
+      // URLs in error text are redacted by sanitizeText, as in every error: compare the reason without them.
+      const reason = (body.detail ?? body.error).replace(/https?:\/\/\S+/g, "").trim();
+      assert.ok(attemptText.includes(reason), `the backend's own reason reaches the model, got: ${attemptText}`);
+      if (body.code) assert.match(attemptText, new RegExp(body.code), "and its machine code");
+      assert.doesNotMatch(attemptText, /600 seconds|10 minutes|own copy of a role/, "never the role-cache wait");
+      assert.doesNotMatch(attemptText, /different role/, "never a role hint for a refusal about something else");
+    } finally {
+      server.close();
+    }
   }
 });
 

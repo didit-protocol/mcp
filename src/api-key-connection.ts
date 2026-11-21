@@ -41,6 +41,7 @@ export interface ApiKeyScope {
   primary: boolean;
   /** True when the key is limited to some resources; false for a full-access key. */
   restricted: boolean;
+  authenticationAccess?: "read" | "write";
 }
 
 /**
@@ -97,6 +98,7 @@ export function apiKeyAuthInfo(key: string, data: Record<string, unknown>, resou
   // `expires_at` is already the earlier of the key's own expiry and, for a secret that was
   // rotated, the end of the old secret's grace period (service-didit-auth `access_payload`).
   const ownExpiry = epochSeconds(access.expires_at);
+  const level = (access.scopes as Record<string, unknown> | null)?.authentication;
   const scope: ApiKeyScope = {
     organizationId,
     organizationName: text(data.organization_name),
@@ -107,6 +109,7 @@ export function apiKeyAuthInfo(key: string, data: Record<string, unknown>, resou
     keyLabel: text(access.label),
     keyPrefix: text(access.prefix),
     primary: access.primary === true,
+    ...(!access.primary && access.uuid && (level === "read" || level === "write") ? { authenticationAccess: level } : {}),
     restricted: access.scopes !== null && access.scopes !== undefined,
   };
 
