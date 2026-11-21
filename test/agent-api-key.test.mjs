@@ -58,7 +58,7 @@ test("creates the key at the application's api-keys route and says to store it o
     organization_id: ORG,
     application_id: APP,
     label: "Acme backend (Codex)",
-    scopes: { sessions: "write", workflows: "read" },
+    scopes: { sessions: "write", workflows: "read", messages: "write" },
     confirm: true,
   });
 
@@ -67,7 +67,7 @@ test("creates the key at the application's api-keys route and says to store it o
     {
       url: `${AUTH}/organizations/${ORG}/applications/${APP}/api-keys/`,
       method: "POST",
-      body: { label: "Acme backend (Codex)", scopes: { sessions: "write", workflows: "read" } },
+      body: { label: "Acme backend (Codex)", scopes: { sessions: "write", workflows: "read", messages: "write" } },
     },
   ]);
   const payload = text(result);

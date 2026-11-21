@@ -1,5 +1,5 @@
 {
-  "checksum": "sha256:420b7b24ac86be17505a0966b1b601675ff047dc04eb8ed922035c32f16fc673",
+  "checksum": "sha256:20f91c4c73134924896574bd8ef259c9738e505d756ddd03145c03468956afb1",
   "features": {
     "AGE_ESTIMATION": {
       "description": "Configuration for Age Estimation feature.",
@@ -694,7 +694,7 @@
           "type": "integer"
         },
         "bank_consent_expired_action": {
-          "description": "Verdict when the bank consent lapses after the step was already decided. Only meaningful with `bank_refresh_enabled`.",
+          "description": "Deprecated. It applied only to a bank connection kept open after the step, and the step now ends the connection when it completes, so this setting has no effect.",
           "enum": [
             "DECLINE",
             "REVIEW",
@@ -1078,7 +1078,7 @@
           "type": "string"
         },
         "bank_refresh_enabled": {
-          "description": "Re-fetch the account's financial data after the step has already been decided, for as long as the bank consent lasts. Needs at least one of the `balances`, `transactions` or `income` scopes and the save is refused without one. A consent that lapses afterwards is `bank_consent_expired_action`.",
+          "description": "Deprecated. The bank step reads the account once and then ends the bank connection; this setting has no effect. It is still accepted so existing workflows keep saving, and the save is still refused without at least one of the `balances`, `transactions` or `income` scopes.",
           "nullable": true,
           "required": false,
           "type": "boolean"

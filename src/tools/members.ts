@@ -69,7 +69,7 @@ export async function listApiKeys(organizationId?: string, applicationId?: strin
 // What an agent key may be limited to; the auth service caps it at the signed-in person and the
 // grant whatever is asked (service-didit-auth organizations/services/agent_api_keys.py).
 const KEY_RESOURCES = [
-  "sessions", "decisions", "media", "users", "businesses", "transactions", "workflows", "webhooks", "applications", "analytics",
+  "sessions", "decisions", "media", "users", "businesses", "transactions", "workflows", "webhooks", "applications", "analytics", "messages",
 ];
 const KEY_LEVELS = ["read", "write"];
 
@@ -245,7 +245,7 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
             type: "object",
             description:
               "Optional narrower access: resource -> 'read' | 'write' (sessions, decisions, media, users, businesses, " +
-              "transactions, workflows, webhooks, applications, analytics). Omit it for everything the person can do.",
+              "transactions, workflows, webhooks, applications, analytics, messages). Omit it for everything the person can do.",
             additionalProperties: { type: "string", enum: ["read", "write"] },
           },
           workflow_ids: { type: "array", items: { type: "string" }, description: "Optional: only these workflows' sessions (needs scopes)." },
