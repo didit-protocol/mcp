@@ -77,6 +77,10 @@ const SETUP_REFUSAL_HINTS: Readonly<Record<string, string>> = {
     "to be one with). Ask them to change it in the console, or set the other settings here.",
   passkey_required: "agent_humans_only needs the person to have a passkey enrolled on their account.",
   empty_update: "Send at least one field to change; an empty update is refused.",
+  product_disabled:
+    "Didit Authentication is turned off for this application, so setup changes are refused and nothing was written. " +
+    "No API or MCP call turns it on: a person turns it on for the application in the console (Authentication), then " +
+    "retry. didit_authentication_get shows enabled: false at the top while it is off.",
 };
 
 const FORBIDDEN_HINT =

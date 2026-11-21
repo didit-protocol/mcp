@@ -264,6 +264,28 @@ test("a backend refusal is a tool error that says what it means", async () => {
   }
 });
 
+test("Authentication turned off: every setup change says a person turns it on in the console", async () => {
+  const writes = [
+    { name: "didit_authentication_method_set", arguments: { ...SCOPE, name: "code", enabled: true } },
+    { name: "didit_authentication_settings_update", arguments: { ...SCOPE, mfa_policy: "everyone" } },
+    { name: "didit_authentication_onboarding_update", arguments: { ...SCOPE, sign_in_ui: "own" } },
+  ];
+  try {
+    for (const call of writes) {
+      stubAuth(() => json({ detail: "product_disabled" }, 409));
+      await withClient({ hosted: true, liveAccess: async () => ({ permissions: ["write:authentication"] }) }, PERSON, async (client) => {
+        const result = await client.callTool(call);
+        assert.equal(result.isError, true, `${call.name}: a refusal is never a success`);
+        assert.match(textOf(result), /product_disabled/);
+        assert.match(textOf(result), /turns it on for the application in the console/);
+        assert.doesNotMatch(textOf(result), /transaction monitoring/, `${call.name}: not the generic 409 hint`);
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("an incomplete or empty change is refused before it is sent", async () => {
   const requests = stubAuth(() => json({ ok: true }));
   try {
