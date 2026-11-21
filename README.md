@@ -254,7 +254,7 @@ It covers your organizations and applications, sessions (create, find, decide, e
 | `vendors` | The people and companies you verify: vendor users and vendor businesses. |
 | `transactions` | Transaction monitoring: transactions, wallet screening and rules with backtesting. |
 | `cases` | Case management: create, assign, escalate and resolve cases. |
-| `investigator` | The AI Investigator: its review queue, reports, decisions, policy questions and performance. |
+| `investigator` | The Investigator agent: its review queue, reports and follow-ups, decisions, policy questions and performance. |
 | `webhooks` | Webhook destinations and alerts. |
 | `reports` | Analytics, exports and the audit log. |
 | `branding` | White-label branding of the verification flow. |

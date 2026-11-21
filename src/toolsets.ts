@@ -112,7 +112,7 @@ const PUBLIC_TOOLSETS: readonly Toolset[] = [
   },
   {
     id: "investigator",
-    description: "The AI Investigator: its review queue, reports, decisions, policy questions and performance.",
+    description: "The Investigator agent: its review queue, reports and follow-ups, decisions, policy questions and performance.",
     groups: [["investigator_", "Investigator"]],
   },
   {

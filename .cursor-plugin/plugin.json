@@ -1,7 +1,7 @@
 {
   "name": "didit-mcp",
   "displayName": "Didit",
-  "version": "5.1.78",
+  "version": "5.1.79",
   "description": "Connect to your Didit workspace to manage verification sessions, workflows, cases, reports, and webhooks.",
   "author": {
     "name": "Didit",
