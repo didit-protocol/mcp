@@ -13,8 +13,8 @@ import { assertBoolean, DiditError, pathSegment } from "../security";
 // the Investigator only recommends: those tools are annotated destructive and refuse to run
 // without confirm:true, which a client may only send after the user approved that exact action.
 //
-// Every call says where the user acted from (X-Didit-Actor-Via: "copilot" when the console
-// assistant marked its MCP request so, otherwise "mcp"), so the Investigator Activity shows it.
+// Where the user acted from (X-Didit-Actor-Via) is forwarded by apiRequest on every call, so the
+// Investigator Activity shows it; a request without the header sends none.
 
 type ToolDef = { name: string; description: string; inputSchema: any };
 
@@ -352,10 +352,11 @@ export const INVESTIGATOR_TOOL_PERMISSIONS: Record<string, string | null> = {
 };
 
 /** The allowlisted X-Didit-Actor-Via of an incoming MCP request: "copilot" from the console
- *  assistant, anything else (absent, unknown) is "mcp". */
-export function actorViaFromHeaders(headers: Record<string, string | string[] | undefined> | undefined): "copilot" | "mcp" {
+ *  assistant, "mcp" for any other value, undefined when the request carried none. */
+export function actorViaFromHeaders(headers: Record<string, string | string[] | undefined> | undefined): "copilot" | "mcp" | undefined {
   const raw = headers?.["x-didit-actor-via"];
   const value = (Array.isArray(raw) ? raw[0] : raw)?.trim().toLowerCase();
+  if (!value) return undefined;
   return value === "copilot" ? "copilot" : "mcp";
 }
 
@@ -364,7 +365,6 @@ function clientHeaders(): Record<string, string> {
     ...getHeaders(),
     "X-Didit-Organization-Id": resolveOrganizationId(),
     "X-Didit-Application-Id": resolveApplicationId(),
-    "X-Didit-Actor-Via": requestContext.getStore()?.actorVia ?? "mcp",
   };
 }
 

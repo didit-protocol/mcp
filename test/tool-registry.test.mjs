@@ -47,6 +47,15 @@ async function withClient(options, authInfo, run) {
 
 // The areas moved so far. An area joins this list in the change that moves it.
 const AREAS = {
+  bankData: [
+    "didit_bank_link_create", "didit_bank_link_get", "didit_bank_link_cancellation_create",
+    "didit_bank_link_simulation_create", "didit_bank_connection_list", "didit_bank_connection_get",
+    "didit_bank_connection_delete", "didit_bank_connection_simulation_create", "didit_bank_sync_create",
+    "didit_bank_sync_list", "didit_bank_sync_get", "didit_bank_renewal_create", "didit_bank_revocation_create",
+    "didit_bank_account_list", "didit_bank_account_get", "didit_bank_balance_list", "didit_bank_transaction_list",
+    "didit_bank_transaction_feed_list", "didit_bank_institution_list", "didit_bank_institution_get",
+    "didit_bank_coverage_get",
+  ],
   webhooks: ["didit_webhook_list", "didit_webhook_create", "didit_webhook_get", "didit_webhook_update", "didit_webhook_delete"],
   branding: ["didit_branding_get", "didit_branding_update"],
   authentication: [

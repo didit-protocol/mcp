@@ -21,6 +21,11 @@ export interface DiditErrorShape {
   backend_code?: string;
   /** The backend's `next_step` {action, url, description}: where a person finishes what the agent cannot. */
   next_step?: Record<string, unknown>;
+  /**
+   * Seconds the backend asks the caller to wait before retrying: the `Retry-After` header, else a numeric
+   * `retry_after` in the body (the Bank data error body carries one, for example on `refresh_limit_reached`).
+   */
+  retry_after?: number;
   /** The organization behind a 403 `sso_required` (name and slug as the backend names them). */
   sso_organization?: { name?: string; slug?: string };
   /** On a 403 from the API: whether its body blames the caller's role (see isRoleRefusal). */

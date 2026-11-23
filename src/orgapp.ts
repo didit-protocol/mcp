@@ -210,7 +210,9 @@ export async function runForScope<R>(
 ): Promise<R> {
   const ctx = requestContext.getStore();
   return requestContext.run(
-    { accessToken: ctx?.accessToken, apiKey: ctx?.apiKey, apiKeyScope: ctx?.apiKeyScope, organizationId: orgId, applicationId: appId },
+    { accessToken: ctx?.accessToken, apiKey: ctx?.apiKey, apiKeyScope: ctx?.apiKeyScope, organizationId: orgId, applicationId: appId,
+      // Carried over: the scope changes, the caller and the tool being dispatched do not.
+      toolName: ctx?.toolName, actorVia: ctx?.actorVia },
     fn,
   );
 }

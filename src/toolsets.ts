@@ -143,6 +143,11 @@ const PUBLIC_TOOLSETS: readonly Toolset[] = [
     groups: [["authentication_", "Authentication"]],
   },
   {
+    id: "bank",
+    description: "Bank data and Bank Link: links, connections, accounts, balances, transactions, the change feed, institutions and coverage.",
+    groups: [["bank_", "Bank data & Bank Link"]],
+  },
+  {
     id: "verification",
     description:
       "Standalone verification APIs: ID document, face, AML, proof of address, phone, email, database and business checks.",

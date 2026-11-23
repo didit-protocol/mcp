@@ -251,7 +251,7 @@ test("an empty or too long note is refused before any request", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("every Investigator call says it came through the MCP (X-Didit-Actor-Via: mcp)", async () => {
+test("an Investigator call without an incoming X-Didit-Actor-Via sends none", async () => {
   const calls = stubFetch();
   await withClient(async (client) => {
     await client.callTool({ name: "didit_investigator_report_get", arguments: scoped({ run_id: RUN }) });
@@ -259,7 +259,7 @@ test("every Investigator call says it came through the MCP (X-Didit-Actor-Via: m
     await client.callTool({ name: "didit_investigator_add_note", arguments: scoped({ run_id: RUN, note: "Known." }) });
   });
   assert.equal(calls.length, 3);
-  for (const call of calls) assert.equal(call.headers["X-Didit-Actor-Via"], "mcp");
+  for (const call of calls) assert.equal(call.headers["X-Didit-Actor-Via"], undefined);
 });
 
 test("only an incoming X-Didit-Actor-Via of copilot is forwarded as copilot", async () => {
@@ -268,8 +268,8 @@ test("only an incoming X-Didit-Actor-Via of copilot is forwarded as copilot", as
   assert.equal(actorViaFromHeaders({ "x-didit-actor-via": " Copilot " }), "copilot");
   assert.equal(actorViaFromHeaders({ "x-didit-actor-via": ["copilot"] }), "copilot");
   assert.equal(actorViaFromHeaders({ "x-didit-actor-via": "console" }), "mcp");
-  assert.equal(actorViaFromHeaders({}), "mcp");
-  assert.equal(actorViaFromHeaders(undefined), "mcp");
+  assert.equal(actorViaFromHeaders({}), undefined);
+  assert.equal(actorViaFromHeaders(undefined), undefined);
 });
 
 test("record_get reads one verification's or transaction's newest run, and needs exactly one id", async () => {

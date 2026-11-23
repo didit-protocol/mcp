@@ -12,10 +12,10 @@ import { DiditError, assertBoolean, pathSegment } from "../security";
 //   GET   …/authentication/onboarding/                                           progress
 //   PATCH …/authentication/onboarding/
 //
-// The owner-approved credentials an internal issue admits on these setup routes are an OAuth grant carrying
-// `didit:management` (the MCP connection, or the device-code grant) and a NAMED application API key
-// whose scopes give `authentication` the level the call needs. The primary secret, an unscoped
-// "full access" key and the programmatic token keep answering 403 there, which the hint below says.
+// The credentials these setup routes admit are an OAuth grant carrying `didit:management` (the MCP
+// connection, or the device-code grant) and an API key of the application: full access (no scopes, the
+// primary secret included) covers Authentication, a scoped key needs `authentication` at the level the call
+// needs. The programmatic token keeps answering 403 there, which the hint below says.
 // Branding, emails, protection, hosted domain, native apps and verified are multi-route families,
 // left for a follow-up (the PR says so); the configuration PATCH (redirect URIs) is too.
 
@@ -85,9 +85,9 @@ const SETUP_REFUSAL_HINTS: Readonly<Record<string, string>> = {
 
 const FORBIDDEN_HINT =
   "This setup needs a credential that holds write:authentication (or read:authentication to read it). An MCP sign-in " +
-  "needs the didit:management scope it asks for when you connect; a named API key needs the authentication scope on " +
-  "this application. The application's primary secret, the programmatic token and a full-access key with empty scopes " +
-  "are refused here by design; if your role does not carry the permission, ask an owner or admin to grant it.";
+  "needs the didit:management scope it asks for when you connect; an API key of this application needs full access " +
+  "(no scopes) or the authentication scope. The programmatic token is refused here by design; if your role does not " +
+  "carry the permission, ask an owner or admin to grant it.";
 
 /** The backend's own refusal, with the one thing this setup means added as its hint. */
 function clearSetupError(error: unknown, secret?: string): unknown {

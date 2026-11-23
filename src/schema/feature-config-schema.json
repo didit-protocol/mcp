@@ -1,5 +1,5 @@
 {
-  "checksum": "sha256:20f91c4c73134924896574bd8ef259c9738e505d756ddd03145c03468956afb1",
+  "checksum": "sha256:98d118b8d80b121c731052e8fa0014c594b728fb58acc39dbe45ebdbfb28707d",
   "features": {
     "AGE_ESTIMATION": {
       "description": "Configuration for Age Estimation feature.",
@@ -693,17 +693,6 @@
           "required": false,
           "type": "integer"
         },
-        "bank_consent_expired_action": {
-          "description": "Deprecated. It applied only to a bank connection kept open after the step, and the step now ends the connection when it completes, so this setting has no effect.",
-          "enum": [
-            "DECLINE",
-            "REVIEW",
-            "NO_ACTION"
-          ],
-          "nullable": true,
-          "required": false,
-          "type": "string"
-        },
         "bank_continue_without_bank": {
           "description": "When the bank step shows \"Continue without your bank\". `when_needed` (the default) shows it once no method works for the person's country or bank (also when their bank cannot be reached and no other bank sign-in or account check could verify them), or when they say they have no online banking. `from_start` also shows it on the first screen. It cannot be turned off: the person can always continue, and the session then follows `bank_unsupported_action` when nothing could verify their country or bank, `bank_attempts_exhausted_action` when every attempt is spent, and `bank_skipped_action` otherwise. A failed attempt that spends the last one does not wait for the person: the step ends on its own with `bank_attempts_exhausted_action`. Every save writes it.",
           "enum": [
@@ -1076,12 +1065,6 @@
           "nullable": true,
           "required": false,
           "type": "string"
-        },
-        "bank_refresh_enabled": {
-          "description": "Deprecated. The bank step reads the account once and then ends the bank connection; this setting has no effect. It is still accepted so existing workflows keep saving, and the save is still refused without at least one of the `balances`, `transactions` or `income` scopes.",
-          "nullable": true,
-          "required": false,
-          "type": "boolean"
         },
         "bank_require_address_match": {
           "description": "Also require the holder's address to match. A name that reached the threshold but whose address scores below `bank_address_match_threshold` drops to a close match decided by `bank_address_mismatch_action`. An institution that returns no address waives the requirement; a session with no address of its own to compare against does not, and lands on a close match decided by `bank_partial_match_action`. Off by default.",
@@ -4714,7 +4697,7 @@
           "type": "string"
         },
         "phone_verification_countries": {
-          "description": "Which countries and delivery channels the one-time code may be sent through. It is a WHITELIST: a country absent from the map is not offered at all, and a channel absent from a listed country is skipped. `max_retries` overrides the node-level retry cap for that one channel. A bare boolean is the legacy form and still means enabled/disabled with the node-level cap.",
+          "description": "Which countries and delivery channels the one-time code may be sent through. It is a WHITELIST: a country absent from the map is not offered at all, and a code channel absent from a listed country is skipped. `max_retries` overrides the node-level retry cap for that one channel. A bare boolean is the legacy form and still means enabled/disabled with the node-level cap. `silent` (the mobile operator confirms the number with no code, where Didit offers it) is the one exception to the whitelist: absent from a listed country, it runs first wherever Didit covers the number, and falls back to the country's enabled code channels in their order. To keep a country code-only, list `silent` disabled (`false`, stored as `{\"enabled\": false}`); that opt-out is kept for a country with code channels even where silent is not offered yet, so it holds once it is.",
           "example": {
             "ES": {
               "sms": {
@@ -4725,7 +4708,7 @@
           },
           "nullable": true,
           "required": false,
-          "shape": "{\"<ISO2>\": {\"<channel: sms|whatsapp|telegram|rcs|viber|zalo>\": {\"enabled\": true|false, \"max_retries\": <int>} | true|false}}",
+          "shape": "{\"<ISO2>\": {\"<channel: sms|whatsapp|telegram|voice|rcs|viber|zalo|silent>\": {\"enabled\": true|false, \"max_retries\": <int>} | true|false}}",
           "type": "json"
         },
         "provider_key": {

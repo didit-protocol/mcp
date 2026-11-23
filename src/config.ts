@@ -161,8 +161,9 @@ export interface RequestCredentials {
   applicationId?: string;
   /** Tool being dispatched — sent as User-Agent so the backend audit log attributes the request. */
   toolName?: string;
-  /** Where the user acted from, sent to the Investigator as X-Didit-Actor-Via: "copilot" when the
-   *  console assistant said so on the MCP request, otherwise "mcp". */
+  /** The X-Didit-Actor-Via the MCP request carried: "copilot" from the console assistant, "mcp" for
+   *  any other value, undefined when the request had none. Forwarded as-is on every backend call
+   *  (apiRequest); nothing is sent when it is undefined. */
   actorVia?: "copilot" | "mcp";
   /** The applications a call could have meant, when it named none and the caller has several
    *  (set by the dispatcher). The scope error lists them, so the retry needs no lookup first. */
@@ -327,6 +328,8 @@ export function userAgent(): string {
 /** Sent on every backend request the MCP server makes (apiRequest and the other Didit-bound fetches). */
 export const AGENT_HEADER = "X-Didit-Agent";
 export const AGENT_HEADER_VALUE = "mcp";
+/** Where the member acted from, forwarded to the backend when the console assistant is the caller. */
+export const ACTOR_VIA_HEADER = "X-Didit-Actor-Via";
 
 export function getHeaders(): Record<string, string> {
   return { "Content-Type": "application/json", ...authHeaders() };
@@ -385,7 +388,12 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
   const resolvedHeaders = headers ?? (form ? getMultipartHeaders() : getHeaders());
   // X-Didit-Agent marks every request as agent-originated: the backend refuses settings changes
   // that carry it (the agent top-up switch is a person's decision). Last, so a caller cannot drop it.
-  const init: RequestInit = { method, headers: { "User-Agent": userAgent(), ...resolvedHeaders, [AGENT_HEADER]: AGENT_HEADER_VALUE } };
+  // X-Didit-Actor-Via: the console assistant says on the MCP request that it acts for the member,
+  // and the backend audit log records the write as made via Ask Didit. Forwarded here, once, for
+  // every tool; a header a tool sets itself (the Investigator's) wins. Absent when not said.
+  const actorVia = requestContext.getStore()?.actorVia;
+  const actorViaHeader: Record<string, string> = actorVia ? { [ACTOR_VIA_HEADER]: actorVia } : {};
+  const init: RequestInit = { method, headers: { "User-Agent": userAgent(), ...actorViaHeader, ...resolvedHeaders, [AGENT_HEADER]: AGENT_HEADER_VALUE } };
   if (opts.responseType) {
     init.redirect = "error";
     init.signal = AbortSignal.timeout(60000);
@@ -424,6 +432,7 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
 
   if (!res.ok) {
     const parsed = parseErrorBody(body);
+    const retryAfter = retryAfterSeconds(res.headers.get("retry-after")) ?? retryAfterSeconds(body?.retry_after);
     throw new DiditError({
       code: statusToCode(res.status),
       message: parsed.message || `Request failed with status ${res.status}.`,
@@ -431,12 +440,30 @@ export async function apiRequest(path: string, opts: ApiRequestOptions = {}): Pr
       field: parsed.field,
       allowed: parsed.allowed,
       status: res.status,
+      ...(retryAfter !== undefined ? { retry_after: retryAfter } : {}),
       ...(res.status === 403 ? { role_refusal: isRoleRefusal(body) } : {}),
       ...backendAction(body),
     });
   }
 
   return body;
+}
+
+/**
+ * How long the backend asks the caller to wait, in whole seconds: the `Retry-After` header (delta-seconds or
+ * an HTTP date) or a numeric `retry_after` in the body (the Bank data error body carries one). Anything else
+ * is undefined, so a caller is never told to wait for a value it did not receive.
+ */
+function retryAfterSeconds(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  // A bare number is always seconds, never a date: Date.parse("-5") is a year-2001 date, which would turn a
+  // negative wait into a zero one. Only a string that is not a number is tried as an HTTP date.
+  const seconds = Number(value.trim());
+  if (Number.isFinite(seconds)) return seconds >= 0 ? Math.round(seconds) : undefined;
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) return undefined;
+  return Math.max(0, Math.round((at - Date.now()) / 1000));
 }
 
 /**

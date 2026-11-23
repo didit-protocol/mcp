@@ -26,6 +26,7 @@ import { VENDOR_BUSINESS_TOOLS } from "./tools/businesses";
 import { TRANSACTION_RULE_TOOLS, TRANSACTION_TOOLS } from "./tools/transactions";
 import { BRANDING_TOOLS } from "./tools/customization";
 import { AUTHENTICATION_TOOLS } from "./tools/authentication";
+import { BANK_DATA_TOOLS } from "./tools/bank-data";
 import { WEBHOOK_TOOLS } from "./tools/webhooks";
 import { REGISTERED_TOOLS } from "./tools/registered";
 import { ENTITY_STATUSES, LAST_N_DAYS_PROP, SESSION_STATUSES, WORKFLOW_GRAPH_SCHEMA } from "./tools/shared-schema";
@@ -932,6 +933,10 @@ export function createServer(
     // Declared with what they do, their permission and their handler in tools/authentication.ts.
     ...AUTHENTICATION_TOOLS.map((tool) => tool.def),
 
+    // ── Bank data and Bank Link (/v3/bank/, application API key) ────────
+    // Declared with what they do, their permission and their handler in tools/bank-data.ts.
+    ...BANK_DATA_TOOLS.map((tool) => tool.def),
+
     // ── Compliance ──────────────────────────────────────────────────────
     ...internalToolDefs("compliance"),
 
@@ -1692,11 +1697,14 @@ export function createServer(
     const codeLine = shape.backend_code ? `\nCode: ${shape.backend_code}` : "";
     const fieldLine = shape.field ? `\nField: ${shape.field}` : "";
     const hintLine = shape.hint ? `\nHint: ${shape.hint}` : "";
+    // A backend that says how long to wait (the Bank data API on a used-up fetch budget) says it here, so
+    // the agent retries after that time instead of guessing.
+    const retryLine = shape.retry_after !== undefined ? `\nRetry after: ${shape.retry_after}s` : "";
     const allowedLine = shape.allowed && shape.allowed.length ? `\nAllowed: ${shape.allowed.join(", ")}` : "";
     // A backend refusal that names where a person finishes the action (agent top-ups) passes it on unchanged.
     const nextStepLine = shape.next_step ? `\nNext step: ${JSON.stringify(shape.next_step)}` : "";
     return {
-      content: [{ type: "text", text: `Error [${shape.code}]: ${shape.message}${codeLine}${fieldLine}${hintLine}${allowedLine}${nextStepLine}` }],
+      content: [{ type: "text", text: `Error [${shape.code}]: ${shape.message}${codeLine}${fieldLine}${hintLine}${allowedLine}${nextStepLine}${retryLine}` }],
       isError: true,
     };
   }
