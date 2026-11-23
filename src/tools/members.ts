@@ -66,17 +66,17 @@ export async function listApiKeys(organizationId?: string, applicationId?: strin
   return redactCollection(res, redactApiKey);
 }
 
-// What an agent key may be limited to; the auth service caps it at the signed-in person and the
-// grant whatever is asked (service-didit-auth organizations/services/agent_api_keys.py).
-const KEY_RESOURCES = [
-  "sessions", "decisions", "media", "users", "businesses", "transactions", "workflows", "webhooks", "applications", "analytics", "messages",
-];
+// The resources an agent key may hold are the auth service's to say (service-didit-auth
+// organizations/services/agent_api_keys.py: any resource a console key can hold (api-keys is not a resource: the backend
+// drops it), capped at the signed-in person and the grant; no scopes means everything the person can do). This tool checks the SHAPE of the request and relays
+// the backend's refusal, which names the resource: a copy of the list here is what kept Bank data out of reach.
 const KEY_LEVELS = ["read", "write"];
+const RESOURCE_NAME = /^[a-z][a-z0-9-]{0,63}$/;
 
 /**
  * Create the ONE API key this connected app may hold for an application (the x-api-key the integration
  * being built sends to the verification API). The backend enforces every rule: scoped to what the
- * signed-in person can do within the grant (never full access, never API key management), one live
+ * signed-in person can do within the grant (never more than you can do), one live
  * key per connected app and application (409 otherwise), rate-limited, audit-logged, listed with the
  * connected app in the console and revoked with it. The secret is in this response only.
  */
@@ -105,15 +105,15 @@ export async function createApiKey(
   if (args?.scopes !== undefined) {
     const scopes = args.scopes;
     if (!scopes || typeof scopes !== "object" || Array.isArray(scopes)) {
-      throw new DiditError({ code: "bad_request", message: "scopes must be an object of resource to read or write.", field: "scopes", allowed: KEY_RESOURCES });
+      throw new DiditError({ code: "bad_request", message: "scopes must be an object of resource to read or write.", field: "scopes" });
     }
     for (const [resource, level] of Object.entries(scopes)) {
-      if (!KEY_RESOURCES.includes(resource) || !KEY_LEVELS.includes(String(level))) {
+      if (!RESOURCE_NAME.test(resource) || !KEY_LEVELS.includes(String(level))) {
         throw new DiditError({
           code: "bad_request",
-          message: `scopes.${resource} must be one of ${KEY_RESOURCES.join(", ")} set to read or write.`,
+          message: `scopes.${resource} must be a resource name (for example sessions or bank-data) set to ${KEY_LEVELS.join(" or ")}.`,
           field: "scopes",
-          allowed: KEY_RESOURCES,
+          allowed: KEY_LEVELS,
         });
       }
     }
@@ -230,9 +230,13 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
       description:
         "Create the API key the integration you are building needs (sent as x-api-key to the verification API), " +
         "for one application. Didit allows ONE live key per connected app and application, scoped to what the " +
-        "signed-in person can do (never full access, never API key management), rate-limited and audit-logged; " +
+        "signed-in person can do (never more than you can do), rate-limited and audit-logged; " +
         "the person sees it with this connected app in the console and can revoke it there. The secret is returned " +
-        "ONCE: write it straight to the project's secret store or .env and never repeat it in the chat. Pick the " +
+        "ONCE: write it straight to the project's secret store or .env and never repeat it in the chat. Without " +
+        "scopes the key gets EVERYTHING the person can do within what this connected app was consented to, Bank " +
+        "data (bank-data) and the Authentication setup (authentication) included; pass scopes to ask for less, e.g. " +
+        "{\"sessions\": \"write\"}. Each resource is capped at the person's role (write needs write) and at the app's " +
+        "consent; the backend refuses anything beyond that and names the resource. Never more than the approving person can do: without scopes it holds everything they can do, Bank data and Authentication included. No API key can manage API keys (that needs a signed-in person), so the key cannot create or revoke keys. Pick the " +
         "application by its mode in didit_context_get: a sandbox key to build and test for free, a live key to go " +
         "live. Requires confirm:true after the person agreed.",
       inputSchema: {
@@ -244,8 +248,10 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
           scopes: {
             type: "object",
             description:
-              "Optional narrower access: resource -> 'read' | 'write' (sessions, decisions, media, users, businesses, " +
-              "transactions, workflows, webhooks, applications, analytics, messages). Omit it for everything the person can do.",
+              "Optional narrower access: resource -> 'read' | 'write' (for example sessions, decisions, media, users, businesses, " +
+              "transactions, workflows, webhooks, applications, analytics, messages, authentication, bank-data). " +
+              "Omit it for everything the person can do within the app's consent, bank-data and authentication included. " +
+              "The backend caps every entry at the person's role and names any resource it refuses.",
             additionalProperties: { type: "string", enum: ["read", "write"] },
           },
           workflow_ids: { type: "array", items: { type: "string" }, description: "Optional: only these workflows' sessions (needs scopes)." },

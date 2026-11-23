@@ -87,7 +87,9 @@ test("refuses without both explicit ids or without confirm, before any key is cr
     { application_id: APP, confirm: true },
     { organization_id: ORG, confirm: true },
     { organization_id: ORG, application_id: APP },
-    { organization_id: ORG, application_id: APP, confirm: true, scopes: { "api-keys": "write" } },
+    { organization_id: ORG, application_id: APP, confirm: true, scopes: { "Bad Name": "write" } },
+    { organization_id: ORG, application_id: APP, confirm: true, scopes: { sessions: "admin" } },
+    { organization_id: ORG, application_id: APP, confirm: true, scopes: ["sessions"] },
   ]) {
     const result = await call(args);
     assert.equal(result.isError, true, JSON.stringify(args));
@@ -114,4 +116,45 @@ test("didit_org_list_api_keys reaches the application the caller named", async (
   );
   assert.equal(result.isError, undefined, result.content?.[0]?.text);
   assert.deepEqual(seen, [`${AUTH}/organizations/${ORG}/applications/${APP}/api-keys/`]);
+});
+
+test("bank-data and every other resource name goes to the backend as asked, with no list of its own here", async () => {
+  const seen = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "POST") seen.push(JSON.parse(init.body));
+    return json({ uuid: "key-2", label: "Bank", api_key: "sk_test_bank", scopes: { "bank-data": "read" } }, 201);
+  };
+  const result = await call({
+    organization_id: ORG,
+    application_id: APP,
+    label: "Bank",
+    scopes: { "bank-data": "read", authentication: "read" },
+    confirm: true,
+  });
+
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.deepEqual(seen, [{ label: "Bank", scopes: { "bank-data": "read", authentication: "read" } }]);
+});
+
+test("a resource the backend refuses (api-keys, or one beyond the person) is relayed with its name, not hidden here", async () => {
+  globalThis.fetch = async (url, init = {}) =>
+    (init.method ?? "GET") === "POST"
+      ? json({ detail: "An API key cannot do more than you can: api-keys is beyond your role or this app's access." }, 403)
+      : json({ results: [] });
+  const result = await call({ organization_id: ORG, application_id: APP, confirm: true, scopes: { "api-keys": "write" } });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /api-keys is beyond your role/);
+});
+
+test("the tool says that no scopes means everything the person can do, Bank data and Authentication included, and what caps it", async () => {
+  const tools = await withClient({}, async (c) => (await c.listTools()).tools);
+  const tool = tools.find((t) => t.name === "didit_org_create_api_key");
+  const words = `${tool.description} ${tool.inputSchema.properties.scopes.description}`;
+  assert.match(words, /bank-data/);
+  assert.match(words, /authentication/);
+  assert.match(words, /EVERYTHING the person can do/);
+  assert.match(words, /cannot create or revoke keys/);
+  assert.doesNotMatch(words, /create further keys/);
+  assert.doesNotMatch(words, /never manage API keys/);
 });

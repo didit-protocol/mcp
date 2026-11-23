@@ -176,10 +176,10 @@ export const STANDALONE_DOCUMENT_TOOLS: readonly RegisteredTool[] = [
         "Check that a bank account belongs to the person or company you name, before sending money to it. No session: send the name and the account, read the result. " +
         "result is match, close_match, no_match or cannot_verify; on a close_match, holder_name is the name the bank holds the account under (when returned); account " +
         "comes back masked to its last 4 characters. Billed once per check the bank answers at the account's country price, whatever the result (no_match and " +
-        "cannot_verify too); an error is never billed. Every call is a NEW billed check (no idempotency key, no read-back): do not retry blindly and store the response. " +
+        "cannot_verify too); an error is never billed. This tool sends no Idempotency-Key, so every call is a NEW billed check (and no endpoint reads a check back): do not retry blindly and store the response. " +
         "Errors: 400 names the field and reason (consent required: in countries whose check needs the account holder's explicit consent, ask for it and send " +
         "consent:true; nothing is billed); 402 top up; 404 country_not_covered or bank_not_covered; 503 the bank could not answer, send again later. " +
-        "Where Bank Verification is not switched on (production at the moment) it answers 404 bank_verification_not_available. A sandbox application calls no bank " +
+        "When Bank Verification is not available for the application it answers 404 bank_verification_not_available. A sandbox application calls no bank " +
         "and charges nothing: the last 4 characters of the IBAN, else the account number, choose the answer (0001 close_match with holder_name, 0002 close_match " +
         "without, 0003 and 0006 no_match, 0004 cannot_verify, 0005 a 503, 0009 a 400, anything else match).",
       inputSchema: {

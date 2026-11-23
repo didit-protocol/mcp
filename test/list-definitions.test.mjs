@@ -225,10 +225,11 @@ test("the tool list stays within its budget", async () => {
     // Raised by 30,268 bytes with the 21 Bank data and Bank Link tools (src/tools/bank-data.ts): the list stood at
     // 273,679 without them. What the family shares (flow, data model, sandbox, deletion) is written once, on
     // didit_bank_link_create, and the other tools keep to what they do: 21 x 360 bytes of that is the routing
-    // properties every tool carries.
-    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 303_947],
+    // properties every tool carries. Then by 500 bytes with the description of didit_org_create_api_key (what no scopes
+    // means, what caps a key).
+    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 304_787],
     // A management grant also receives the six Authentication setup schemas.
-    ["a hosted management grant", { hosted: true }, { ...PERSON, scopes: ["didit:management"] }, 310_491],
+    ["a hosted management grant", { hosted: true }, { ...PERSON, scopes: ["didit:management"] }, 311_331],
     // Raised by 200 bytes with them: the questionnaire shapes (980) and questionnaire_uuid (651)
     // reach an API key connection too, and together took its list to 207,087. By 1 KB with the
     // questionnaire round-trip text above: the API key list moved to 207,982. By 1 KB with the
@@ -236,7 +237,7 @@ test("the tool list stays within its budget", async () => {
     // By 30,268 bytes with the Bank data tools: 231,880 bytes. By 5,119 bytes when a full-access key
     // (the primary secret included) got the six Authentication setup tools a management grant has
     // (service-didit-auth v3.208, a key without scopes covers every resource): 236,999 bytes.
-    ["an API key connection", { hosted: true, apiKey: true }, KEY, 237_000],
+    ["an API key connection", { hosted: true, apiKey: true }, KEY, 237_030],
     ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 31_500],
   ];
   for (const [label, options, authInfo, budget] of budgets) {
