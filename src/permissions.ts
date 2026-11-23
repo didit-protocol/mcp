@@ -69,13 +69,14 @@ export function isAuthenticationSetup(tool: string): boolean {
   return permission === "read:authentication" || permission === "write:authentication";
 }
 
-/** Authentication setup requires an owner-approved management grant or an explicitly scoped key. */
+/** Authentication setup requires an owner-approved management grant, or an API key with full access
+ * (no scopes, the primary secret included) or the authentication level the operation needs. */
 export function setupCredentialRefusal(tool: string, scopes: readonly string[], key?: { authenticationAccess?: "read" | "write" }): string | undefined {
   if (!isAuthenticationSetup(tool)) return;
   if (key) {
     const needed = TOOL_PERMISSIONS[tool] === "read:authentication" ? "read" : "write";
     if (key.authenticationAccess !== "write" && key.authenticationAccess !== needed) {
-      return `This application needs a named key with ${needed} access to authentication.`;
+      return `This API key needs full access or ${needed} access to authentication.`;
     }
   } else if (!scopes.includes("didit:management")) {
     return "Authentication setup requires the didit:management scope. Reconnect with owner approval.";

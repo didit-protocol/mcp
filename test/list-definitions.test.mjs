@@ -133,7 +133,9 @@ test("a graph tool that is shown without the saving tool carries the manual itse
 });
 
 test("no tool of an API key connection takes organization_id or application_id", async () => {
-  const [forKey, forPerson] = await Promise.all([listed({ hosted: true, apiKey: true }, KEY), listed({ hosted: true }, PERSON)]);
+  // Compared with a management grant: a full-access key has the Authentication setup tools too.
+  const MANAGER = { ...PERSON, scopes: ["didit:management"] };
+  const [forKey, forPerson] = await Promise.all([listed({ hosted: true, apiKey: true }, KEY), listed({ hosted: true }, MANAGER)]);
   const declaring = [...forKey.values()].filter((tool) => ROUTING_IDS.some((id) => id in (tool.inputSchema.properties ?? {}))).map((tool) => tool.name);
   assert.deepEqual(declaring, []);
   const requiring = [...forKey.values()].filter((tool) => ROUTING_IDS.some((id) => (tool.inputSchema.required ?? []).includes(id))).map((tool) => tool.name);
@@ -231,8 +233,10 @@ test("the tool list stays within its budget", async () => {
     // reach an API key connection too, and together took its list to 207,087. By 1 KB with the
     // questionnaire round-trip text above: the API key list moved to 207,982. By 1 KB with the
     // questionnaire `form_elements`/delete text: the API key list moved to 209,164.
-    // By 30,268 bytes with the Bank data tools: 231,880 bytes.
-    ["an API key connection", { hosted: true, apiKey: true }, KEY, 231_880],
+    // By 30,268 bytes with the Bank data tools: 231,880 bytes. By 5,119 bytes when a full-access key
+    // (the primary secret included) got the six Authentication setup tools a management grant has
+    // (service-didit-auth v3.208, a key without scopes covers every resource): 236,999 bytes.
+    ["an API key connection", { hosted: true, apiKey: true }, KEY, 237_000],
     ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 31_500],
   ];
   for (const [label, options, authInfo, budget] of budgets) {

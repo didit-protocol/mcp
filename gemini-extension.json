@@ -1,6 +1,6 @@
 {
   "name": "didit-mcp",
-  "version": "5.1.82",
+  "version": "5.1.83",
   "description": "Identity verification and fraud workflows for AI agents",
   "mcpServers": {
     "didit": {

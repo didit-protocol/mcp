@@ -186,7 +186,9 @@ test("an answer that names no application is refused", () => {
 
 test("the catalog leaves out exactly the tools that need a person", async () => {
   backend();
-  const person = { token: JWT, clientId: "c", scopes: [], extra: { organization_id: ORG } };
+  // A person with the management grant: a full-access key has the six Authentication setup tools by
+  // itself (service-didit-auth v3.208), which a person only gets with that grant.
+  const person = { token: JWT, clientId: "c", scopes: ["didit:management"], extra: { organization_id: ORG } };
   const [forKey, forPerson] = await Promise.all([
     withClient({}, async (c) => (await c.listTools()).tools.map((t) => t.name)),
     withClient({ authInfo: person }, async (c) => (await c.listTools()).tools.map((t) => t.name)),

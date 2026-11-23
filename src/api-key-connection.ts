@@ -41,6 +41,9 @@ export interface ApiKeyScope {
   primary: boolean;
   /** True when the key is limited to some resources; false for a full-access key. */
   restricted: boolean;
+  /** What the key may do to the application's Authentication setup: "write" for a key without
+   * scopes (full access, the primary secret included), the level it names for a scoped key, none
+   * otherwise (service-didit-auth `IsAuthenticationSetupCredential`). */
   authenticationAccess?: "read" | "write";
 }
 
@@ -98,7 +101,13 @@ export function apiKeyAuthInfo(key: string, data: Record<string, unknown>, resou
   // `expires_at` is already the earlier of the key's own expiry and, for a secret that was
   // rotated, the end of the old secret's grace period (service-didit-auth `access_payload`).
   const ownExpiry = epochSeconds(access.expires_at);
-  const level = (access.scopes as Record<string, unknown> | null)?.authentication;
+  // Full access is an explicit `scopes: null` (a named full-access key or the primary secret,
+  // service-didit-auth access_payload / primary_access_payload); a reply without `scopes` grants
+  // no Authentication access.
+  const level =
+    access.scopes === null
+      ? "write"
+      : (access.scopes as Record<string, unknown> | undefined)?.authentication;
   const scope: ApiKeyScope = {
     organizationId,
     organizationName: text(data.organization_name),
@@ -109,7 +118,7 @@ export function apiKeyAuthInfo(key: string, data: Record<string, unknown>, resou
     keyLabel: text(access.label),
     keyPrefix: text(access.prefix),
     primary: access.primary === true,
-    ...(!access.primary && access.uuid && (level === "read" || level === "write") ? { authenticationAccess: level } : {}),
+    ...(level === "read" || level === "write" ? { authenticationAccess: level } : {}),
     restricted: access.scopes !== null && access.scopes !== undefined,
   };
 

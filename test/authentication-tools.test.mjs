@@ -398,3 +398,32 @@ test("a named application key needs the explicit authentication level for the op
     });
   }
 });
+
+test("a key without scopes, the primary secret included, sets up Authentication", async (t) => {
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const requests = stubAuth();
+  // Full access covers every resource, Authentication included (service-didit-auth
+  // IsAuthenticationSetupCredential, v3.208): a named full-access key and the primary secret.
+  for (const api_key of [{ uuid: "key", scopes: null }, { primary: true, scopes: null }]) {
+    const key = apiKeyAuthInfo("test-key", { sub: APP, organization_id: ORG, api_key }, new URL(AUTH));
+    await withClient({ hosted: true }, key, async (client) => {
+      const tools = (await client.listTools()).tools.map(({ name }) => name);
+      for (const [name, args] of [
+        ["didit_authentication_get", {}],
+        ["didit_authentication_method_set", { name: "code", enabled: true }],
+      ]) {
+        assert.equal(tools.includes(name), true, `${name} listed for ${JSON.stringify(api_key)}`);
+        requests.length = 0;
+        const result = await client.callTool({ name, arguments: args });
+        assert.equal(result.isError, undefined, textOf(result));
+        assert.equal(requests.length, 1);
+      }
+    });
+  }
+  // A reply that carries no `scopes` at all proves nothing: no Authentication tools.
+  const unknown = apiKeyAuthInfo("test-key", { sub: APP, organization_id: ORG, api_key: { uuid: "key" } }, new URL(AUTH));
+  await withClient({ hosted: true }, unknown, async (client) => {
+    const tools = (await client.listTools()).tools.map(({ name }) => name);
+    assert.equal(tools.some((name) => name.startsWith("didit_authentication_")), false);
+  });
+});
