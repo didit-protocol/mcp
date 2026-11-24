@@ -226,10 +226,12 @@ test("the tool list stays within its budget", async () => {
     // 273,679 without them. What the family shares (flow, data model, sandbox, deletion) is written once, on
     // didit_bank_link_create, and the other tools keep to what they do: 21 x 360 bytes of that is the routing
     // properties every tool carries. Then by 500 bytes with the description of didit_org_create_api_key (what no scopes
-    // means, what caps a key).
-    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 304_787],
+    // means, what caps a key). By 779 bytes for the KYB Key People setting kyb_key_people_document_ai_prefill
+    // (service-didit-verification#3736): the workflow tools that list KYB_KEY_PEOPLE settings carry its name and
+    // shape, generated from the backend contract, and the list stood exactly at the number before it.
+    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 305_566],
     // A management grant also receives the six Authentication setup schemas.
-    ["a hosted management grant", { hosted: true }, { ...PERSON, scopes: ["didit:management"] }, 311_331],
+    ["a hosted management grant", { hosted: true }, { ...PERSON, scopes: ["didit:management"] }, 312_110],
     // Raised by 200 bytes with them: the questionnaire shapes (980) and questionnaire_uuid (651)
     // reach an API key connection too, and together took its list to 207,087. By 1 KB with the
     // questionnaire round-trip text above: the API key list moved to 207,982. By 1 KB with the
@@ -237,7 +239,8 @@ test("the tool list stays within its budget", async () => {
     // By 30,268 bytes with the Bank data tools: 231,880 bytes. By 5,119 bytes when a full-access key
     // (the primary secret included) got the six Authentication setup tools a management grant has
     // (service-didit-auth v3.208, a key without scopes covers every resource): 236,999 bytes.
-    ["an API key connection", { hosted: true, apiKey: true }, KEY, 237_030],
+    // By 779 bytes with kyb_key_people_document_ai_prefill, as above.
+    ["an API key connection", { hosted: true, apiKey: true }, KEY, 237_809],
     ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 31_500],
   ];
   for (const [label, options, authInfo, budget] of budgets) {

@@ -1,5 +1,5 @@
 {
-  "checksum": "sha256:98d118b8d80b121c731052e8fa0014c594b728fb58acc39dbe45ebdbfb28707d",
+  "checksum": "sha256:37484d492203d91cdc501826a8af406b7e2e0b53864dcab648c64569f0f57a23",
   "features": {
     "AGE_ESTIMATION": {
       "description": "Configuration for Age Estimation feature.",
@@ -3048,6 +3048,23 @@
           "nullable": true,
           "required": false,
           "shape": "[{\"key\": \"<field key>\", \"label\": \"<label>\", \"type\": \"text\"|\"number\"|\"date\"|\"phone\"|\"email\", \"required\": true|false, \"custom\": true|false}]",
+          "type": "json"
+        },
+        "kyb_key_people_document_ai_prefill": {
+          "description": "Copy what a Document AI step before this step extracted about one person into that person's KYC child session, so their verification starts from the business flow's data instead of asking for it again. Same contract as `aml_field_sources`, with `document_ai` as the only source: `key` is a field key of a Document AI step that runs before this step on every path, or the save is rejected. `full_name` is required and only decides which person the values belong to: it must match exactly one declared person (accents, word order and titles ignored); with no match, or several, nothing is copied. The other inputs fill the child's `expected_details` (`document_number` as `identification_number`) where the person's own Key People or registry data left them empty, so a child step reads them through the `expected_data` source. Dates must be YYYY-MM-DD and nationalities an exact country name or ISO code; anything else is not copied. Omit or send `{}` to copy nothing.",
+          "example": {
+            "date_of_birth": {
+              "key": "representative_birth_date",
+              "source": "document_ai"
+            },
+            "full_name": {
+              "key": "representative_name",
+              "source": "document_ai"
+            }
+          },
+          "nullable": true,
+          "required": false,
+          "shape": "{\"full_name\"|\"first_name\"|\"last_name\"|\"date_of_birth\"|\"nationality\"|\"document_number\"|\"address\": {\"source\": \"document_ai\", \"key\": \"<docai field key>\"}}",
           "type": "json"
         },
         "kyb_key_people_document_mismatch_action": {
