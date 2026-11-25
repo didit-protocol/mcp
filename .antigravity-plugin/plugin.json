@@ -1,0 +1,30 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "didit",
+  "displayName": "Didit",
+  "version": "5.1.85",
+  "description": "KYC, KYB, AML, wallet screening, transaction monitoring, and fraud workflows for AI agents.",
+  "logo": "assets/didit-mcp-icon-400.png",
+  "suggestedPrompts": [
+    "List the Didit verification sessions waiting for review this week",
+    "Build a sandbox KYC workflow with ID verification and AML screening",
+    "Screen this wallet address for risk and explain the result"
+  ],
+  "author": {
+    "name": "Didit",
+    "url": "https://didit.me"
+  },
+  "homepage": "https://docs.didit.me/integration/mcp/overview",
+  "repository": "https://github.com/didit-protocol/mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "identity-verification",
+    "kyc",
+    "kyb",
+    "aml",
+    "fraud",
+    "wallet-screening",
+    "transaction-monitoring"
+  ]
+}
