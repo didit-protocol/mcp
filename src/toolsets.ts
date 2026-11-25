@@ -71,12 +71,18 @@ const PUBLIC_TOOLSETS: readonly Toolset[] = [
   {
     id: "billing",
     description: "Plan, credit balance, payment methods, receipts and billing details.",
-    groups: [["billing_", "Billing"]],
+    groups: [
+      ["billing_", "Billing"],
+      ["price_", "Billing"],
+    ],
   },
   {
     id: "sessions",
     description: "Verification sessions: create, find, decide, review, share, import, PDFs and webhook deliveries.",
-    groups: [["session_", "Sessions"]],
+    groups: [
+      ["session_", "Sessions"],
+      ["kyb_", "Sessions"],
+    ],
   },
   {
     id: "workflows",
@@ -97,18 +103,27 @@ const PUBLIC_TOOLSETS: readonly Toolset[] = [
   },
   {
     id: "vendors",
-    description: "The people and companies you verify: vendor users and vendor businesses.",
-    groups: [["vendor_", "Vendor Users & Businesses"]],
+    description: "The people and companies you verify: vendor users and vendor businesses, and their AML ongoing monitoring.",
+    groups: [
+      ["vendor_", "Vendor Users & Businesses"],
+      ["monitoring_", "Vendor Users & Businesses"],
+    ],
   },
   {
     id: "transactions",
-    description: "Transaction monitoring: transactions, wallet screening and rules with backtesting.",
-    groups: [["transaction_", "Transactions (AML)"]],
+    description: "Transaction monitoring: transactions, wallet screening, rules with backtesting and monitoring events.",
+    groups: [
+      ["transaction_", "Transactions (AML)"],
+      ["event_", "Transactions (AML)"],
+    ],
   },
   {
     id: "cases",
-    description: "Case management: create, assign, escalate and resolve cases.",
-    groups: [["case_", "Cases"]],
+    description: "Case management: create, assign, escalate and resolve cases, and draft regulatory reports.",
+    groups: [
+      ["case_", "Cases"],
+      ["regulatory_", "Cases"],
+    ],
   },
   {
     id: "investigator",
@@ -151,7 +166,15 @@ const PUBLIC_TOOLSETS: readonly Toolset[] = [
     id: "verification",
     description:
       "Standalone verification APIs: ID document, face, AML, proof of address, phone, email, database and business checks.",
-    groups: [["verify_", "Verification APIs"]],
+    groups: [
+      ["verify_", "Verification APIs"],
+      ["phone_", "Verification APIs"],
+    ],
+  },
+  {
+    id: "messages",
+    description: "Messages with the people being verified: conversations, threads, templates and channels.",
+    groups: [["message_", "Messages"]],
   },
   {
     id: "docs",

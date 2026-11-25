@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "../dist/index.js";
 import { PRIVILEGED_TOOL_DEFS } from "../dist/privileged-tools.js";
+import { KEY_ONLY_TOOLS } from "../dist/api-key-connection.js";
 import { TOOL_PERMISSIONS, acceptedPermissions, decidePermission, currentAccessRefusal } from "../dist/permissions.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -83,6 +84,9 @@ test("every catalog tool has a permission entry, and every entry names a catalog
       catalog.push(...tools.map(({ name }) => name).filter((name) => !staff.has(name)));
     });
   }
+
+  // A key-only tool is on no person's catalog.
+  catalog.push(...KEY_ONLY_TOOLS);
 
   const unmapped = catalog.filter((name) => !(name in TOOL_PERMISSIONS));
   const stale = Object.keys(TOOL_PERMISSIONS).filter((name) => !catalog.includes(name));
@@ -225,7 +229,10 @@ test("currentAccessRefusal: an empty permission list only refuses a tool that ac
 // an internal issue finding 4: a GET is accepted by the backend for a role holding read:X OR list:X
 // (core/permissions.py, _accepted_permissions), so the map names both for every read tool.
 test("the map accepts read:X or list:X for a read tool, as the backend does for a safe method", () => {
-  assert.deepEqual(acceptedPermissions("didit_session_list"), ["list:sessions", "read:sessions"]);
+  assert.deepEqual(acceptedPermissions("didit_session_list"), ["list:sessions", "read:sessions", "list:businesses", "read:businesses"]);
+  // A role that sees only business verifications reaches their list; the API checks each kind.
+  const businessOnly = { role: "Custom", permissions: ["list:businesses"], accessibleApplications: ["app-1"] };
+  assert.equal(currentAccessRefusal({ tool: "didit_session_search", access: businessOnly, applicationId: "app-1" }), undefined);
   assert.deepEqual(acceptedPermissions("didit_session_get_decision"), ["read:sessions", "list:sessions"]);
 
   const readOnly = { role: "Custom", permissions: ["read:sessions"], accessibleApplications: ["app-1"] };

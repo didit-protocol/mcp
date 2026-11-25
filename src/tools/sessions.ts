@@ -1,14 +1,15 @@
 import { apiRequest, getHeaders, orgAppPath, requestContext, resolveApplicationId, resolveOrganizationId } from "../config";
 import type { RegisteredTool } from "./registry";
 import { PAGE_PROPS, pageParams } from "../paging";
-import { DOCUMENT_TYPES, SESSION_STATUSES } from "./shared-schema";
+import { DOCUMENT_TYPES, SESSION_FILTER_PROPS, SESSION_STATUSES } from "./shared-schema";
 import { searchSessions } from "./search";
 // session-explain imports getSessionDecision from here: each side uses the other only inside a call.
 import { explainSessionDecision } from "./session-explain";
-import { ORG_APP_PROPS } from "../orgapp";
+import { mapWithConcurrency, ORG_APP_PROPS } from "../orgapp";
+import { applicationApiKeyHeaders } from "../app-api-key";
 import { createSessionPdfDownload } from "../session-pdf-download";
 import { createSignatureDownload } from "../signature-download";
-import { pathSegment, assertBoolean, assertSafeWebhookUrl, DiditError, MAX_BATCH_IDS } from "../security";
+import { pathSegment, assertBoolean, assertSafeWebhookUrl, DiditError, narrowingFilters } from "../security";
 import { withoutScope } from "./compliance";
 
 // createSession stays on the wired developer /session/ endpoint (accepts the user Bearer via
@@ -90,12 +91,75 @@ const COUNT_VIEW_BY_STATUS: Record<string, string> = {
 /** `…/sessions/counts/` stops at this many; a count equal to it means at least that many. */
 const VIEW_COUNT_CAP = 10_000;
 
-export async function listSessions(params?: Record<string, string>): Promise<any> {
-  const page = await apiRequest(orgAppPath("/sessions/"), { params });
+type SessionKind = "user" | "business";
+
+/** The list of each kind: user and business verifications are two resources with their own permission. */
+export const SESSION_LIST_PATHS: Record<SessionKind, string> = { user: "/sessions/", business: "/business-sessions/" };
+
+export async function listSessionsOfKind(kind: SessionKind, params?: Record<string, any>): Promise<any> {
+  const page = await apiRequest(orgAppPath(SESSION_LIST_PATHS[kind]), { params });
 
   if (page?.count !== LIST_COUNT_CAP) return page;
-  return { ...page, ...(await exactSessionCount(params)) };
+  return { ...page, ...(await exactSessionCount(kind, params)) };
 }
+
+/** One kind of session (user unless said otherwise), or with `all` both lists. */
+export async function listSessions(params?: Record<string, any>): Promise<any> {
+  const { session_kind, ...filters } = params ?? {};
+  assertSessionKindFilters(session_kind, filters);
+  if (session_kind !== "all") return listSessionsOfKind(session_kind ?? "user", filters);
+  const oneKind = ["offset", "ordering"].find((field) => filters[field]);
+  if (oneKind) {
+    throw new DiditError({ code: "bad_request", message: `${oneKind} works in one kind: pass session_kind user or business.`, field: oneKind });
+  }
+  const { pages, left_out_note } = await bothSessionKinds((kind) => listSessionsOfKind(kind, filters));
+  const exact = pages.some((page) => page.total_count !== undefined);
+  const sum = (count: (page: any) => unknown) => pages.reduce((total, page) => total + Number(count(page) ?? 0), 0);
+
+  return {
+    count: sum((page) => page.count),
+    ...(exact ? { total_count: sum((page) => page.total_count ?? page.count) } : {}),
+    ...(pages.some((page) => page.count_is_lower_bound) ? { count_is_lower_bound: true } : {}),
+    results: newestFirst(pages).slice(0, Number(filters.limit) || undefined),
+    ...(left_out_note ? { left_out_note } : {}),
+  };
+}
+
+/** `document_type` is a filter of the user list only: the business list would ignore it. */
+export function assertSessionKindFilters(kind: unknown, filters: Record<string, any>): void {
+  if (kind !== undefined && kind !== "user" && kind !== "business" && kind !== "all") {
+    throw new DiditError({ code: "bad_request", message: "session_kind must be user, business or all.", field: "session_kind", allowed: ["user", "business", "all"] });
+  }
+  // The user list takes alpha-3 codes and the business list alpha-2: one value cannot match both.
+  if (filters.country !== undefined && kind === "all") {
+    throw new DiditError({ code: "bad_request", message: "country works in one kind (alpha-3 for user, alpha-2 for business): pass session_kind user or business.", field: "country" });
+  }
+  if (filters.document_type !== undefined && kind !== undefined && kind !== "user") {
+    throw new DiditError({ code: "bad_request", message: "document_type filters user verifications only: leave session_kind out.", field: "document_type" });
+  }
+}
+
+/**
+ * Both kinds, read with `read`. A role may open one kind and not the other: that kind is left out
+ * and the answer says so, since a partial list must not read as a whole one.
+ */
+export async function bothSessionKinds(read: (kind: SessionKind) => Promise<any>): Promise<{ pages: any[]; left_out_note?: string }> {
+  const kinds: SessionKind[] = ["user", "business"];
+  const settled = await Promise.allSettled(kinds.map(read));
+  const failed = settled.filter((answer) => answer.status === "rejected");
+  const fatal = failed.find(({ reason }) => !(reason instanceof DiditError && reason.shape.status === 403));
+  if (fatal || failed.length === kinds.length) throw (fatal ?? failed[0]).reason;
+  const pages = settled.flatMap((answer, i) => (answer.status === "fulfilled" ? [{ ...answer.value, results: ofKind(answer.value, kinds[i]) }] : []));
+  const left = kinds.find((_, i) => settled[i].status === "rejected");
+
+  return { pages, ...(left ? { left_out_note: `Left out ${left} verifications: your role cannot list them.` } : {}) };
+}
+
+const ofKind = (page: any, kind: SessionKind): any[] =>
+  (Array.isArray(page?.results) ? page.results : []).map((row: any) => ({ ...row, session_kind: row.session_kind ?? kind }));
+
+export const newestFirst = (pages: any[]): any[] =>
+  pages.flatMap((page) => page.results).sort((a, b) => (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0));
 
 /**
  * When the list's count hit its cap, the exact total from the console's own tab counts (same
@@ -103,9 +167,9 @@ export async function listSessions(params?: Record<string, string>): Promise<any
  * counts cannot express alone, or a counts call that fails (429 busy, 503 timeout), keeps the
  * honest lower bound instead of failing the list.
  */
-async function exactSessionCount(params?: Record<string, string>): Promise<Record<string, unknown>> {
+async function exactSessionCount(kind: SessionKind, params?: Record<string, any>): Promise<Record<string, unknown>> {
   const { status, limit: _limit, offset: _offset, ...filters } = withoutScope(params);
-  const view = status ? COUNT_VIEW_BY_STATUS[status.trim()] : "all";
+  const view = status ? COUNT_VIEW_BY_STATUS[String(status).trim()] : "all";
   const lowerBound = {
     count_is_lower_bound: true,
     count_note: `count stops at ${LIST_COUNT_CAP}: there are at least ${LIST_COUNT_CAP} matching sessions.`,
@@ -115,7 +179,7 @@ async function exactSessionCount(params?: Record<string, string>): Promise<Recor
   try {
     // The console's own tab counts: a flat route scoped by headers, not by the path.
     const counts = await apiRequest("/sessions/counts/", {
-      params: filters,
+      params: kind === "user" ? filters : { ...filters, session_kind: kind },
       headers: {
         ...getHeaders(),
         "X-Didit-Organization-Id": resolveOrganizationId(params?.organization_id),
@@ -214,39 +278,90 @@ export async function deleteSession(sessionId: string, confirm?: unknown): Promi
   return apiRequest(`/session/${sid(sessionId)}/delete/`, { method: "DELETE" });
 }
 
-export async function batchDeleteSessions(
-  sessionNumbers?: number[],
-  deleteAll?: unknown,
-  confirm?: unknown,
-): Promise<any> {
-  assertBoolean(deleteAll, "delete_all");
-  const wildcard = deleteAll === true;
+/** Each number is looked up before it is deleted, so a call takes as many as it can check. */
+const MAX_DELETE_NUMBERS = 200;
+const NUMBER_LOOKUPS = 8;
+const RETENTION_OPTIONS = ["retain_face_embeddings", "face_retention_days", "face_retention_deadline", "deletion_instruction", "instruction_id"];
+
+const refuseDeletion = (field: string, message: string): never => {
+  throw new DiditError({ code: "bad_request", message, field });
+};
+
+/** The list filters a delete_all may be narrowed by, as the `filter_*` fields of its body. */
+const DELETION_FILTERS = ["status", "workflow_id", "vendor_data", "date_from", "date_to"];
+
+function deletionFilters(filters: unknown): Record<string, any> {
+  if (filters === undefined) return {};
+
+  return Object.fromEntries(Object.entries(narrowingFilters(filters, DELETION_FILTERS)).map(([key, value]) => [`filter_${key}`, value]));
+}
+
+function retentionOptions(retention: unknown): Record<string, any> {
+  if (retention === undefined) return {};
+  const options = retention && typeof retention === "object" && !Array.isArray(retention) ? (retention as Record<string, any>) : undefined;
+  if (!options || Object.keys(options).some((key) => !RETENTION_OPTIONS.includes(key))) {
+    refuseDeletion("retention", `retention takes ${RETENTION_OPTIONS.join(", ")}.`);
+  }
+
+  return options as Record<string, any>;
+}
+
+function sessionNumbers(numbers: unknown): number[] {
+  if (!Array.isArray(numbers) || numbers.length === 0) {
+    return refuseDeletion("session_numbers", "Provide a non-empty session_numbers array, or set delete_all with confirm:true.");
+  }
+  const parsed = [...new Set(numbers.map((number) => (/^\d+$/.test(String(number)) ? Number(number) : NaN)))];
+  if (parsed.some((number) => !Number.isSafeInteger(number) || number < 1)) {
+    refuseDeletion("session_numbers", "session_numbers takes the numbers of user verifications, as digits (S-12 is 12).");
+  }
+  if (parsed.length > MAX_DELETE_NUMBERS) refuseDeletion("session_numbers", `Too many session_numbers (max ${MAX_DELETE_NUMBERS} per batch).`);
+
+  return parsed;
+}
+
+/**
+ * The deletion route also takes business verifications: a number that no user verification has
+ * deletes the business verification with it. Each number is looked up in the user list first, and
+ * one that is not there refuses the whole deletion.
+ */
+async function assertUserSessions(numbers: number[]): Promise<void> {
+  const path = orgAppPath(SESSION_LIST_PATHS.user);
+  const found = await mapWithConcurrency(numbers, NUMBER_LOOKUPS, async (number) => {
+    const page = await apiRequest(path, { params: { search: `S-${number}`, fields: "ids", limit: 1 } });
+
+    return Array.isArray(page?.results) && page.results.some((row: any) => Number(row?.session_number) === number);
+  });
+  const missing = numbers.filter((_, i) => !found[i]);
+  if (missing.length === 0) return;
+  refuseDeletion(
+    "session_numbers",
+    `No user verification has the number ${missing.join(", ")}, so nothing was deleted. A business verification is deleted one by one with didit_session_delete.`,
+  );
+}
+
+export async function batchDeleteSessions(args: Record<string, any>): Promise<any> {
+  const { session_numbers, delete_all, confirm, filters, retention } = args;
+  assertBoolean(delete_all, "delete_all");
+  const wildcard = delete_all === true;
   assertDeleteConfirmed(
     confirm,
     wildcard
-      ? "delete_all permanently removes EVERY KYC session in this application."
+      ? "delete_all permanently removes EVERY KYC session in this application that its filters match."
       : "Batch-deleting sessions requires confirm:true.",
   );
-  if (!wildcard) {
-    if (!Array.isArray(sessionNumbers) || sessionNumbers.length === 0) {
-      throw new DiditError({
-        code: "bad_request",
-        message: "Provide a non-empty session_numbers array, or set delete_all with confirm:true.",
-        field: "session_numbers",
-      });
-    }
-    if (sessionNumbers.length > MAX_BATCH_IDS) {
-      throw new DiditError({
-        code: "bad_request",
-        message: `Too many session_numbers (max ${MAX_BATCH_IDS} per batch).`,
-        field: "session_numbers",
-      });
-    }
-  }
-  return apiRequest(orgAppPath("/sessions/delete/"), {
-    method: "DELETE",
-    json: { session_numbers: sessionNumbers, delete_all: wildcard },
-  });
+  const options = retentionOptions(retention);
+  if (wildcard) return deleteSessions({ delete_all: true, ...deletionFilters(filters), ...options });
+  if (filters !== undefined) refuseDeletion("filters", "filters narrow delete_all: with session_numbers leave them out.");
+  const numbers = sessionNumbers(session_numbers);
+  await assertUserSessions(numbers);
+
+  return deleteSessions({ session_numbers: numbers, delete_all: false, ...options });
+}
+
+async function deleteSessions(json: Record<string, any>): Promise<any> {
+  const answer = await apiRequest(orgAppPath("/sessions/delete/"), { method: "DELETE", json });
+
+  return answer?.job_id ? { ...answer, hint: "The deletion runs in the background: follow it with didit_session_deletion_get." } : answer;
 }
 
 export async function generateSessionPdf(sessionId: string): Promise<any> {
@@ -281,8 +396,8 @@ export async function listSessionReviews(sessionId: string, params?: Record<stri
   return apiRequest(orgAppPath(`/sessions/${sid(sessionId)}/reviews/`), { params });
 }
 
-export async function addSessionReview(sessionId: string, data: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath(`/sessions/${sid(sessionId)}/reviews/`), { method: "POST", json: data });
+export async function addSessionReview(sessionId: string, comment: unknown): Promise<any> {
+  return apiRequest(orgAppPath(`/sessions/${sid(sessionId)}/reviews/`), { method: "POST", json: { comment } });
 }
 
 /** GET /geolocation/sessions/{id}/evidence/: the session page's Location section, node by
@@ -363,11 +478,20 @@ export async function resendSessionWebhook(sessionId: string, webhookId: string)
 }
 
 export async function shareSession(sessionId: string, data: Record<string, any>): Promise<any> {
-  return apiRequest(`/session/${sid(sessionId)}/share/`, { method: "POST", json: data });
+  const { for_application_id, ttl_in_seconds } = data;
+
+  return apiRequest(`/session/${sid(sessionId)}/share/`, { method: "POST", json: { for_application_id, ttl_in_seconds } });
 }
 
+/** The route answers an application API key only (`IsValidClient`), never a person's token. */
 export async function importSharedSession(data: Record<string, any>): Promise<any> {
-  return apiRequest("/session/import-shared/", { method: "POST", json: data });
+  const { share_token, trust_review, workflow_id, vendor_data } = data;
+
+  return apiRequest("/session/import-shared/", {
+    method: "POST",
+    json: { share_token, trust_review, workflow_id, vendor_data },
+    headers: await applicationApiKeyHeaders(),
+  });
 }
 
 /**
@@ -441,26 +565,32 @@ export async function checkImportProvider(data: Record<string, any>): Promise<an
   return withoutCredentials(await apiRequest("/session/imports/providers/check/", { method: "POST", json: data, headers: importScopeHeaders() }));
 }
 
-const IMPORT_ACTIONS = ["start", "pause", "resume", "cancel", "retry"] as const;
+const IMPORT_ACTIONS = ["start", "pause", "resume", "cancel", "retry", "undo", "request_limit"];
+const IMPORT_ACTIONS_WITH_DATA = ["start", "retry", "request_limit"];
 
-export async function manageImport(importId: string, action: unknown, data: Record<string, any> = {}): Promise<any> {
-  if (typeof action !== "string" || !(IMPORT_ACTIONS as readonly string[]).includes(action)) {
+export async function manageImport(importId: string, action: unknown, data: Record<string, any> = {}, confirm?: unknown): Promise<any> {
+  if (typeof action !== "string" || !IMPORT_ACTIONS.includes(action)) {
     throw new DiditError({
       code: "bad_request",
       message: `action must be one of ${IMPORT_ACTIONS.join(", ")}.`,
       field: "action",
-      allowed: [...IMPORT_ACTIONS],
+      allowed: IMPORT_ACTIONS,
     });
   }
+  if (action === "undo") assertDeleteConfirmed(confirm, "Undoing an import deletes every record it created.");
   assertProviderCredentials(data);
-  const body = action === "start" || action === "retry" ? data : undefined;
+  const body = IMPORT_ACTIONS_WITH_DATA.includes(action) ? data : undefined;
   return withoutCredentials(
-    await apiRequest(`/session/imports/${pathSegment(importId, "import_id")}/${pathSegment(action, "action")}/`, {
+    await apiRequest(`/session/imports/${pathSegment(importId, "import_id")}/${pathSegment(action.replace("_", "-"), "action")}/`, {
       method: "POST",
       json: body ?? {},
       headers: importScopeHeaders(),
     }),
   );
+}
+
+export async function listImports(args: Record<string, any>): Promise<any> {
+  return apiRequest("/import-jobs/", { params: { scope: args.scope, limit: args.limit }, headers: importScopeHeaders() });
 }
 
 export async function getImportTemplate(): Promise<any> {
@@ -502,11 +632,21 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
           callback: { type: "string", description: "URL to redirect the user to after verification" },
           callback_method: { type: "string", enum: ["initiator", "completer", "both"], description: "Which device/flow the callback applies to" },
           language: { type: "string", enum: LANGUAGE_CODES, description: "Pre-set the verification UI language (ISO code)" },
-          sandbox_scenario: { type: "string", description: "SANDBOX ONLY (an application whose mode is 'sandbox' — see didit_context_get): predefine the outcome instead of running real providers, so the session is never billed. Slugs are 'approve', 'decline_*' (e.g. decline_aml_hit, decline_document_expired, decline_kyb_registry_mismatch) and 'review_*' (e.g. review_aml_possible_match). Ignored by a live application, where every session IS billed." },
+          sandbox_scenario: { type: "string", description: "SANDBOX ONLY (an application whose mode is 'sandbox' — see didit_context_get): predefine the outcome instead of running real providers, so the session is never billed. Slugs are 'approve', 'decline_*' (e.g. decline_aml_hit, decline_document_expired, decline_kyb_registry_mismatch) and 'review_*' (e.g. review_aml_possible_match). A live application refuses it." },
           metadata: { type: "object", description: "Arbitrary JSON stored on the session and echoed in webhooks" },
-          contact_details: { type: "object", description: "Pre-fill contact info (e.g. email, phone) for the session" },
-          expected_details: { type: "object", description: "Expected values to validate against (e.g. expected country, IP)" },
-          portrait_image: { type: "string", description: "Base64 or URL reference portrait for Biometric Authentication / Face-Match-first workflows. Optional when the vendor_data user already has a stored face (approved liveness face, ePassport photo, document portrait, or enrolled profile face) - the stored face is reused automatically; 400 if neither is available" },
+          contact_details: { type: "object", description: "email, email_lang, phone (E.164)" },
+          expected_details: {
+            type: "object",
+            description:
+              "Expected values to validate against. Person: first_name, last_name, date_of_birth (YYYY-MM-DD), gender (M, F), nationality, id_country, poa_country (alpha-3), address, identification_number, ip_address, " +
+              "expected_document_types (list of P, ID, DL, RP, HIC, TC, SSC). Business: company_name, registry_country, registration_number, representative {first_name, last_name, identification_number}.",
+          },
+          user_state: { type: "string", description: "Where the person lives: ISO 3166-2 (US-IL) or a US state code" },
+          biometric_consent: { type: "object", description: "Consent you already collected: {given_at (ISO 8601), text_version}" },
+          tags: { type: "array", items: { type: "string" }, description: "Tag names, 10 at most; a new name creates its tag." },
+          session_expiration_time: { type: "integer", minimum: 3600, maximum: 2419200, description: "Seconds the link stays valid (default: the workflow's)." },
+          multi_account_segment: { type: "string", description: "Duplicate checks compare only sessions with the same segment." },
+          portrait_image: { type: "string", description: "Base64 reference portrait for Biometric Authentication / Face-Match-first workflows. Optional when the vendor_data user already has a stored face (approved liveness face, ePassport photo, document portrait, or enrolled profile face) - the stored face is reused automatically; 400 if neither is available" },
         },
         required: ["workflow_id"],
       },
@@ -534,12 +674,15 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
           date_to: { type: "string", description: "ISO date upper bound" },
           limit: { type: "string", description: "Page size (LimitOffset pagination)" },
           offset: { type: "string", description: "Pagination offset" },
+          ...SESSION_FILTER_PROPS,
+          ordering: { type: "string", enum: ["-created_at", "created_at", "-updated_at", "updated_at"] },
         },
       },
     },
     // With no application named, it lists the sessions of every application of the organization.
     access: "read",
-    permission: ["list:sessions", "read:sessions"], // GET …/sessions/ → application.py:123
+    // GET …/sessions/ → application.py:161; the API also checks list:businesses for …/business-sessions/
+    permission: ["list:sessions", "read:sessions", "list:businesses", "read:businesses"],
     spanAllApplications: (args) => searchSessions(args),
     run: (args) => listSessions(args),
   },
@@ -605,17 +748,24 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_session_update_status",
-      description: "Overwrite a session's decision by approving, declining, or requesting resubmission; optionally send a notification email that cannot be recalled. Before calling, obtain explicit user confirmation of the session, new decision, and any email recipient. For resubmission, pass new_status='Resubmitted' and nodes_to_resubmit; already-approved steps are kept.",
+      description: "Overwrite a session's decision by approving, declining, or requesting resubmission; optionally send a notification email that cannot be recalled. Before calling, obtain explicit user confirmation of the session, new decision, and any email recipient. For resubmission, pass new_status='Resubmitted' and nodes_to_resubmit; already-approved steps are kept. Preview the email with didit_session_email_preview.",
       inputSchema: {
         type: "object" as const,
         properties: {
           session_id: { type: "string" },
           new_status: { type: "string", enum: ["Approved", "Declined", "Resubmitted"], description: "New decision status" },
           comment: { type: "string", description: "Reviewer note stored on the audit trail" },
-          nodes_to_resubmit: { type: "array", items: { type: "string" }, description: "Node IDs the user must redo (only for Resubmitted)" },
+          nodes_to_resubmit: {
+            type: "array",
+            description: "Steps to redo (only for Resubmitted); left out, every step that is not approved.",
+            items: { type: "object", properties: { node_id: { type: "string" }, feature: { type: "string", description: "e.g. OCR, LIVENESS" } }, required: ["node_id", "feature"] },
+          },
           send_email: { type: "boolean", description: "Send a notification email that cannot be recalled. Set true only after explicit user confirmation of the notification and recipient." },
-          email_address: { type: "string", description: "Override the notification recipient; confirm this address with the user before sending." },
+          email_address: { type: "string", description: "Recipient, required with send_email; confirm this address with the user before sending." },
           email_language: { type: "string", description: "Language for the notification email" },
+          email_preview_token: { type: "string", description: "preview_token of the previewed email: a changed session or email is refused (409)." },
+          link_to_session_id: { type: "string", description: "Approved only: the earlier verification of the same person to link; needs link_reason." },
+          link_reason: { type: "string" },
         },
         required: ["session_id", "new_status"],
       },
@@ -704,7 +854,7 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_session_batch_delete",
-      description: "Permanently and irreversibly delete multiple KYC sessions by session number, or EVERY KYC session in the application with delete_all:true (KYB sessions are never touched; delete those individually). Requires confirm:true - only pass it after the user has explicitly confirmed this exact deletion.",
+      description: "Permanently and irreversibly delete multiple KYC sessions by session number, or EVERY KYC session in the application with delete_all:true, narrowed by `filters` (KYB sessions are never touched: a number no KYC session has refuses the call). More than 20 run as a job (didit_session_deletion_get). Requires confirm:true - only pass it after the user has explicitly confirmed this exact deletion.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -712,17 +862,22 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
           session_numbers: {
             type: "array",
             items: { type: "number" },
-            description: "Array of session numbers to delete",
+            description: "Array of session numbers to delete (200 at most)",
           },
           delete_all: { type: "boolean", description: "Set true to delete ALL sessions (ignores session_numbers)" },
+          filters: { type: "object", description: "With delete_all, only the matching sessions: status, workflow_id, vendor_data, date_from, date_to" },
+          retention: {
+            type: "object",
+            description: "Face templates to keep: retain_face_embeddings with face_retention_days (1-3650) or face_retention_deadline; deletion_instruction operational_session_delete or privacy_erasure; instruction_id.",
+          },
           confirm: { type: "boolean", description: "REQUIRED. Must be true - deletion is permanent and irreversible. Only set after explicit user confirmation of this exact action." },
         },
         required: ["confirm"],
       },
     },
     access: "destructive",
-    permission: "delete:sessions", // DELETE …/sessions/delete/ → application.py:529
-    run: (args) => batchDeleteSessions(args.session_numbers, args.delete_all, args.confirm),
+    permission: "delete:sessions", // DELETE …/sessions/delete/ → application.py:661
+    run: (args) => batchDeleteSessions(args),
   },
   {
     def: {
@@ -858,25 +1013,20 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_session_add_review",
-      description: "Add a review note to a session's audit trail, optionally changing its status.",
+      description: "Add a review note to a session's audit trail.",
       inputSchema: {
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
           session_id: { type: "string" },
-          comment: { type: "string", description: "Review comment or note" },
-          new_status: {
-            type: "string",
-            enum: ["Not Started", "In Progress", "Approved", "Declined", "In Review", "Expired", "Abandoned", "Kyc Expired", "Resubmitted", "Awaiting User"],
-            description: "Optional new session status to record with the note",
-          },
+          comment: { type: "string", description: "The note; @email mentions a member" },
         },
-        required: ["session_id"],
+        required: ["session_id", "comment"],
       },
     },
     access: "write",
     permission: "write:sessions", // POST …/sessions/{id}/reviews/ → activity.py:97
-    run: ({ session_id, ...data }) => addSessionReview(session_id, data),
+    run: (args) => addSessionReview(args.session_id, args.comment),
   },
   {
     def: {
@@ -886,9 +1036,10 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
         type: "object" as const,
         properties: {
           session_id: { type: "string" },
-          partner_client_id: { type: "string", description: "The partner application's client_id" },
+          for_application_id: { type: "string", description: "The partner's application UUID: the only one that can import it" },
+          ttl_in_seconds: { type: "integer", minimum: 60, maximum: 86400, description: "How long the share token lasts (default 3600)" },
         },
-        required: ["session_id", "partner_client_id"],
+        required: ["session_id", "for_application_id"],
       },
     },
     // Shares verification data with a partner.
@@ -957,14 +1108,19 @@ export const SESSION_TOOLS: readonly RegisteredTool[] = [
       inputSchema: {
         type: "object" as const,
         properties: {
+          ...ORG_APP_PROPS,
           share_token: { type: "string", description: "Token received from the sharing partner" },
+          trust_review: { type: "boolean", description: "true keeps the partner's status; false imports it In Review" },
+          workflow_id: { type: "string", description: "Workflow to import it under" },
+          vendor_data: { type: "string" },
         },
-        required: ["share_token"],
+        required: ["share_token", "trust_review", "workflow_id"],
       },
     },
     access: "write",
-    // ImportSharedSessionView is IsValidClient only (shared_session.py:78): no organization role.
-    permission: null,
+    // ImportSharedSessionView is IsValidClient only (shared_session.py:99): the application key, which
+    // its console read shows to a role holding create:sessions (app-api-key.ts).
+    permission: "create:sessions",
     run: (args) => importSharedSession(args),
   },
 ];
@@ -1011,7 +1167,6 @@ export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
           face_templates: { type: "boolean", description: "Build face templates from imported selfies and search them against the application's faces and blocklist (flags for review only). Requires lawful_basis_confirmed." },
           lawful_basis_confirmed: { type: "boolean", description: "Confirms the customer has a lawful basis to share these selfies with Didit as processor. Only set it after the user states so." },
         },
-        required: ["source_file_url"],
       },
     },
     access: "write",
@@ -1060,25 +1215,44 @@ export const SESSION_IMPORT_TOOLS: readonly RegisteredTool[] = [
       description:
         "Act on an import job: start (a dry run that ended READY imports for real, with the status_mapping, face_templates and lawful_basis_confirmed sent now), " +
         "pause, resume, cancel (what was imported stays; the uploaded file and the key are erased) or retry (runs an ended migration again as a NEW job with a new key " +
-        "in credentials, since the old one was erased; everything already in Didit is skipped).",
+        "in credentials, since the old one was erased; everything already in Didit is skipped), undo (deletes every record the import created; needs confirm:true) or " +
+        "request_limit (asks Didit for more than the month's limit).",
       inputSchema: {
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
           import_id: { type: "string", description: "REQUIRED. Import job ID." },
-          action: { type: "string", enum: ["start", "pause", "resume", "cancel", "retry"], description: "REQUIRED." },
+          action: { type: "string", enum: IMPORT_ACTIONS, description: "REQUIRED." },
           data: {
             type: "object",
-            description: "start: { status_mapping, face_templates, lawful_basis_confirmed }. retry: { credentials } (SECRET, never echo it). Other actions take none.",
+            description: "start: { status_mapping, face_templates, lawful_basis_confirmed }. retry: { credentials } (SECRET, never echo it). request_limit: { note }. Other actions take none.",
           },
+          confirm: { type: "boolean", description: "REQUIRED true for undo. Only set after explicit user confirmation of this exact action." },
         },
         required: ["import_id", "action"],
       },
     },
-    // Its name reads like a read, but it starts, pauses, resumes, cancels or retries an import.
-    access: "write",
+    // Starts, pauses, resumes, cancels or retries an import, or deletes what it created (undo).
+    access: "destructive",
     permission: "write:sessions", // SessionImportJobMixin → ConsoleImportAccessMixin.accepted_org_permissions
-    run: (args) => manageImport(args.import_id, args.action, args.data),
+    run: (args) => manageImport(args.import_id, args.action, args.data, args.confirm),
+  },
+  {
+    def: {
+      name: "didit_session_import_list",
+      description: "List the import jobs of the application, newest first, with their state and counts.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          scope: { type: "string", enum: ["all", "sessions", "users", "businesses"] },
+          limit: { type: "number", description: "100 at most" },
+        },
+      },
+    },
+    access: "read",
+    permission: ["write:sessions", "list:users", "list:businesses", "read:businesses"], // GET /import-jobs/ → import_jobs.py:284
+    run: (args) => listImports(args),
   },
   {
     def: {

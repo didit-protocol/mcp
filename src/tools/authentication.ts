@@ -11,13 +11,17 @@ import { DiditError, assertBoolean, pathSegment } from "../security";
 //   PATCH …/authentication/settings/
 //   GET   …/authentication/onboarding/                                           progress
 //   PATCH …/authentication/onboarding/
+//   PATCH …/authentication/                                                      the configuration
+//   GET   …/authentication/{branding,emails,emails/{key},protection,verified,domain,native-apps}/
+//   PATCH …/authentication/{branding,protection,verified}/, PUT …/native-apps/
+//   PUT, DELETE …/authentication/domain/, POST …/domain/verify/ and …/domain/activate/
 //
+// Every route above is an AuthenticationSetupView. Attack mode and the test emails are not: they take a
+// console session only, so they have no tool.
 // The credentials these setup routes admit are an OAuth grant carrying `didit:management` (the MCP
 // connection, or the device-code grant) and an API key of the application: full access (no scopes, the
 // primary secret included) covers Authentication, a scoped key needs `authentication` at the level the call
 // needs. The programmatic token keeps answering 403 there, which the hint below says.
-// Branding, emails, protection, hosted domain, native apps and verified are multi-route families,
-// left for a follow-up (the PR says so); the configuration PATCH (redirect URIs) is too.
 
 const METHOD_NAMES = [
   "password", "code", "passkey", "magic", "phone", "wallet", "sso", "google", "microsoft", "apple", "github",
@@ -76,6 +80,12 @@ const SETUP_REFUSAL_HINTS: Readonly<Record<string, string>> = {
     "This one setting needs a person signed in as an organization owner or admin (a named API key has no membership " +
     "to be one with). Ask them to change it in the console, or set the other settings here.",
   passkey_required: "agent_humans_only needs the person to have a passkey enrolled on their account.",
+  unknown_field: "This section has no such field: read the section first and send only the fields it shows.",
+  https_required: "The URL must start with https://.",
+  custom_domain_exists: "The application already has a custom domain: delete it before setting another.",
+  custom_domain_missing: "Set a custom domain first.",
+  custom_domain_not_verified: "Run action verify first; activate works once the domain is verified.",
+  dns_record_mismatch: "The CNAME is not there yet: section domain of didit_authentication_section_get shows the record to add.",
   empty_update: "Send at least one field to change; an empty update is refused.",
   product_disabled:
     "Didit Authentication is turned off for this application, so setup changes are refused and nothing was written. " +
@@ -199,6 +209,76 @@ export async function updateAuthenticationOnboarding(args: Record<string, any>):
   }
 
   return setupRequest(args, "onboarding/", { method: "PATCH", json: body });
+}
+
+const CONFIGURATION_FIELDS = [
+  "redirect_uris", "allowed_origins", "post_logout_redirect_uri", "session_lifetime", "idle_timeout", "multiple_sessions",
+  "password_min_length", "revoke_on_password_change", "allow_subaddresses", "signup_policy", "allowed_email_domains",
+];
+
+/** `PATCH` of the configuration with only the fields the caller sent (ConfigurationSerializer). */
+export async function updateAuthenticationConfiguration(args: Record<string, any>): Promise<any> {
+  const sent = CONFIGURATION_FIELDS.filter((field) => args[field] !== undefined);
+  if (sent.length === 0) {
+    throw new DiditError({ code: "bad_request", message: "Nothing to update: send at least one field.", allowed: CONFIGURATION_FIELDS });
+  }
+
+  return setupRequest(args, "", { method: "PATCH", json: Object.fromEntries(sent.map((field) => [field, args[field]])) });
+}
+
+const READ_SECTIONS = ["branding", "emails", "protection", "verified", "domain", "native_apps"];
+/** How each section is written: native apps are replaced whole, the rest change field by field. */
+const SECTION_WRITES: Readonly<Record<string, string>> = { branding: "PATCH", protection: "PATCH", verified: "PATCH", native_apps: "PUT" };
+
+function sectionPath(section: unknown, allowed: readonly string[]): string {
+  if (typeof section !== "string" || !allowed.includes(section)) {
+    throw new DiditError({ code: "bad_request", message: `section must be one of ${allowed.join(", ")}.`, field: "section", allowed: [...allowed] });
+  }
+
+  return `${section.replace("_", "-")}/`;
+}
+
+export async function getAuthenticationSection(args: Record<string, any>): Promise<any> {
+  const path = sectionPath(args.section, READ_SECTIONS);
+  if (args.email !== undefined && args.section !== "emails") {
+    throw new DiditError({ code: "bad_request", message: "email applies to section emails only.", field: "email" });
+  }
+
+  return setupRequest(args, args.email === undefined ? path : `${path}${pathSegment(args.email, "email")}/`);
+}
+
+export async function updateAuthenticationSection(args: Record<string, any>): Promise<any> {
+  const path = sectionPath(args.section, Object.keys(SECTION_WRITES));
+  if (!args.settings || typeof args.settings !== "object" || Array.isArray(args.settings) || Object.keys(args.settings).length === 0) {
+    throw new DiditError({ code: "bad_request", message: "settings must be an object with at least one field.", field: "settings" });
+  }
+
+  return setupRequest(args, path, { method: SECTION_WRITES[args.section], json: args.settings });
+}
+
+const DOMAIN_ACTIONS = ["set", "verify", "activate", "delete"];
+
+/** The application's custom sign-in domain. Checking its DNS changes nothing a person sees; the rest does. */
+export async function updateAuthenticationDomain(args: Record<string, any>): Promise<any> {
+  const { action, domain } = args;
+  if (!DOMAIN_ACTIONS.includes(action)) {
+    throw new DiditError({ code: "bad_request", message: `action must be one of ${DOMAIN_ACTIONS.join(", ")}.`, field: "action", allowed: DOMAIN_ACTIONS });
+  }
+  if (action === "set" && (typeof domain !== "string" || !domain.trim())) {
+    throw new DiditError({ code: "bad_request", message: "domain is required to set it.", field: "domain" });
+  }
+  if (action !== "verify" && args.confirm !== true) {
+    throw new DiditError({
+      code: "unsafe_operation",
+      message: "This changes the address people sign in at. Re-call with confirm:true once the person agreed.",
+      field: "confirm",
+      hint: "Say which domain and what happens to it: activating moves sign-in and passkeys to it, deleting moves them back.",
+    });
+  }
+  if (action === "set") return setupRequest(args, "domain/", { method: "PUT", json: { domain: domain.trim() } });
+  if (action === "delete") return setupRequest(args, "domain/", { method: "DELETE" });
+
+  return setupRequest(args, `domain/${action}/`, { method: "POST", json: {} });
 }
 
 // ── The tools (tools/registry.ts) ───────────────────────────────────────────
@@ -326,5 +406,101 @@ export const AUTHENTICATION_TOOLS: readonly RegisteredTool[] = [
     permission: "write:authentication", // PATCH …/authentication/onboarding/ → onboarding.py patch
     routingIds: true,
     run: (args) => updateAuthenticationOnboarding(args),
+  },
+  {
+    def: {
+      name: "didit_authentication_configuration_update",
+      description: "Update redirect URIs, origins, sessions, password and sign-up rules. Only what is sent changes; a list replaces the saved one.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          redirect_uris: { type: "array", items: { type: "string" }, description: "https, or http localhost in sandbox" },
+          allowed_origins: { type: "array", items: { type: "string" } },
+          post_logout_redirect_uri: { type: "string" },
+          session_lifetime: { type: "number", enum: [86400, 604800, 2592000, 7776000], description: "Seconds" },
+          idle_timeout: { type: "number", enum: [1800, 7200, 86400, 604800], description: "Seconds" },
+          multiple_sessions: { type: "boolean" },
+          password_min_length: { type: "number", enum: [8, 10, 12, 14] },
+          revoke_on_password_change: { type: "boolean" },
+          allow_subaddresses: { type: "boolean", description: "Accept name+tag@ addresses" },
+          signup_policy: { type: "string", enum: ["anyone", "invited", "allowed_domains"] },
+          allowed_email_domains: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    access: "write",
+    permission: "write:authentication", // PATCH …/authentication/ → management.py ConfigurationView.patch
+    routingIds: true,
+    run: (args) => updateAuthenticationConfiguration(args),
+  },
+  {
+    def: {
+      name: "didit_authentication_section_get",
+      description: "Read one section: branding (sign-in texts and legal links), emails (or one email's preview), protection (with detections), verified (identity checks at sign-up and step-up), domain (with the DNS record) or native_apps.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          section: { type: "string", enum: READ_SECTIONS },
+          email: { type: "string", enum: ["code", "magic", "reset", "invite", "org", "agentoff"], description: "emails only: preview this one" },
+        },
+        required: ["section"],
+      },
+    },
+    access: "read",
+    permission: "read:authentication", // GET …/authentication/{section}/ → branding.py, protection.py, verified.py, hosted_domain.py, native_apps.py
+    routingIds: true,
+    run: (args) => getAuthenticationSection(args),
+  },
+  {
+    def: {
+      name: "didit_authentication_section_update",
+      description: "Update one section; only the fields sent change, but native_apps is replaced whole.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          section: { type: "string", enum: Object.keys(SECTION_WRITES) },
+          settings: {
+            type: "object",
+            description:
+              "branding: texts {language: {sign_in_title, subtitle, sign_up_title}}, terms_url, privacy_url. " +
+              "protection: enabled, breached_password_check, policies {bots, stuffing, brute, disposable, vpn, travel: off|log|challenge|block}. " +
+              "verified: signup_level (none, liveness, full_id), rules [{rule: payout|bank|contact|device|sign_in, enabled, method: liveness|selfie|full_id, threshold and currency (payout)}], claims [], workflows {method: workflow id}. " +
+              "native_apps: ios_app_ids [], android_apps [{package_name, sha256_cert_fingerprints []}].",
+          },
+        },
+        required: ["section", "settings"],
+      },
+    },
+    access: "write",
+    permission: "write:authentication", // PATCH …/authentication/{branding,protection,verified}/, PUT …/native-apps/
+    routingIds: true,
+    run: (args) => updateAuthenticationSection(args),
+  },
+  {
+    def: {
+      name: "didit_authentication_domain_update",
+      description: "The custom sign-in domain: set it (answers the DNS record to add), verify its DNS, activate it once verified, or delete it.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          action: { type: "string", enum: DOMAIN_ACTIONS },
+          domain: { type: "string", description: "set only, e.g. login.acme.com" },
+          confirm: {
+            type: "boolean",
+            description: "Must be true to set, activate or delete. Only set after explicit user confirmation of this exact action.",
+          },
+        },
+        required: ["action"],
+      },
+    },
+    // Moves where people sign in.
+    access: "destructive",
+    permission: "write:authentication", // PUT, DELETE …/authentication/domain/, POST …/domain/verify/ and /activate/ → hosted_domain.py
+    routingIds: true,
+    run: (args) => updateAuthenticationDomain(args),
   },
 ];

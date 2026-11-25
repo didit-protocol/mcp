@@ -1,7 +1,8 @@
 import { apiRequest, orgAppPath } from "../config";
-import { getOrgAppMap, mapWithConcurrency, runForScope } from "../orgapp";
+import { getOrgAppMap, mapWithConcurrency, namedApplications, runForScope } from "../orgapp";
 import { leftOutFields, liveReadableScopes, type LeftOutApplication, type LeftOutOrganization } from "../live-access";
 import { applyRelativeWindow } from "../dates";
+import { DiditError } from "../security";
 
 // Cross-org/app aggregate analytics. The per-app /analytics/ endpoint already returns a
 // time-windowed funnel + status breakdown; there is no org-level endpoint, so this fans
@@ -13,6 +14,11 @@ const FANOUT_CONCURRENCY = 8;
 
 export async function getAnalytics(params: Record<string, any>): Promise<any> {
   return apiRequest(orgAppPath("/analytics/"), { params });
+}
+
+/** Today's verifications per local hour, against the same weekday last week. */
+export async function getAnalyticsToday(tz?: string): Promise<any> {
+  return apiRequest(orgAppPath("/analytics/today/"), { params: { tz } });
 }
 
 const DAY_MS = 86_400_000;
@@ -59,10 +65,22 @@ function addWarnings(target: WarningStats, src: any): void {
   }
 }
 
+const addHours = (into: number[], src: unknown): number[] =>
+  Array.isArray(src) ? src.map((count, hour) => (into[hour] ?? 0) + Number(count ?? 0)) : into;
+
 export async function analytics(args: Record<string, any>): Promise<any> {
-  const { organization_id, application_id, include_timeseries, ...rest } = args;
+  const { organization_id, application_id, application_ids, include_timeseries, today_by_hour, time_zone, ...rest } = args;
+  const named = namedApplications(application_id, application_ids);
   const params = applyRelativeWindow(rest); // → { date_from, date_to, ... }
-  const query = analyticsWindow(params);
+  const { workflow_ids, country, compare } = params;
+  // The hourly view is the whole application's: a filter there would be dropped, and its numbers read as filtered.
+  const unhourly = today_by_hour ? Object.entries({ workflow_ids, country, compare }).find(([, value]) => value !== undefined) : undefined;
+  if (unhourly) {
+    throw new DiditError({ code: "bad_request", message: `today_by_hour covers the whole application: ${unhourly[0]} does not apply to it.`, field: unhourly[0] });
+  }
+  const query = { ...analyticsWindow(params), workflow_ids, country, compare };
+  const read = () => (today_by_hour ? getAnalyticsToday(time_zone) : getAnalytics(query));
+  const today: Record<string, any> = { hours: [], previous_hours: [], total: 0, previous_total_so_far: 0, outcomes: {} };
 
   const request_breakdown: Record<string, number> = {};
   const previous_request_breakdown: Record<string, number> = {};
@@ -84,6 +102,7 @@ export async function analytics(args: Record<string, any>): Promise<any> {
 
   function merge(a: any, orgId: string, orgName: string, appId: string, appName: string): void {
     if (!a || typeof a !== "object") return;
+    if (today_by_hour) return mergeToday(a, orgId, orgName, appId, appName);
     addNumeric(request_breakdown, a.request_breakdown);
     addNumeric(previous_request_breakdown, a.previous_request_breakdown);
     addNumeric(original_status_stats, a.original_status_stats);
@@ -119,9 +138,19 @@ export async function analytics(args: Record<string, any>): Promise<any> {
     });
   }
 
+  function mergeToday(a: any, orgId: string, orgName: string, appId: string, appName: string): void {
+    const { hours, previous_hours, total, previous_total_so_far, outcomes, ...day } = a;
+    today.hours = addHours(today.hours, hours);
+    today.previous_hours = addHours(today.previous_hours, previous_hours);
+    addNumeric(today, { total, previous_total_so_far });
+    addNumeric(today.outcomes, outcomes);
+    Object.assign(today, day);
+    perApp.push({ organization_id: orgId, organization_name: orgName, application_id: appId, application_name: appName, total, outcomes });
+  }
+
   if (organization_id && application_id) {
     scanned = 1;
-    const a = await runForScope(organization_id, application_id, () => getAnalytics(query));
+    const a = await runForScope(organization_id, application_id, read);
     merge(a, organization_id, "", application_id, "");
   } else {
     const map = await getOrgAppMap();
@@ -130,13 +159,12 @@ export async function analytics(args: Record<string, any>): Promise<any> {
     // asking the live membership, so one question is asked, not one per organization, an unrelated
     // organization's auth failure cannot fail the call, and left_out_applications never names an
     // application this call does not read (an internal issue review).
-    const namedApp = application_id ? String(application_id).toLowerCase() : undefined;
     const scopedMap = map
       .filter((o) => {
         if (organization_id && o.orgId !== organization_id) return false;
-        return !namedApp || o.apps.some((ap) => ap.appId.toLowerCase() === namedApp);
+        return !named || o.apps.some((ap) => named.has(ap.appId.toLowerCase()));
       })
-      .map((o) => (namedApp ? { ...o, apps: o.apps.filter((ap) => ap.appId.toLowerCase() === namedApp) } : o));
+      .map((o) => (named ? { ...o, apps: o.apps.filter((ap) => named.has(ap.appId.toLowerCase())) } : o));
     // The organizations and applications this fan-out is about to read, judged by the caller's
     // LIVE membership: the map is cached for 60 s, so a removal from an organization,
     // or an application taken off the membership, would otherwise keep being read here — and the
@@ -149,12 +177,23 @@ export async function analytics(args: Record<string, any>): Promise<any> {
     scanned = pairs.length;
     await mapWithConcurrency(pairs, FANOUT_CONCURRENCY, async ({ o, ap }) => {
       try {
-        const a = await runForScope(o.orgId, ap.appId, () => getAnalytics(query));
+        const a = await runForScope(o.orgId, ap.appId, read);
         merge(a, o.orgId, o.orgName, ap.appId, ap.appName);
       } catch {
         skipped++; // app the caller can't read analytics for — skip
       }
     });
+  }
+
+  if (today_by_hour) {
+    return {
+      ...today,
+      aggregated: !(organization_id && application_id),
+      scanned_apps: scanned,
+      skipped_apps: skipped,
+      per_app: perApp,
+      ...leftOutFields(leftOutOrganizations, leftOutApplications),
+    };
   }
 
   // Recompute conversion from summed totals (never average per-app rates).

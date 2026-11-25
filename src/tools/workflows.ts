@@ -1,5 +1,5 @@
 import type { RegisteredTool } from "./registry";
-import { ORG_APP_PROPS } from "../orgapp";
+import { APPLICATION_IDS_PROP, ORG_APP_PROPS } from "../orgapp";
 import { PAGE_PROPS, pageParams } from "../paging";
 import {
   FEATURE_CONFIG_CHECKSUM,
@@ -208,6 +208,7 @@ export const WORKFLOW_TOOLS: readonly RegisteredTool[] = [
           search: { type: "string", description: "Case-insensitive substring match on the workflow label" },
           limit: { type: "number", description: "Max results after merging (default 50, max 200)" },
           ...ORG_APP_PROPS,
+          ...APPLICATION_IDS_PROP,
         },
       },
     },

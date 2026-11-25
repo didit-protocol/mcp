@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "../dist/index.js";
-import { apiKeyAuthInfo } from "../dist/api-key-connection.js";
+import { KEY_ONLY_TOOLS, apiKeyAuthInfo } from "../dist/api-key-connection.js";
 import { CORE_TOOLSET, parseSelection } from "../dist/toolsets.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -40,7 +40,7 @@ const KEY = apiKeyAuthInfo(
 
 const VALIDATE = "didit_workflow_validate_graph";
 const SAVE = "didit_workflow_set_graph";
-const ROUTING_IDS = ["organization_id", "application_id"];
+const ROUTING_IDS = ["organization_id", "application_id", "application_ids"];
 
 async function withClient(options, authInfo, fn) {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -141,9 +141,11 @@ test("no tool of an API key connection takes organization_id or application_id",
   const requiring = [...forKey.values()].filter((tool) => ROUTING_IDS.some((id) => (tool.inputSchema.required ?? []).includes(id))).map((tool) => tool.name);
   assert.deepEqual(requiring, []);
 
-  // Only the two ids go: every other argument, and what is required of it, is what a person gets.
+  // Only the routing ids go: every other argument, and what is required of it, is what a person gets.
   for (const [name, tool] of forKey) {
     const same = forPerson.get(name);
+    // A key-only tool is on no person's list.
+    if (!same && KEY_ONLY_TOOLS.has(name)) continue;
     const without = (keys) => (keys ?? []).filter((key) => !ROUTING_IDS.includes(key)).sort();
     assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}).sort(), without(Object.keys(same.inputSchema.properties ?? {})), name);
     assert.deepEqual(without(tool.inputSchema.required), without(same.inputSchema.required), name);
@@ -229,9 +231,16 @@ test("the tool list stays within its budget", async () => {
     // means, what caps a key). By 779 bytes for the KYB Key People setting kyb_key_people_document_ai_prefill
     // (service-didit-verification#3736): the workflow tools that list KYB_KEY_PEOPLE settings carry its name and
     // shape, generated from the backend contract, and the list stood exactly at the number before it.
-    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 305_566],
+    // By 714 bytes for application_ids on the seven reads that span applications (102 bytes each): the Copilot
+    // keeps a conversation to the applications of one data location, and the analytics cannot be cut afterwards.
+    // By 41,763 bytes with 43 tools (Travel Rule due diligence and networks among them, 8 of the 43) and the fields the
+    // API had gained on the tools already here: document AI, address, risk and fraud checks, events, messages, AML
+    // monitoring, AML hits and overrides of a session, KYB parties, regulatory reports, webhook deliveries. The list
+    // would stand at 366,000 without three cuts made with them: the rule contract is written once, on
+    // didit_transaction_rule_create (7.4 KB), and the routing ids (14 KB) and paging of every tool take fewer words.
+    ["a signed-in person on the hosted server", { hosted: true }, PERSON, 348_043],
     // A management grant also receives the six Authentication setup schemas.
-    ["a hosted management grant", { hosted: true }, { ...PERSON, scopes: ["didit:management"] }, 312_110],
+    ["a hosted management grant", { hosted: true }, { ...PERSON, scopes: ["didit:management"] }, 357_968],
     // Raised by 200 bytes with them: the questionnaire shapes (980) and questionnaire_uuid (651)
     // reach an API key connection too, and together took its list to 207,087. By 1 KB with the
     // questionnaire round-trip text above: the API key list moved to 207,982. By 1 KB with the
@@ -240,8 +249,8 @@ test("the tool list stays within its budget", async () => {
     // (the primary secret included) got the six Authentication setup tools a management grant has
     // (service-didit-auth v3.208, a key without scopes covers every resource): 236,999 bytes.
     // By 779 bytes with kyb_key_people_document_ai_prefill, as above.
-    ["an API key connection", { hosted: true, apiKey: true }, KEY, 237_809],
-    ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 31_500],
+    ["an API key connection", { hosted: true, apiKey: true }, KEY, 288_427],
+    ["the short catalog", { hosted: true, selection: parseSelection(CORE_TOOLSET, false) }, PERSON, 36_091],
   ];
   for (const [label, options, authInfo, budget] of budgets) {
     const bytes = definitionBytes(await listed(options, authInfo));

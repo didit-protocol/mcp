@@ -56,12 +56,14 @@ const AREAS = {
     "didit_bank_transaction_feed_list", "didit_bank_institution_list", "didit_bank_institution_get",
     "didit_bank_coverage_get",
   ],
-  webhooks: ["didit_webhook_list", "didit_webhook_create", "didit_webhook_get", "didit_webhook_update", "didit_webhook_delete"],
+  webhooks: ["didit_webhook_list", "didit_webhook_create", "didit_webhook_get", "didit_webhook_update", "didit_webhook_delete", "didit_webhook_delivery_list", "didit_webhook_delivery_resend"],
   branding: ["didit_branding_get", "didit_branding_update"],
   authentication: [
     "didit_authentication_get", "didit_authentication_method_set",
     "didit_authentication_settings_get", "didit_authentication_settings_update",
     "didit_authentication_onboarding_get", "didit_authentication_onboarding_update",
+    "didit_authentication_configuration_update", "didit_authentication_section_get",
+    "didit_authentication_section_update", "didit_authentication_domain_update",
   ],
   questionnaires: [
     "didit_questionnaire_list", "didit_questionnaire_create", "didit_questionnaire_append_choices",
@@ -71,23 +73,26 @@ const AREAS = {
     "didit_lists_list", "didit_lists_create", "didit_lists_get", "didit_lists_update", "didit_lists_delete",
     "didit_lists_entries_list", "didit_lists_entry_create", "didit_lists_entry_upload_face", "didit_lists_entry_delete",
   ],
-  cases: ["didit_case_list", "didit_case_get", "didit_case_create", "didit_case_statistics", "didit_case_manage"],
+  cases: ["didit_case_list", "didit_case_get", "didit_case_create", "didit_case_statistics", "didit_case_manage", "didit_case_catalog_list"],
+  regulatoryReports: ["didit_regulatory_report_list", "didit_regulatory_report_get", "didit_regulatory_report_create", "didit_regulatory_report_update"],
   transactionRules: [
     "didit_transaction_rule_list", "didit_transaction_rule_get", "didit_transaction_rule_create",
     "didit_transaction_rule_update", "didit_transaction_rule_delete", "didit_transaction_rule_backtest",
     "didit_transaction_rule_library_list", "didit_transaction_rule_install", "didit_transaction_rule_uninstall",
   ],
   search: ["didit_session_search", "didit_transaction_search", "didit_case_search", "didit_vendor_user_search", "didit_vendor_business_search"],
-  transactions: ["didit_transaction_list", "didit_transaction_create", "didit_transaction_get", "didit_transaction_screen_wallet"],
+  transactions: ["didit_transaction_list", "didit_transaction_create", "didit_transaction_get", "didit_transaction_screen_wallet", "didit_transaction_note_create"],
+  events: ["didit_event_list", "didit_event_get", "didit_event_subject_get"],
+  monitoring: ["didit_monitoring_update", "didit_monitoring_get"],
   vendorUsers: [
     "didit_vendor_user_list", "didit_vendor_user_create", "didit_vendor_user_get",
-    "didit_vendor_user_update", "didit_vendor_user_update_status", "didit_vendor_user_delete",
+    "didit_vendor_user_update", "didit_vendor_user_update_status", "didit_vendor_user_lookup", "didit_vendor_user_delete",
   ],
   vendorBusinesses: [
     "didit_vendor_business_list", "didit_vendor_business_create", "didit_vendor_business_get",
     "didit_vendor_business_update", "didit_vendor_business_update_status", "didit_vendor_business_delete",
   ],
-  reports: ["didit_report_list", "didit_report_get", "didit_report_get_download_url", "didit_report_export"],
+  reports: ["didit_report_list", "didit_report_get", "didit_report_get_download_url", "didit_report_export", "didit_report_resend"],
   auditAndAlerts: ["didit_audit_log_list", "didit_alert_list", "didit_alert_configure"],
   orgMembers: [
     "didit_org_list_members", "didit_org_invite_member", "didit_org_update_member", "didit_org_remove_member",
@@ -97,6 +102,7 @@ const AREAS = {
   billing: [
     "didit_billing_get_plan", "didit_billing_quote_plan", "didit_billing_list_payment_methods",
     "didit_billing_list_receipts", "didit_billing_get_details", "didit_billing_update_details",
+    "didit_org_entitlements_get", "didit_price_book_get",
   ],
   sessions: [
     "didit_session_create", "didit_session_list", "didit_session_get_decision", "didit_session_get_location_evidence",
@@ -106,15 +112,24 @@ const AREAS = {
     "didit_session_list_reviews", "didit_session_add_review", "didit_session_share", "didit_session_explain_decision",
     "didit_session_webhooks", "didit_session_webhook_resend", "didit_session_import_shared",
   ],
+  sessionReview: [
+    "didit_session_deletion_get", "didit_session_files_create", "didit_session_files_get", "didit_session_aml_update",
+    "didit_session_aml_history_list", "didit_session_feature_override_list", "didit_session_feature_override_update",
+    "didit_session_email_preview",
+  ],
+  kyb: ["didit_kyb_party_update"],
   sessionImports: [
     "didit_session_create_import", "didit_session_list_import_providers", "didit_session_check_import_provider",
-    "didit_session_manage_import", "didit_session_get_import_template", "didit_session_get_import", "didit_session_get_import_errors",
+    "didit_session_manage_import", "didit_session_import_list", "didit_session_get_import_template", "didit_session_get_import", "didit_session_get_import_errors",
   ],
   standaloneDocuments: ["didit_verify_id", "didit_verify_poa", "didit_verify_account_check", "didit_verify_database"],
   standaloneKyb: ["didit_verify_kyb_search", "didit_verify_kyb_select"],
   standaloneBiometrics: ["didit_verify_passive_liveness", "didit_verify_face_match", "didit_verify_face_search", "didit_verify_age"],
   standaloneAml: ["didit_verify_aml"],
   standaloneContact: ["didit_verify_email_send", "didit_verify_email_check", "didit_verify_phone_send", "didit_verify_phone_check"],
+  standaloneIntelligence: ["didit_verify_document_ai", "didit_verify_address", "didit_verify_risk", "didit_verify_fraud_check"],
+  phone: ["didit_phone_validate"],
+  messages: ["didit_message_conversation_list", "didit_message_conversation_get", "didit_message_template_list"],
   workflows: [
     "didit_workflow_list", "didit_workflow_create", "didit_workflow_get", "didit_workflow_update", "didit_workflow_delete",
     "didit_workflow_search", "didit_workflow_get_graph", "didit_workflow_get_field_definitions",
@@ -182,8 +197,8 @@ test("a call reaches the tool's handler, which makes the request the tool stands
         return requests.filter((request) => request.path.startsWith("/v3/"));
       };
       assert.deepEqual(await call("didit_webhook_list", {}), [{ method: "GET", path: base, body: undefined }]);
-      assert.deepEqual(await call("didit_webhook_create", { label: "Prod", url: "https://hooks.example.com/didit" }), [
-        { method: "POST", path: base, body: { label: "Prod", url: "https://hooks.example.com/didit" } },
+      assert.deepEqual(await call("didit_webhook_create", { label: "Prod", url: "https://hooks.example.com/didit", subscribed_events: ["status.updated"] }), [
+        { method: "POST", path: base, body: { label: "Prod", url: "https://hooks.example.com/didit", subscribed_events: ["status.updated"] } },
       ]);
       assert.deepEqual(await call("didit_webhook_get", { destination_uuid: DESTINATION }), [{ method: "GET", path: `${base}${DESTINATION}/`, body: undefined }]);
       assert.deepEqual(await call("didit_webhook_update", { destination_uuid: DESTINATION, enabled: false }), [

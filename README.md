@@ -251,9 +251,9 @@ It covers your organizations and applications, sessions (create, find, decide, e
 | `sessions` | Verification sessions: create, find, decide, review, share, import, PDFs and webhook deliveries. |
 | `workflows` | Verification workflows and questionnaires: build, edit, validate and publish. |
 | `lists` | Custom lists, the blocklist and the allowlist. |
-| `vendors` | The people and companies you verify: vendor users and vendor businesses. |
-| `transactions` | Transaction monitoring: transactions, wallet screening and rules with backtesting. |
-| `cases` | Case management: create, assign, escalate and resolve cases. |
+| `vendors` | The people and companies you verify: vendor users and vendor businesses, and their AML ongoing monitoring. |
+| `transactions` | Transaction monitoring: transactions, wallet screening, rules with backtesting and monitoring events. |
+| `cases` | Case management: create, assign, escalate and resolve cases, and draft regulatory reports. |
 | `investigator` | The Investigator agent: its review queue, reports and follow-ups, decisions, policy questions and performance. |
 | `webhooks` | Webhook destinations and alerts. |
 | `reports` | Analytics, exports and the audit log. |
@@ -261,6 +261,7 @@ It covers your organizations and applications, sessions (create, find, decide, e
 | `authentication` | Didit Authentication setup: the configuration and sign-in methods, product settings and onboarding. |
 | `bank` | Bank data and Bank Link: links, connections, accounts, balances, transactions, the change feed, institutions and coverage. |
 | `verification` | Standalone verification APIs: ID document, face, AML, proof of address, phone, email, database and business checks. |
+| `messages` | Messages with the people being verified: conversations, threads, templates and channels. |
 | `docs` | Search the Didit documentation. |
 | `all` | Every tool your role may use. The default. |
 
@@ -400,7 +401,7 @@ A key that is not listed here is not part of the contract and is dropped silentl
 
 <!-- BEGIN GENERATED FEATURE CONFIG REFERENCE -->
 
-_Generated from `schema/feature-config-schema.json` (contract `sha256:37484d492203d91cdc501826a8af406b7e2e0b53864dcab648c64569f0f57a23`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
+_Generated from `schema/feature-config-schema.json` (contract `sha256:f4679a656783580780911fe3212b9a45f34cabc14a3d3bb9413f07f9737fb652`, schema version 1), which is a copy of the artifact `service-didit-verification` generates from its feature-config serializers. Do not edit by hand — run `npm run schema:readme`._
 
 ### AGE_ESTIMATION
 
@@ -897,7 +898,7 @@ Configuration for Phone Verification feature.
 | `phone_social_enabled` | boolean \| null | boolean |  |
 | `phone_trust_index_threshold` | integer \| null | integer >=0 <=100 |  |
 | `phone_type_risk_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the line type itself is considered risky. |
-| `phone_verification_countries` | json \| null | {"<ISO2>": {"<channel: sms\|whatsapp\|telegram\|voice\|rcs\|viber\|zalo\|silent>": {"enabled": true\|false, "max_retries": <int>} \| true\|false}} | Which countries and delivery channels the one-time code may be sent through. It is a WHITELIST: a country absent from the map is not offered at all, and a code channel absent from a listed country is skipped. `max_retries` overrides the node-level retry cap for that one channel. A bare boolean is the legacy form and still means enabled/disabled with the node-level cap. `silent` (the mobile operator confirms the number with no code, where Didit offers it) is the one exception to the whitelist: absent from a listed country, it runs first wherever Didit covers the number, and falls back to the country's enabled code channels in their order. To keep a country code-only, list `silent` disabled (`false`, stored as `{"enabled": false}`); that opt-out is kept for a country with code channels even where silent is not offered yet, so it holds once it is. |
+| `phone_verification_countries` | json \| null | {"<ISO2>": {"<channel: sms\|whatsapp\|telegram\|rcs\|viber\|zalo>": {"enabled": true\|false, "max_retries": <int>} \| true\|false}} | Which countries and delivery channels the one-time code may be sent through. It is a WHITELIST: a country absent from the map is not offered at all, and a channel absent from a listed country is skipped. `max_retries` overrides the node-level retry cap for that one channel. A bare boolean is the legacy form and still means enabled/disabled with the node-level cap. |
 | `provider_key` | string \| null | string |  |
 | `recent_port_action` | string \| null | 'NO_ACTION'\|'REVIEW'\|'DECLINE' | Verdict when the number was ported to a new carrier recently. |
 | `status_rules` | array | array |  |

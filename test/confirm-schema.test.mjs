@@ -18,6 +18,7 @@ const CONFIRM_GATED_TOOLS = [
   "didit_vendor_business_delete",
   "didit_org_top_up",
   "didit_case_manage",
+  "didit_monitoring_update",
 ];
 
 async function listTools() {

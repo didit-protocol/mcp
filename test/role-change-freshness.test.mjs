@@ -222,7 +222,7 @@ globalThis.fetch = async (url, init = {}) => {
   if (path === `https://api.example.test/v3/organization/${ORG}/application/${APP}/webhook/destinations/`) {
     webhookPosts.push({ at: Date.now(), role: organization.role });
     if (!backendPermissions().includes("write:webhooks")) return forbid();
-    return json({ uuid: "33333333-3333-4333-8333-333333333333", label: "ops", url: "https://example.test/hook" });
+    return json({ uuid: "33333333-3333-4333-8333-333333333333", label: "ops", url: "https://example.test/hook", subscribed_events: ["status.updated"] });
   }
   if (path === `https://api.example.test/v3/organization/${ORG}/application/${APP}/sessions/`) {
     sessionLists.push({ at: Date.now(), org: ORG, role: organization.role });
@@ -376,6 +376,7 @@ function createWebhook(server) {
     application_id: APP,
     label: "ops",
     url: "https://example.test/hook",
+    subscribed_events: ["status.updated"],
   });
 }
 
@@ -397,6 +398,7 @@ function createWebhookWithoutIds(server) {
     organization_id: ORG,
     label: "ops",
     url: "https://example.test/hook",
+    subscribed_events: ["status.updated"],
   });
 }
 
@@ -704,7 +706,7 @@ test("a role the live answer lists no permissions for still reaches a tool with 
     assert.match(answerText, /Primary/, "the applications the membership can open are answered");
 
     // The same answer still refuses a tool that DOES accept a permission.
-    const refusedWrite = await callTool(server, "didit_webhook_create", { organization_id: ORG, label: "ops", url: "https://example.test/hook" });
+    const refusedWrite = await callTool(server, "didit_webhook_create", { organization_id: ORG, label: "ops", url: "https://example.test/hook", subscribed_events: ["status.updated"] });
     assert.equal(refused(refusedWrite), true);
     assert.match(text(refusedWrite), /membership/i);
   } finally {

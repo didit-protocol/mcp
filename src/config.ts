@@ -527,7 +527,8 @@ export function buildFormData(
   }
   for (const [key, value] of Object.entries(scalars)) {
     if (value === undefined || value === null) continue;
-    form.append(key, typeof value === "string" ? value : String(value));
+    // A JSON field travels in a form as its JSON text.
+    form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
   }
   return form;
 }

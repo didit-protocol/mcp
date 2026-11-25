@@ -93,6 +93,12 @@ test("every argument maps onto the backend's list filter of the same name", asyn
     target_type: "session",
     target_id: SESSION,
     search: "20458",
+    api_key_id: "key-1",
+    method: "POST",
+    status_code: 403,
+    status_code_gte: 400,
+    status_code_lte: 499,
+    changes_only: true,
     created_at_start: "2026-10-01T00:00:00Z",
     created_at_end: "2026-10-29T23:59:59Z",
     page: 2,
@@ -102,6 +108,8 @@ test("every argument maps onto the backend's list filter of the same name", asyn
   const res = await callAuditLogList({ organization_id: ORG, application_id: APP, ...filters });
 
   assert.equal(res.isError, undefined, JSON.stringify(res.content));
+  const offered = await withClient(async (client) => (await client.listTools()).tools.find(({ name }) => name === "didit_audit_log_list").inputSchema.properties);
+  assert.deepEqual(Object.keys(filters).filter((key) => !(key in offered)), []);
   assert.equal(calls.length, 1);
   assert.equal(`${calls[0].url.origin}${calls[0].url.pathname}`, `${API}/audit/${ORG}/audit-logs/`);
   assert.deepEqual(Object.fromEntries(calls[0].url.searchParams), {
@@ -143,8 +151,9 @@ test("the schema offers the actor kinds, record and paging filters, flat", async
   assert.equal(tool.annotations.readOnlyHint, true);
   assert.deepEqual(properties.actor_type.enum, ["member", "api_key", "system", "assistant_delegated", "investigator"]);
   assert.deepEqual(Object.keys(properties).sort(), [
-    "action_category", "actor_type", "application_id", "created_at_end", "created_at_start",
-    "organization_id", "page", "page_size", "search", "target_id", "target_type",
+    "action_category", "actor_type", "api_key_id", "application_id", "changes_only", "created_at_end", "created_at_start",
+    "method", "organization_id", "page", "page_size", "search", "status_code", "status_code_gte", "status_code_lte",
+    "target_id", "target_type",
   ]);
   assert.ok(Object.values(properties).every((schema) => schema.type !== "object"), "no nested schemas");
   assert.match(tool.description, /actor_type 'investigator'/);

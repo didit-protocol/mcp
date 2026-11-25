@@ -33,6 +33,7 @@ const READ_TOOLS = [
   "didit_investigator_dashboard_get",
   "didit_investigator_activity_list",
   "didit_investigator_record_get",
+  "didit_investigator_status_get",
 ];
 
 delete process.env.DIDIT_ACCESS_TOKEN;
@@ -90,7 +91,7 @@ test("decision tools are destructive, say they need human approval and schema-re
 test("every Investigator tool has a permission entry", async () => {
   await withClient(async (client) => {
     const names = (await client.listTools()).tools.map((t) => t.name).filter((n) => n.startsWith("didit_investigator_"));
-    assert.equal(names.length, 17);
+    assert.equal(names.length, 18);
     for (const name of names) assert.ok(name in TOOL_PERMISSIONS, name);
     assert.equal(TOOL_PERMISSIONS.didit_investigator_backtest_start, "write:applications");
   });
@@ -191,6 +192,55 @@ test("reads and the free backtest route their filters", async () => {
     ],
   );
   assert.deepEqual(JSON.parse(calls[5].body), { queues: ["kyc"], period_days: 30 });
+});
+
+test("the queue takes its order, its deadline and priority filters", async () => {
+  const calls = stubFetch();
+  await withClient((client) =>
+    client.callTool({
+      name: "didit_investigator_queue_list",
+      arguments: scoped({ sort: "sla", sla: "breached", priority_min: 80, contested: true, ready: false }),
+    }),
+  );
+  assert.equal(calls[0].url, `${API}/investigator/queue/?sort=sla&sla=breached&priority_min=80&ready=false&contested=true`);
+});
+
+test("a decision emails the person only as it is told to", async () => {
+  const calls = stubFetch();
+  const email = { send_email: true, email_address: "ada@acme.com", email_language: "es" };
+  await withClient(async (client) => {
+    await client.callTool({ name: "didit_investigator_accept", arguments: scoped({ run_id: RUN, confirm: true, ...email }) });
+    await client.callTool({
+      name: "didit_investigator_override",
+      arguments: scoped({ run_id: RUN, confirm: true, action: "decline", category: "other", reason: "Known mule account", ...email }),
+    });
+    const { tools } = await client.listTools();
+    for (const name of ["didit_investigator_accept", "didit_investigator_override"]) {
+      assert.equal(tools.find((tool) => tool.name === name).annotations.openWorldHint, true, name);
+    }
+  });
+  assert.deepEqual(calls.map((call) => JSON.parse(call.body)), [
+    email,
+    { action: "decline", category: "other", reason: "Known mule account", ...email },
+  ]);
+});
+
+test("the status reads the summary, the guardrails and the settings", async () => {
+  const calls = stubFetch();
+  const res = await withClient((client) => client.callTool({ name: "didit_investigator_status_get", arguments: scoped({}) }));
+  assert.deepEqual(calls.map((call) => [call.method, call.url]), [
+    ["GET", `${API}/investigator/summary/`],
+    ["GET", `${API}/investigator/guardrails/`],
+    ["GET", `${API}/investigator/settings/`],
+  ]);
+  assert.deepEqual(JSON.parse(res.content[0].text), { summary: { ok: true }, guardrails: { ok: true }, settings: { ok: true } });
+});
+
+test("a refused status read is an error, not a partial status", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({ detail: "Your plan does not include the Investigator." }), { status: 403 });
+  const res = await withClient((client) => client.callTool({ name: "didit_investigator_status_get", arguments: scoped({}) }));
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /does not include the Investigator/);
 });
 
 test("a batch accept over the backend's limit is refused locally", async () => {

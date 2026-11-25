@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { requestContext } from "../dist/config.js";
 import { createServer } from "../dist/index.js";
+import { parseSelection } from "../dist/toolsets.js";
 import {
   backtestTransactionRule,
   createTransactionRule,
@@ -271,3 +272,51 @@ for (const operation of ["create", "update", "backtest"]) {
     }
   });
 }
+
+// ── The rule contract's text, once per list ──
+
+const SHARED_PROPS = ["conditions", "aggregation", "actions", "evaluation_mode", "scope"];
+const RULE_TRIO = ["create", "update", "backtest"].map((verb) => `didit_transaction_rule_${verb}`);
+
+/** A schema with its text cut: what a client validates a call against. */
+function shapeOf(schema) {
+  if (Array.isArray(schema)) return schema.map(shapeOf);
+  if (!schema || typeof schema !== "object") return schema;
+
+  return Object.fromEntries(Object.entries(schema).filter(([key, value]) => !(key === "description" && typeof value === "string")).map(([key, value]) => [key, shapeOf(value)]));
+}
+
+test("a list with the rule tools says the rule contract once, on create, and keeps its whole shape on the others", async () => {
+  const byName = new Map((await listAdvertisedTools()).map((tool) => [tool.name, tool]));
+  const [create, update, backtest] = RULE_TRIO.map((name) => byName.get(name).inputSchema.properties);
+
+  assert.match(create.conditions.items.properties.operator.description, /fuzzy_match requires score/);
+  for (const [name, properties] of [["update", update], ["backtest", backtest]]) {
+    for (const prop of SHARED_PROPS.filter((key) => key in properties)) {
+      assert.deepEqual(shapeOf(properties[prop]), shapeOf(create[prop]), `${name}.${prop} keeps types, enums, patterns and required`);
+      assert.match(properties[prop].description, /didit_transaction_rule_create/, `${name}.${prop}`);
+      assert.ok(JSON.stringify(properties[prop]).length < JSON.stringify(create[prop]).length || prop === "evaluation_mode", `${name}.${prop} is shorter`);
+    }
+  }
+  assert.ok(!("actions" in backtest));
+  const bytes = RULE_TRIO.reduce((sum, name) => sum + JSON.stringify(byName.get(name)).length, 0);
+  assert.ok(bytes < 15_500, `the three rule definitions are ${bytes} bytes (21,958 before the text was shared)`);
+});
+
+test("a rule tool shown without create carries the contract's text itself", async () => {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const server = createServer({ hosted: true, selection: parseSelection("all", true) });
+  await server.connect(serverTransport);
+  const client = new Client({ name: "transaction-rule-contract-test", version: "1.0.0" }, { capabilities: {} });
+  await client.connect(clientTransport);
+  try {
+    const byName = new Map((await client.listTools()).tools.map((tool) => [tool.name, tool]));
+    assert.ok(!byName.has("didit_transaction_rule_create"), "a read-only connection lists no create");
+    const { conditions } = byName.get("didit_transaction_rule_backtest").inputSchema.properties;
+    assert.match(conditions.items.properties.operator.description, /fuzzy_match requires score/);
+    assert.doesNotMatch(JSON.stringify(byName.get("didit_transaction_rule_backtest").inputSchema), /As in didit_transaction_rule_create/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});

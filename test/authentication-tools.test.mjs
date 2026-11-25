@@ -134,6 +134,77 @@ test("every setup step calls the route, method and body the service accepts", as
   }
 });
 
+test("the configuration, the sections and the domain call the route and method of their view", async (t) => {
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const requests = stubAuth(() => json({ ok: true }));
+  await withClient({ hosted: true }, PERSON, async (client) => {
+    const call = async (name, args) => {
+      requests.length = 0;
+      const result = await client.callTool({ name, arguments: { ...SCOPE, ...args } });
+      assert.equal(result.isError, undefined, `${name}: ${textOf(result)}`);
+
+      return requests.filter((request) => request.path.startsWith(BASE)).map(({ method, path, body }) => [method, path.slice(BASE.length), body]);
+    };
+    const configuration = { redirect_uris: ["https://acme.test/callback"], session_lifetime: 604800, multiple_sessions: false, signup_policy: "invited" };
+    assert.deepEqual(await call("didit_authentication_configuration_update", configuration), [["PATCH", "", configuration]]);
+
+    for (const [section, path] of [["branding", "branding/"], ["emails", "emails/"], ["protection", "protection/"], ["verified", "verified/"], ["domain", "domain/"], ["native_apps", "native-apps/"]]) {
+      assert.deepEqual(await call("didit_authentication_section_get", { section }), [["GET", path, undefined]]);
+    }
+    assert.deepEqual(await call("didit_authentication_section_get", { section: "emails", email: "magic" }), [["GET", "emails/magic/", undefined]]);
+
+    const apps = { ios_app_ids: ["ABCDE12345.com.acme.app"], android_apps: [] };
+    assert.deepEqual(await call("didit_authentication_section_update", { section: "native_apps", settings: apps }), [["PUT", "native-apps/", apps]]);
+    for (const [section, settings] of [["branding", { terms_url: "https://acme.test/terms" }], ["protection", { policies: { vpn: "block" } }], ["verified", { signup_level: "liveness" }]]) {
+      assert.deepEqual(await call("didit_authentication_section_update", { section, settings }), [["PATCH", `${section}/`, settings]]);
+    }
+
+    const confirm = true;
+    assert.deepEqual(await call("didit_authentication_domain_update", { action: "set", domain: "login.acme.test", confirm }), [["PUT", "domain/", { domain: "login.acme.test" }]]);
+    assert.deepEqual(await call("didit_authentication_domain_update", { action: "verify" }), [["POST", "domain/verify/", {}]]);
+    assert.deepEqual(await call("didit_authentication_domain_update", { action: "activate", confirm }), [["POST", "domain/activate/", {}]]);
+    assert.deepEqual(await call("didit_authentication_domain_update", { action: "delete", confirm }), [["DELETE", "domain/", undefined]]);
+  });
+});
+
+test("a section, a domain change or an update that cannot be sent is refused before any request", async (t) => {
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const requests = stubAuth(() => json({ ok: true }));
+  await withClient({ hosted: true }, PERSON, async (client) => {
+    const refusals = [
+      ["didit_authentication_configuration_update", { enabled: true }, /Nothing to update/],
+      ["didit_authentication_section_get", { section: "../users" }, /section must be one of/],
+      ["didit_authentication_section_get", { section: "branding", email: "magic" }, /section emails only/],
+      ["didit_authentication_section_update", { section: "domain", settings: { domain: "x" } }, /section must be one of/],
+      ["didit_authentication_section_update", { section: "protection", settings: {} }, /at least one field/],
+      ["didit_authentication_domain_update", { action: "set", confirm: true }, /domain is required/],
+      ["didit_authentication_domain_update", { action: "attack" }, /action must be one of/],
+      ...["set", "activate", "delete"].map((action) => ["didit_authentication_domain_update", { action, domain: "login.acme.test" }, /confirm:true/]),
+    ];
+    for (const [name, args, message] of refusals) {
+      const result = await client.callTool({ name, arguments: { ...SCOPE, ...args } });
+      assert.equal(result.isError, true, name);
+      assert.match(textOf(result), message);
+    }
+    assert.deepEqual(requests.filter((request) => request.path.startsWith(BASE)), []);
+
+    const { tools } = await client.listTools();
+    const domain = tools.find((tool) => tool.name === "didit_authentication_domain_update");
+    assert.match(domain.inputSchema.properties.confirm.description, /explicit user confirmation of this exact action/);
+    assert.equal(domain.annotations.destructiveHint, true);
+  });
+});
+
+test("a refused domain says what to do next", async (t) => {
+  t.after(() => { globalThis.fetch = originalFetch; });
+  stubAuth(({ path }) => (path.startsWith(BASE) ? json({ domain: "custom_domain_not_verified" }, 409) : json({})));
+  await withClient({ hosted: true }, PERSON, async (client) => {
+    const result = await client.callTool({ name: "didit_authentication_domain_update", arguments: { ...SCOPE, action: "activate", confirm: true } });
+    assert.equal(result.isError, true);
+    assert.match(textOf(result), /Run action verify first/);
+  });
+});
+
 test("configuration read-back preserves disabled methods and credential sources", async (t) => {
   const methods = [
     { name: "code", enabled: true, credential_source: null },
@@ -188,6 +259,10 @@ test("reads need read:authentication and changes need write:authentication", asy
   assert.equal(TOOL_PERMISSIONS.didit_authentication_method_set, "write:authentication");
   assert.equal(TOOL_PERMISSIONS.didit_authentication_settings_update, "write:authentication");
   assert.equal(TOOL_PERMISSIONS.didit_authentication_onboarding_update, "write:authentication");
+  assert.equal(TOOL_PERMISSIONS.didit_authentication_section_get, "read:authentication");
+  for (const change of ["configuration", "section", "domain"]) {
+    assert.equal(TOOL_PERMISSIONS[`didit_authentication_${change}_update`], "write:authentication");
+  }
 
   const previous = process.env.MCP_PERMISSION_MODE;
   process.env.MCP_PERMISSION_MODE = "shadow";

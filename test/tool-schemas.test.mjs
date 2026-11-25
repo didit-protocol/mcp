@@ -16,6 +16,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 const FILE_TOOLS = [
   "didit_verify_id",
   "didit_verify_poa",
+  "didit_verify_document_ai",
   "didit_verify_passive_liveness",
   "didit_verify_face_match",
   "didit_verify_face_search",

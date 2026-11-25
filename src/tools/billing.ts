@@ -59,6 +59,18 @@ const PERSON_ACTS =
   "Didit tools never charge a card. Give the person the link: they confirm and pay in the Didit console " +
   "(or turn on automatic top-up there, so a saved card refills the balance when it runs low).";
 
+/** The usage filters of the balance read. The API ignores a date it cannot read and answers everything. */
+function usageParams({ date_from, date_to, usage_application_ids: applications }: Record<string, unknown>): Record<string, string> {
+  for (const [field, value] of Object.entries({ date_from, date_to })) {
+    if (value !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(value))) {
+      throw new DiditError({ code: "bad_request", message: `${field} must be a date, YYYY-MM-DD.`, field });
+    }
+  }
+  const ids = Array.isArray(applications) && applications.length > 0 ? applications.join(",") : undefined;
+
+  return Object.fromEntries(Object.entries({ date_from, date_to, application_id: ids }).filter(([, value]) => value !== undefined)) as Record<string, string>;
+}
+
 // The monthly free credit is decided per organization, and only /credits/ knows the outcome.
 // It enriches the balance, so its failure must never cost the balance itself.
 // `agentTopUp` (the agent payments endpoint and stdio only) adds whether the organization's
@@ -66,19 +78,24 @@ const PERSON_ACTS =
 // tries. Best effort like the credit.
 export async function getBalance(
   organizationId?: string,
-  options: { links?: boolean; agentTopUp?: boolean } = {},
+  options: { links?: boolean; agentTopUp?: boolean; usage?: Record<string, unknown> } = {},
 ): Promise<any> {
   // An API key connection (api-key-connection.ts): the console's organization routes only answer
   // to a person, so the balance comes from the public API's own route for a key, which already
   // carries the automatic top-up settings and the agent top-up switch.
   if (requestContext.getStore()?.apiKey) {
+    // The key's route has no usage filters: a filtered read would come back whole.
+    const filter = Object.keys(options.usage ?? {}).find((key) => (options.usage as Record<string, unknown>)[key] !== undefined);
+    if (filter) {
+      throw new DiditError({ code: "bad_request", message: `${filter} needs a signed-in person: an API key reads the balance without usage filters.`, field: filter });
+    }
     const { agent_top_up: agentTopUp, ...balance } = (await apiRequest("/billing/balance/")) ?? {};
     const result = options.agentTopUp && agentTopUp ? { ...balance, agent_top_up: agentTopUp } : balance;
 
     return options.links ? { ...result, next_steps: { ...billingLinks(organizationId), note: PERSON_ACTS } } : result;
   }
   const [balance, credits, agentSpending] = await Promise.all([
-    apiRequest(orgPath("/top-up/", { organizationId })),
+    apiRequest(orgPath("/top-up/", { organizationId }), { params: usageParams(options.usage ?? {}) }),
     apiRequest(orgPath("/credits/", { organizationId })).catch(() => null),
     options.agentTopUp
       ? apiRequest(orgPath("/billing/agent-spending/", { organizationId })).catch(() => null)
@@ -345,6 +362,15 @@ export async function updateBillingDetails(changes: Record<string, unknown>, org
   }
 }
 
+export async function getEntitlements(): Promise<any> {
+  return apiRequest(orgPath("/plan-entitlements/"));
+}
+
+/** Anonymous on the API: the list prices, the same for everyone. */
+export async function getPriceBook(): Promise<any> {
+  return apiRequest("/organization/price-book/");
+}
+
 // ── The billing tools (tools/registry.ts) ──────────────────────────────────
 // Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
 // The definitions are listed where these tools always were, so the tool list does not change.
@@ -470,5 +496,26 @@ export const BILLING_TOOLS: readonly RegisteredTool[] = [
     access: "write",
     permission: "write:subscription", // PUT …/billing/details/ → BillingDetailsView (+ step-up)
     run: ({ organization_id: _org, application_id: _app, ...changes }) => updateBillingDetails(changes),
+  },
+  {
+    def: {
+      name: "didit_org_entitlements_get",
+      description: "Get the organization's plan and what it includes on every product: which features are available or need an upgrade. No amounts.",
+      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+    },
+    access: "read",
+    permission: "read:organization", // GET /organization/{org}/plan-entitlements/ → plans/views.py PlanEntitlementsView
+    run: () => getEntitlements(),
+  },
+  {
+    def: {
+      name: "didit_price_book_get",
+      description: "Get Didit's public list prices in USD (every check, message fee and monitoring line, with its unit) and the plans with their discount. Not an organization's negotiated prices.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
+    access: "read",
+    permission: null, // GET /organization/price-book/ → PriceBookView (public)
+    scopeAgnostic: true,
+    run: () => getPriceBook(),
   },
 ];

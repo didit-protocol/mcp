@@ -23,9 +23,9 @@ const require = createRequire(import.meta.url);
 const { createServer } = require("../dist/index.js");
 const { createHttpApp } = require("../dist/http.js");
 const { IntrospectionTokenVerifier } = require("../dist/auth/introspection-verifier.js");
-const { PERSON_ONLY_TOOLS, apiKeyAuthInfo, looksLikeApiKey } = require("../dist/api-key-connection.js");
+const { KEY_ONLY_TOOLS, PERSON_ONLY_TOOLS, apiKeyAuthInfo, looksLikeApiKey } = require("../dist/api-key-connection.js");
 const { profileServesWidgets } = require("../dist/chatgpt-app.js");
-const { parseSelection } = require("../dist/toolsets.js");
+const { parseSelection, toolsetOf } = require("../dist/toolsets.js");
 
 const API = "https://verification.didit.me/v3";
 const ORG = "69f2b990-24e3-4892-bbe7-1a6a628943b3";
@@ -203,7 +203,7 @@ test("the catalog leaves out exactly the tools that need a person", async () => 
   for (const name of ["didit_context_get", "didit_workflow_create", "didit_session_create", "didit_org_get_balance", "didit_webhook_create"]) {
     assert.ok(forKey.includes(name), `${name} is missing from an API key connection`);
   }
-  assert.deepEqual(forKey.filter((name) => !forPerson.includes(name)), [], "an API key connection lists nothing a person does not");
+  assert.deepEqual(forKey.filter((name) => !forPerson.includes(name)).sort(), [...KEY_ONLY_TOOLS].sort(), "beyond a person's, an API key connection lists only the key-only tools");
 });
 
 test("every person-only tool exists in the catalog (a renamed tool cannot silently escape the list)", async () => {
@@ -469,16 +469,14 @@ test("the instructions describe a key connection as its application, never as a 
 });
 
 test("with a short catalog, a key is not told about toolsets that hold nothing it can use", async () => {
-  const forKey = await instructionsOf({ apiKey: true, selection: parseSelection("core", false) });
-  const forPerson = await instructionsOf({
-    authInfo: { token: JWT, clientId: "c", scopes: [], extra: { organization_id: ORG } },
-    selection: parseSelection("core", false),
-  });
-  const more = (instructions) => /More tools exist in: ([^.]+)\./.exec(instructions)[1].split(", ");
-  assert.ok(more(forPerson).includes("billing"), "a person can load the billing toolset");
-  // Every billing tool needs a person, so that toolset has nothing left to offer a key.
-  assert.ok(!more(forKey).includes("billing"), `a key was pointed at the billing toolset: ${more(forKey)}`);
-  assert.ok(more(forKey).includes("workflows"));
+  const selection = parseSelection("core", false);
+  const forKey = await instructionsOf({ apiKey: true, selection });
+  const more = /More tools exist in: ([^.]+)\./.exec(forKey)[1].split(", ");
+  const usable = new Set((await withClient({ apiKey: true }, async (c) => c.listTools())).tools.map((tool) => toolsetOf(tool.name)));
+  assert.deepEqual(more.filter((id) => !usable.has(id)), [], "every toolset a key is pointed at has a tool for it");
+  assert.ok(more.includes("workflows"));
+  // This key has no access to the Authentication setup, so that toolset has nothing to offer it.
+  assert.ok(!more.includes("authentication"));
 });
 
 // ── The HTTP endpoint ───────────────────────────────────────────────────────

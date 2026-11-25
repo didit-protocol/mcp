@@ -128,6 +128,28 @@ export function assertBoolean(value: unknown, field: string): void {
   }
 }
 
+/**
+ * The filters of an action on "everything that matches", refused when one would not narrow it. A backend drops a
+ * blank value ("", " ", ",", [""]) and then acts on everything, and an unknown name is a filter the caller believes in.
+ */
+export function narrowingFilters(filters: unknown, allowed: readonly string[]): Record<string, string | string[]> {
+  const given = filters && typeof filters === "object" && !Array.isArray(filters) ? Object.entries(filters) : [];
+  const isText = (value: unknown): boolean => typeof value === "string" && value.split(",").every((part) => part.trim() !== "");
+  const narrows = ([key, value]: [string, unknown]): boolean =>
+    allowed.includes(key) &&
+    (Array.isArray(value) ? value.length > 0 && value.every(isText) : isText(value)) &&
+    (!key.startsWith("date_") || /^\d{4}-\d{2}-\d{2}$/.test(String(value)));
+  if (given.length > 0 && given.every(narrows)) return Object.fromEntries(given);
+
+  throw new DiditError({
+    code: "bad_request",
+    message: "filters must name at least one known filter, each with a value that is not blank: anything else would act on every record.",
+    field: "filters",
+    allowed: [...allowed],
+    hint: "A value is text (comma-separated) or a list of texts; a date is YYYY-MM-DD.",
+  });
+}
+
 /** Hard cap on the number of ids accepted in a single batch operation. */
 export const MAX_BATCH_IDS = 1000;
 

@@ -19,8 +19,9 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 //     DELETE /organizations/<org>/members/<member>    members-retrieve-update-destroy (NO trailing slash)
 //
 //   serializers/member.py
-//     InviteMemberSerializer:            emails (list, 1-5), role (uuid), app_ids (list of uuids)
-//     OrganizationMemberUpdateSerializer: role (uuid), accessible_applications (list of uuids)
+//     InviteMemberSerializer:            emails (list, 1-5), role (uuid) or product_roles, app_ids (list of uuids)
+//     OrganizationMemberUpdateSerializer: any of role or product_roles, accessible_applications,
+//                                         status or suspended_at (a PATCH leaves the rest)
 //
 // fe-application-console (src/modules/settings/services/members-client.ts) is the reference
 // client and already posts { emails, app_ids, role } and patches { role, accessible_applications }.
@@ -43,6 +44,7 @@ const ROUTES = [
   { re: new RegExp(`^/organizations/${UUID}/members/invite/$`), methods: ["POST"], body: { detail: "Invitations sent." } },
   { re: new RegExp(`^/organizations/${UUID}/members/${UUID}$`), methods: ["GET", "PATCH", "DELETE"] },
   { re: new RegExp(`^/organizations/${UUID}/roles/$`), methods: ["GET"], body: [] },
+  { re: new RegExp(`^/organizations/${UUID}/roles/${UUID}$`), methods: ["GET"], body: { uuid: "role", permissions: [] } },
 ];
 
 const json = (body, status = 200) =>
@@ -73,7 +75,7 @@ function stubAuthService() {
       if (!Array.isArray(body?.emails) || body.emails.length < 1 || body.emails.length > 5) {
         errors.emails = ["This field is required."];
       }
-      if (typeof body?.role !== "string") errors.role = ["This field is required."];
+      if (("role" in (body ?? {})) === ("product_roles" in (body ?? {}))) errors.role = ["Send either role or product_roles."];
       if (!Array.isArray(body?.app_ids)) errors.app_ids = ["This field is required."];
       if (Object.keys(errors).length) return json(errors, 400);
       return json({ detail: "Invitations sent." }, 201);
@@ -81,10 +83,8 @@ function stubAuthService() {
 
     if (method === "PATCH") {
       const errors = {};
-      if (typeof body?.role !== "string") errors.role = ["This field is required."];
-      if (!Array.isArray(body?.accessible_applications)) {
-        errors.accessible_applications = ["This field is required."];
-      }
+      if (Object.keys(body ?? {}).length === 0) errors.non_field_errors = ["Nothing to update."];
+      if ("role" in body && "product_roles" in body) errors.role = ["Send either role or product_roles, not both."];
       if (Object.keys(errors).length) return json(errors, 400);
       return new Response(null, { status: 204 });
     }
@@ -162,4 +162,50 @@ test("didit_org_remove_member DELETEs the detail route (no trailing slash)", asy
   assert.equal(req?.method, "DELETE");
   assert.equal(req?.path, `/organizations/${ORG}/members/${MEMBER}`, `wrong route: ${req?.method} ${req?.path}`);
   assert.equal(res.isError, undefined, textOf(res));
+});
+
+test("an invitation or an update can give a role per product, or change only the status", async () => {
+  const calls = stubAuthService();
+  const productRoles = { identity: ROLE, transactions: null };
+  await callTool("didit_org_invite_member", { organization_id: ORG, emails: [EMAIL], product_roles: productRoles, app_ids: [APP] });
+  assert.deepEqual(calls.at(-1).body, { emails: [EMAIL], product_roles: productRoles, app_ids: [APP] });
+
+  const update = async (fields) => {
+    const result = await callTool("didit_org_update_member", { organization_id: ORG, member_id: MEMBER, ...fields });
+    assert.equal(result.isError, undefined, textOf(result));
+
+    return calls.at(-1).body;
+  };
+  assert.deepEqual(await update({ product_roles: productRoles }), { product_roles: productRoles });
+  assert.deepEqual(await update({ accessible_applications: [APP] }), { accessible_applications: [APP] });
+  assert.deepEqual(await update({ status: "suspended" }), { status: "suspended" });
+  assert.deepEqual(await update({ suspended_at: null }), { suspended_at: null });
+
+  const refused = await callTool("didit_org_update_member", { organization_id: ORG, member_id: MEMBER, role: ROLE, product_roles: productRoles });
+  assert.equal(refused.isError, true);
+  assert.match(textOf(refused), /not both/);
+});
+
+test("didit_org_list_members pages only when asked, and adds the pending invitations", async () => {
+  const calls = stubAuthService();
+  const query = () => calls.filter((call) => /\/members\//.test(call.path)).map((call) => `${call.path.split("/").slice(3).join("/")}${new URL(call.url).search}`);
+  await callTool("didit_org_list_members", { organization_id: ORG });
+  assert.deepEqual(query(), ["members/"]);
+
+  calls.length = 0;
+  await callTool("didit_org_list_members", { organization_id: ORG, limit: 10, offset: 20 });
+  await callTool("didit_org_list_members", { organization_id: ORG, offset: 20 });
+  assert.deepEqual(query(), ["members/?limit=10&offset=20", "members/?limit=200&offset=20"]);
+
+  calls.length = 0;
+  const result = await callTool("didit_org_list_members", { organization_id: ORG, include_pending: true });
+  assert.deepEqual(query(), ["members/", "members/pending/"]);
+  assert.deepEqual(JSON.parse(textOf(result)), { members: [], pending: [] });
+});
+
+test("didit_org_list_roles gets one role with its permissions", async () => {
+  const calls = stubAuthService();
+  const result = await callTool("didit_org_list_roles", { organization_id: ORG, role_id: ROLE });
+  assert.equal(result.isError, undefined, textOf(result));
+  assert.equal(calls.at(-1).path, `/organizations/${ORG}/roles/${ROLE}`);
 });

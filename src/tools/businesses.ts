@@ -1,14 +1,14 @@
 import { apiRequest, orgAppPath } from "../config";
 import type { RegisteredTool } from "./registry";
 import { searchVendorBusinesses } from "./search";
-import { ENTITY_STATUSES } from "./shared-schema";
-import { ORG_APP_PROPS } from "../orgapp";
-import { assertBoolean, DiditError, MAX_BATCH_IDS, pathSegment } from "../security";
+import { ENTITY_STATUSES, VENDOR_FILTER_PROPS } from "./shared-schema";
+import { mapWithConcurrency, ORG_APP_PROPS } from "../orgapp";
+import { assertBoolean, DiditError, pathSegment } from "../security";
 
 // Vendor businesses — the console resource is `vendor-businesses`, org/app-scoped (these are
 // vendor business ENTITIES, not KYB sessions — KYB sessions are the separate `businesses`/
-// `business-sessions` console resource). List/create/get(by vendor_data)/bulk-delete map
-// cleanly; update by vendor_data is best-effort (console keys updates by internal id).
+// `business-sessions` console resource). List, create and get take vendor_data; the update and the
+// batch delete take internal ids only, which are read from the business first.
 
 export async function listBusinesses(params?: Record<string, string>): Promise<any> {
   return apiRequest(orgAppPath("/vendor-businesses/"), { params });
@@ -23,15 +23,16 @@ export async function getBusiness(vendorData: string): Promise<any> {
 }
 
 export async function updateBusiness(vendorData: string, data: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath(`/vendor-businesses/${pathSegment(vendorData, "vendor_data", { opaque: true })}/update/`), { method: "PATCH", json: data });
+  const id = await internalId(vendorData);
+
+  return apiRequest(orgAppPath(`/vendor-businesses/by-id/${pathSegment(id, "didit_internal_id")}/update/`), { method: "PATCH", json: data });
 }
 
-export async function updateBusinessStatus(vendorData: string, status: string): Promise<any> {
-  return apiRequest(orgAppPath("/vendor-businesses/bulk-status/"), {
-    method: "POST",
-    json: { vendor_data_list: [vendorData], status },
-  });
-}
+const internalId = async (vendorData: string): Promise<string> => (await getBusiness(vendorData)).didit_internal_id;
+
+/** Each business named by vendor_data is read before it is deleted, so a call takes as many as it can read. */
+const MAX_DELETE_IDS = 200;
+const ID_READS = 8;
 
 export async function deleteBusinesses(
   vendorDataList?: string[],
@@ -42,22 +43,31 @@ export async function deleteBusinesses(
   assertBoolean(deleteAll, "delete_all");
   assertBoolean(confirm, "confirm");
   const wildcard = deleteAll === true;
-  const ids = [...(vendorDataList || []), ...(diditInternalIdList || [])];
-  if (wildcard) {
-    if (confirm !== true)
-      throw new DiditError({ code: "unsafe_operation", message: "delete_all permanently removes EVERY vendor business.", field: "confirm", hint: "Re-call with confirm:true, or pass an explicit id list." });
-  } else if (ids.length === 0) {
+  const notAList = Object.entries({ vendor_data_list: vendorDataList, didit_internal_id_list: diditInternalIdList }).find(
+    ([, list]) => list !== undefined && !(Array.isArray(list) && list.every((id) => typeof id === "string" && id.trim() !== "")),
+  );
+  if (notAList) throw new DiditError({ code: "bad_request", message: `${notAList[0]} must be a list of ids.`, field: notAList[0] });
+  const ids = [...(vendorDataList ?? []), ...(diditInternalIdList ?? [])];
+  if (!wildcard && ids.length === 0) {
     throw new DiditError({ code: "bad_request", message: "Provide a non-empty vendor_data_list or didit_internal_id_list, or set delete_all with confirm:true.", field: "vendor_data_list" });
-  } else if (ids.length > MAX_BATCH_IDS) {
-    throw new DiditError({ code: "bad_request", message: `Too many ids (max ${MAX_BATCH_IDS}).`, field: "vendor_data_list" });
   }
+  if (!wildcard && ids.length > MAX_DELETE_IDS) {
+    throw new DiditError({ code: "bad_request", message: `Too many ids (max ${MAX_DELETE_IDS}).`, field: "vendor_data_list" });
+  }
+  if (confirm !== true) {
+    throw new DiditError({
+      code: "unsafe_operation",
+      message: wildcard ? "delete_all permanently removes EVERY vendor business." : "This permanently removes the vendor businesses listed.",
+      field: "confirm",
+      hint: "Re-call with confirm:true once the user has explicitly confirmed this exact deletion.",
+    });
+  }
+  // The route ignores vendor_data: every business is found first, and one that is not deletes none.
+  const found = wildcard ? [] : await mapWithConcurrency(vendorDataList ?? [], ID_READS, internalId);
+
   return apiRequest(orgAppPath("/vendor-businesses/delete/"), {
     method: "DELETE",
-    json: {
-      vendor_data_list: vendorDataList,
-      didit_internal_id_list: diditInternalIdList,
-      delete_all: wildcard,
-    },
+    json: wildcard ? { delete_all: true } : { didit_internal_id_list: [...(diditInternalIdList ?? []), ...found], delete_all: false },
   });
 }
 
@@ -73,6 +83,9 @@ export const VENDOR_BUSINESS_TOOLS: readonly RegisteredTool[] = [
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
+          ...VENDOR_FILTER_PROPS,
+          country: { type: "string", description: "ISO 3166-1 alpha-2, comma-separated" },
+          search: { type: "string", description: "vendor_data, name or registration number" },
           limit: { type: "string" },
           offset: { type: "string" },
         },
@@ -136,13 +149,14 @@ export const VENDOR_BUSINESS_TOOLS: readonly RegisteredTool[] = [
           registration_number: { type: "string" },
           country_code: { type: "string", description: "ISO 3166-1 alpha-2 country code" },
           status: { type: "string", enum: ENTITY_STATUSES },
+          reason: { type: "string", description: "Why the status changes" },
           metadata: { type: "object" },
         },
         required: ["vendor_data"],
       },
     },
     access: "write",
-    permission: null, // PATCH …/vendor-businesses/{vendor_data}/update/ — route does not exist as coded (only by-id/)
+    permission: "write:businesses", // PATCH …/vendor-businesses/by-id/{id}/update/ → vendor_business.py; the id is read with read:businesses
     run: ({ vendor_data, ...data }) => updateBusiness(vendor_data, data),
   },
   {
@@ -155,13 +169,14 @@ export const VENDOR_BUSINESS_TOOLS: readonly RegisteredTool[] = [
           ...ORG_APP_PROPS,
           vendor_data: { type: "string" },
           status: { type: "string", enum: ENTITY_STATUSES, description: "New status" },
+          reason: { type: "string" },
         },
         required: ["vendor_data", "status"],
       },
     },
     access: "write",
-    permission: "write:businesses", // POST …/vendor-businesses/bulk-status/ → vendor_business.py:965
-    run: (args) => updateBusinessStatus(args.vendor_data, args.status),
+    permission: "write:businesses", // PATCH …/vendor-businesses/by-id/{id}/update/ → vendor_business.py
+    run: ({ vendor_data, status, reason }) => updateBusiness(vendor_data, { status, reason }),
   },
   {
     def: {
@@ -177,9 +192,10 @@ export const VENDOR_BUSINESS_TOOLS: readonly RegisteredTool[] = [
           confirm: {
             type: "boolean",
             description:
-              "REQUIRED when delete_all is true - permanently removes EVERY vendor business. Only set after explicit user confirmation of this exact action.",
+              "REQUIRED. Must be true - permanently removes the businesses listed, or EVERY one with delete_all. Only set after explicit user confirmation of this exact action.",
           },
         },
+        required: ["confirm"],
       },
     },
     access: "destructive",

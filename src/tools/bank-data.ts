@@ -196,7 +196,7 @@ export const BANK_DATA_TOOLS: readonly RegisteredTool[] = [
           accept_reduced_grant: { type: "boolean", description: "Complete and charge only the granted scopes when less is granted than asked; otherwise the link ends failed with reduced_grant." },
           sandbox: {
             type: "object",
-            description: "Sandbox applications only: persona (personal_basic, business_multi, long_history, pending, sparse_fields, no_ongoing) and switches (partial_grant, renewal_other_login, expired_cursor, webhook_twice, midnight_booking, blocked_popup, bank_app_return). Ignored in live.",
+            description: "Sandbox applications only: persona (personal_basic, business_multi, long_history, pending, sparse_fields, no_ongoing, multi_currency, requires_email) and switches (partial_grant, renewal_other_login, expired_cursor, webhook_twice, midnight_booking, blocked_popup, bank_app_return). Ignored in live.",
           },
         },
       },
@@ -555,7 +555,7 @@ export const BANK_DATA_TOOLS: readonly RegisteredTool[] = [
         properties: {
           ...ORG_APP_PROPS,
           link_id: ID("REQUIRED. The link id."),
-          persona: { type: "string", enum: ["personal_basic", "business_multi", "long_history", "pending", "sparse_fields", "no_ongoing"], description: "The Test Bank customer who signs in. Default personal_basic." },
+          persona: { type: "string", enum: ["personal_basic", "business_multi", "long_history", "pending", "sparse_fields", "no_ongoing", "multi_currency"], description: "The Test Bank customer who signs in. Default personal_basic." },
           outcome: { type: "string", enum: ["completed", "cancelled", "failed", "duplicate_conflict", "reduced_grant", "renewal_login_mismatch"], description: "How the link ends. Default completed." },
           error_code: { type: "string", enum: ["duplicate_conflict", "renewal_login_mismatch", "reduced_grant", "corporate_approval_not_supported", "ongoing_access_not_available", "bank_unavailable", "bank_cancelled", "consent_declined", "read_limit"], description: "The failure the link records. Only with outcome failed (default bank_unavailable)." },
         },

@@ -17,15 +17,21 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 
 import * as auth from "./tools/auth";
 import { SESSION_IMPORT_TOOLS, SESSION_TOOLS } from "./tools/sessions";
+import { SESSION_REVIEW_TOOLS } from "./tools/session-review";
+import { KYB_TOOLS } from "./tools/kyb";
 import { explainSessionDecision } from "./tools/session-explain";
 import { WORKFLOW_TOOLS } from "./tools/workflows";
 import * as billing from "./tools/billing";
 import { BILLING_TOOLS } from "./tools/billing";
 import { VENDOR_USER_TOOLS } from "./tools/users";
 import { VENDOR_BUSINESS_TOOLS } from "./tools/businesses";
-import { TRANSACTION_RULE_TOOLS, TRANSACTION_TOOLS } from "./tools/transactions";
+import { RULE_CONTRACT_PROPS, TRANSACTION_RULE_TOOLS, TRANSACTION_TOOLS } from "./tools/transactions";
+import { EVENT_TOOLS } from "./tools/events";
+import { MONITORING_TOOLS } from "./tools/monitoring";
 import { BRANDING_TOOLS } from "./tools/customization";
 import { AUTHENTICATION_TOOLS } from "./tools/authentication";
+import { MESSAGE_TOOLS } from "./tools/messages";
+import { PHONE_TOOLS } from "./tools/phone";
 import { BANK_DATA_TOOLS } from "./tools/bank-data";
 import { WEBHOOK_TOOLS } from "./tools/webhooks";
 import { REGISTERED_TOOLS } from "./tools/registered";
@@ -38,6 +44,7 @@ import {
   STANDALONE_BIOMETRIC_TOOLS,
   STANDALONE_CONTACT_TOOLS,
   STANDALONE_DOCUMENT_TOOLS,
+  STANDALONE_INTELLIGENCE_TOOLS,
   STANDALONE_KYB_TOOLS,
 } from "./tools/standalone";
 import {
@@ -58,8 +65,10 @@ import {
 } from "./internal-tools";
 import { BLOCKLIST_TOOLS } from "./tools/blocklist";
 import { CASE_TOOLS } from "./tools/cases";
+import { REGULATORY_REPORT_TOOLS } from "./tools/regulatory-reports";
 import {
   INVESTIGATOR_DECISION_TOOLS,
+  INVESTIGATOR_OPEN_WORLD_TOOLS,
   INVESTIGATOR_TOOL_DEFS,
   INVESTIGATOR_WRITE_TOOLS,
   actorViaFromHeaders,
@@ -76,19 +85,21 @@ import * as compliance from "./tools/compliance";
 import { DeviceLoginError } from "./device-login";
 import { keepSignIn, localGrantScopes, localSignInToken } from "./account-session";
 import {
+  KEY_ONLY_TOOLS,
   PERSON_ONLY_TOOLS,
   apiKeyApplication,
   apiKeyOrganizations,
   apiKeyScopeOf,
   apiKeyScopeRefusal,
+  keyOnlyRefusal,
   personOnlyRefusal,
 } from "./api-key-connection";
 import { loginCliCommand, runLoginCli } from "./login-cli";
 import { requestContext, stripRoutingIds, SERVER_VERSION, permissionMode } from "./config";
 import { dropBlankOptionals, type InputSchema } from "./blank-args";
 import { applyCatalogProfile, applyCatalogResult, catalogProfileRefusal, stdioCatalogProfile, CONSOLE_OPEN_TOOL, consoleOpenResult, listWidgetResources, profileServesWidgets, readWidgetResource, widgetToolMeta, widgetTools, type CatalogProfile, type CatalogTool } from "./chatgpt-app";
-import { getOrgAppMap, ORG_APP_PROPS } from "./orgapp";
-import { PAGE_PROPS, pageParams } from "./paging";
+import { APPLICATION_IDS_PROP, getOrgAppMap, ORG_APP_PROPS } from "./orgapp";
+import { MAX_PAGE_SIZE, PAGE_PROPS, pageParams } from "./paging";
 import { toSafeErrorShape, DiditError } from "./security";
 // Type only: wakeshift.ts (and @wakeshift/sdk) load only when http.ts turns Wakeshift on.
 import type { WakeshiftHooks } from "./wakeshift";
@@ -333,6 +344,7 @@ const EXPLICIT_OPEN_WORLD_TOOLS = new Set([
   "didit_account_register",
   "didit_account_resend_otp",
   "didit_org_top_up",
+  ...INVESTIGATOR_OPEN_WORLD_TOOLS,
   ...INTERNAL_OPEN_WORLD_TOOLS,
 ]);
 
@@ -412,10 +424,15 @@ function annotationsFor(name: string): {
 // Nearly every tool takes the two routing ids. A listed tool carries them in one short line
 // each; the server instructions (guidance.ts) explain once how they resolve.
 const ROUTING_ID_SUMMARY = {
-  organization_id: "Organization id (didit_context_get).",
+  organization_id: "Organization id.",
   application_id: "Application id (didit_context_get).",
 } as const;
-const ROUTING_ID_OPTIONAL = " Optional if you have only one.";
+const ROUTING_ID_OPTIONAL = " Optional.";
+// So does every paged list, for its two paging arguments.
+const PAGE_SUMMARY = {
+  limit: { type: "number", description: `1 to ${MAX_PAGE_SIZE}. \`count\` is the total.` },
+  offset: { type: "number", description: "How many you already read." },
+} as const;
 
 function trimDefinition(tool: CatalogTool): CatalogTool {
   const properties = tool.inputSchema?.properties;
@@ -431,10 +448,17 @@ function trimDefinition(tool: CatalogTool): CatalogTool {
     }
   }
 
+  for (const key of ["limit", "offset"] as const) {
+    if (properties[key] === PAGE_PROPS[key]) {
+      trimmed[key] = PAGE_SUMMARY[key];
+      changed = true;
+    }
+  }
+
   return changed ? { ...tool, inputSchema: { ...tool.inputSchema, properties: trimmed } } : tool;
 }
 
-const ROUTING_IDS = ["organization_id", "application_id"] as const;
+const ROUTING_IDS = ["organization_id", "application_id", "application_ids"] as const;
 
 /**
  * An API key connection is one application (api-key-connection.ts): every tool acts on it, and
@@ -490,6 +514,42 @@ function shareGraphManual(tools: CatalogTool[]): CatalogTool[] {
     if (tool.name === GRAPH_MANUAL_TOOL || properties?.graph !== WORKFLOW_GRAPH_SCHEMA) return tool;
 
     return { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...properties, graph: GRAPH_MANUAL_POINTER } } };
+  });
+}
+
+// The transaction rule contract (RULE_CONTRACT_PROPS) is shared the same way: its text stays on the
+// tool that creates a rule, and the update and backtest tools of the same list keep its whole shape
+// (types, enums, patterns, required) with a pointer in place of each text.
+const RULE_CONTRACT_TOOL = "didit_transaction_rule_create";
+
+function withoutText(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(withoutText);
+  if (!schema || typeof schema !== "object") return schema;
+  const entries = Object.entries(schema).filter(([key, value]) => !(key === "description" && typeof value === "string"));
+
+  return Object.fromEntries(entries.map(([key, value]) => [key, withoutText(value)]));
+}
+
+const RULE_CONTRACT_POINTERS = Object.fromEntries(
+  Object.entries(RULE_CONTRACT_PROPS).map(([key, schema]) => [
+    key,
+    { ...(withoutText(schema) as object), description: `As in ${RULE_CONTRACT_TOOL}.` },
+  ]),
+);
+
+function shareRuleContract(tools: CatalogTool[]): CatalogTool[] {
+  if (!tools.some((tool) => tool.name === RULE_CONTRACT_TOOL)) return tools;
+
+  return tools.map((tool) => {
+    const properties = tool.inputSchema?.properties;
+    // Identity, not name: a tool that words its own argument keeps it.
+    const isShared = (key: string): boolean => properties?.[key] !== undefined && properties[key] === RULE_CONTRACT_PROPS[key];
+    if (tool.name === RULE_CONTRACT_TOOL || !Object.keys(RULE_CONTRACT_PROPS).some(isShared)) return tool;
+    const shared = Object.fromEntries(
+      Object.entries(properties ?? {}).map(([key, schema]) => [key, isShared(key) ? RULE_CONTRACT_POINTERS[key] : schema]),
+    );
+
+    return { ...tool, inputSchema: { ...tool.inputSchema, properties: shared } };
   });
 }
 
@@ -755,7 +815,13 @@ export function createServer(
           date_to: { type: "string", description: "ISO date upper bound (YYYY-MM-DD)" },
           ...LAST_N_DAYS_PROP,
           include_timeseries: { type: "boolean", description: "Also return per-day time series (heavier). Default false." },
+          workflow_ids: { type: "array", items: { type: "string" }, description: "Only these workflows" },
+          country: { type: "string", description: "Country codes, comma separated" },
+          compare: { type: "string", enum: ["previous_period", "same_period_last_year"], description: "What the previous_* numbers describe" },
+          today_by_hour: { type: "boolean", description: "Instead: today's verifications per hour and outcome, against the same weekday last week" },
+          time_zone: { type: "string", description: "IANA zone of today_by_hour (default UTC)" },
           ...ORG_APP_PROPS,
+          ...APPLICATION_IDS_PROP,
         },
       },
     },
@@ -764,6 +830,8 @@ export function createServer(
     // ── Sessions ────────────────────────────────────────────────────────
     // Declared with what they do, their permission and their handler in tools/sessions.ts.
     ...SESSION_TOOLS.map((tool) => tool.def),
+    ...SESSION_REVIEW_TOOLS.map((tool) => tool.def),
+    ...KYB_TOOLS.map((tool) => tool.def),
 
     // ── Session Imports (bulk migration) ────────────────────────────────
     // Declared with what they do, their permission and their handler in tools/sessions.ts.
@@ -785,6 +853,10 @@ export function createServer(
     // Declared with what they do, their permission and their handler in tools/businesses.ts.
     ...VENDOR_BUSINESS_TOOLS.map((tool) => tool.def),
 
+    // ── AML ongoing monitoring of users and businesses ──────────────────
+    // Declared with what they do, their permission and their handler in tools/monitoring.ts.
+    ...MONITORING_TOOLS.map((tool) => tool.def),
+
     // ── Transactions (AML transaction monitoring) ───────────────────────
     // Declared with what they do, their permission and their handler in tools/transactions.ts.
     ...TRANSACTION_TOOLS.map((tool) => tool.def),
@@ -793,6 +865,10 @@ export function createServer(
     // Transaction-monitoring rules
     // Declared with what they do, their permission and their handler in tools/transactions.ts.
     ...TRANSACTION_RULE_TOOLS.map((tool) => tool.def),
+
+    // ── Monitoring events ───────────────────────────────────────────────
+    // Declared with what they do, their permission and their handler in tools/events.ts.
+    ...EVENT_TOOLS.map((tool) => tool.def),
 
     // ── Travel Rule (FATF / EU TFR managed exchange) ─────────────────────
     ...internalToolDefs("travel_rule"),
@@ -824,7 +900,15 @@ export function createServer(
         "(save a card and turn on automatic top-up so the balance never runs out). Didit tools never charge a card. " +
         "Meanwhile keep building in the organization's sandbox application (`mode: sandbox` in didit_context_get), " +
         "which is never billed.",
-      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          date_from: { type: "string", description: "Usage from (YYYY-MM-DD); never filters the balance" },
+          date_to: { type: "string" },
+          usage_application_ids: { type: "array", items: { type: "string" } },
+        },
+      },
     },
     {
       name: "didit_org_top_up",
@@ -903,6 +987,15 @@ export function createServer(
     // ── Standalone: Email & Phone Verification ──────────────────────────
     // Declared with what they do, their permission and their handler in tools/standalone.ts.
     ...STANDALONE_CONTACT_TOOLS.map((tool) => tool.def),
+    ...PHONE_TOOLS.map((tool) => tool.def),
+
+    // ── Standalone: document contents, address, risk and fraud ──────────
+    // Declared with what they do, their permission and their handler in tools/standalone.ts.
+    ...STANDALONE_INTELLIGENCE_TOOLS.map((tool) => tool.def),
+
+    // ── Messages (reads) ────────────────────────────────────────────────
+    // Declared with what they do, their permission and their handler in tools/messages.ts.
+    ...MESSAGE_TOOLS.map((tool) => tool.def),
 
     // ── Blocklist / Allowlist ───────────────────────────────────────────
     // The blocklist and the allowlist are written from a SESSION: an entry is an item that session
@@ -913,6 +1006,7 @@ export function createServer(
     // ── Case management ─────────────────────────────────────────────────
     // Declared with what they do, their permission and their handler in tools/cases.ts.
     ...CASE_TOOLS.map((tool) => tool.def),
+    ...REGULATORY_REPORT_TOOLS.map((tool) => tool.def),
 
     // ── Investigator (AI case reviewer; decisions need human approval) ──
     ...INVESTIGATOR_TOOL_DEFS,
@@ -1096,7 +1190,8 @@ export function createServer(
     // An API key connection is one application and no person (api-key-connection.ts): the tools
     // that act for a member of an organization are not offered to it, and a call is refused below.
     // `describesApiKey` covers the instructions, which describe the catalog with no request at hand.
-    if (describesApiKey || apiKeyScopeOf(authInfo)) catalog = catalog.filter((t) => !PERSON_ONLY_TOOLS.has(t.name));
+    const refusedByCredential = describesApiKey || apiKeyScopeOf(authInfo) ? PERSON_ONLY_TOOLS : KEY_ONLY_TOOLS;
+    catalog = catalog.filter((t) => !refusedByCredential.has(t.name));
     // A tool the caller's organization role could never run is not offered (permissions.ts);
     // only in enforce mode — shadow mode lists everything and just records the verdicts.
     const tokenOrg = (authInfo?.extra as Record<string, unknown> | undefined)?.organization_id as string | undefined;
@@ -1199,7 +1294,7 @@ export function createServer(
   // They appear only when something the caller may use is left out of the list.
   const connection = { apiKey: Boolean(apiKeyScopeOf(extra?.authInfo)) };
   const listed = lean
-    ? shareGraphManual(allowed.filter((t) => isListed(t.name)).map((t) => definitionFor(t, connection)))
+    ? shareRuleContract(shareGraphManual(allowed.filter((t) => isListed(t.name)).map((t) => definitionFor(t, connection))))
     : allowed;
   // Discovery reads the same profile-filtered catalog the list is cut from, so a match is always
   // a tool this endpoint will run.
@@ -1333,6 +1428,8 @@ export function createServer(
     const outOfScope = apiKeyScopeRefusal(keyScope, argOrg, argApp);
     if (outOfScope) return refuse(outOfScope);
     if (PERSON_ONLY_TOOLS.has(name)) return refuse(personOnlyRefusal(name));
+  } else if (KEY_ONLY_TOOLS.has(name)) {
+    return refuse(keyOnlyRefusal(name));
   }
   if (isAuthenticationSetup(name)) {
     const localToken = !hosted && (process.env.DIDIT_ACCESS_TOKEN || storedToken);
@@ -1624,6 +1721,7 @@ export function createServer(
           links: profile !== "chatgpt",
           // The agent top-up switch only where an agent may top up: /mcp/payments and stdio.
           agentTopUp: profile === "full" && !hostedMoneyBlocked,
+          usage: args,
         });
         break;
       case "didit_org_top_up":

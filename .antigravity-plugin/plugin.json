@@ -2,7 +2,7 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "didit",
   "displayName": "Didit",
-  "version": "5.1.85",
+  "version": "5.1.86",
   "description": "KYC, KYB, AML, wallet screening, transaction monitoring, and fraud workflows for AI agents.",
   "logo": "assets/didit-mcp-icon-400.png",
   "suggestedPrompts": [

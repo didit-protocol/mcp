@@ -1,5 +1,5 @@
 {
-  "checksum": "sha256:37484d492203d91cdc501826a8af406b7e2e0b53864dcab648c64569f0f57a23",
+  "checksum": "sha256:f4679a656783580780911fe3212b9a45f34cabc14a3d3bb9413f07f9737fb652",
   "features": {
     "AGE_ESTIMATION": {
       "description": "Configuration for Age Estimation feature.",
@@ -4714,7 +4714,7 @@
           "type": "string"
         },
         "phone_verification_countries": {
-          "description": "Which countries and delivery channels the one-time code may be sent through. It is a WHITELIST: a country absent from the map is not offered at all, and a code channel absent from a listed country is skipped. `max_retries` overrides the node-level retry cap for that one channel. A bare boolean is the legacy form and still means enabled/disabled with the node-level cap. `silent` (the mobile operator confirms the number with no code, where Didit offers it) is the one exception to the whitelist: absent from a listed country, it runs first wherever Didit covers the number, and falls back to the country's enabled code channels in their order. To keep a country code-only, list `silent` disabled (`false`, stored as `{\"enabled\": false}`); that opt-out is kept for a country with code channels even where silent is not offered yet, so it holds once it is.",
+          "description": "Which countries and delivery channels the one-time code may be sent through. It is a WHITELIST: a country absent from the map is not offered at all, and a channel absent from a listed country is skipped. `max_retries` overrides the node-level retry cap for that one channel. A bare boolean is the legacy form and still means enabled/disabled with the node-level cap.",
           "example": {
             "ES": {
               "sms": {
@@ -4725,7 +4725,7 @@
           },
           "nullable": true,
           "required": false,
-          "shape": "{\"<ISO2>\": {\"<channel: sms|whatsapp|telegram|voice|rcs|viber|zalo|silent>\": {\"enabled\": true|false, \"max_retries\": <int>} | true|false}}",
+          "shape": "{\"<ISO2>\": {\"<channel: sms|whatsapp|telegram|rcs|viber|zalo>\": {\"enabled\": true|false, \"max_retries\": <int>} | true|false}}",
           "type": "json"
         },
         "provider_key": {

@@ -1,14 +1,13 @@
 import { apiRequest, orgAppPath } from "../config";
 import type { RegisteredTool } from "./registry";
 import { searchVendorUsers } from "./search";
-import { ENTITY_STATUSES } from "./shared-schema";
+import { ENTITY_STATUSES, VENDOR_FILTER_PROPS } from "./shared-schema";
 import { ORG_APP_PROPS } from "../orgapp";
 import { assertBoolean, DiditError, MAX_BATCH_IDS, pathSegment } from "../security";
 
-// Vendor users — the console resource is `vendor-users`, org/app-scoped. List/get(by
-// vendor_data, legacy path)/bulk-delete map cleanly. The console keys updates by internal
-// id (not vendor_data), so update/update-status are routed to the vendor_data path
-// best-effort and may 404/405 where the console only exposes the by-id update.
+// Vendor users — the console resource is `vendor-users`, org/app-scoped. Every tool names a person
+// by vendor_data; the bulk status route takes internal ids only, so one person's status is set
+// through the profile update, which takes the status and its reason.
 
 export async function listUsers(params?: Record<string, string>): Promise<any> {
   return apiRequest(orgAppPath("/vendor-users/"), { params });
@@ -18,7 +17,18 @@ export async function getUser(vendorData: string): Promise<any> {
   return apiRequest(orgAppPath(`/vendor-users/${pathSegment(vendorData, "vendor_data", { opaque: true })}/`));
 }
 
-export async function createUser(data: Record<string, any>): Promise<any> {
+export async function createUser({ confirm, ...data }: Record<string, any>): Promise<any> {
+  assertBoolean(data.send_verification_link, "send_verification_link");
+  assertBoolean(confirm, "confirm");
+  if (data.send_verification_link === true && confirm !== true) {
+    throw new DiditError({
+      code: "unsafe_operation",
+      message: "send_verification_link emails this person a verification link.",
+      field: "confirm",
+      hint: "Re-call with confirm:true once the user has explicitly confirmed the email, or leave send_verification_link out.",
+    });
+  }
+
   return apiRequest(orgAppPath("/vendor-users/"), { method: "POST", json: data });
 }
 
@@ -26,11 +36,10 @@ export async function updateUser(vendorData: string, data: Record<string, any>):
   return apiRequest(orgAppPath(`/vendor-users/${pathSegment(vendorData, "vendor_data", { opaque: true })}/update/`), { method: "PATCH", json: data });
 }
 
-export async function updateUserStatus(vendorData: string, status: string): Promise<any> {
-  return apiRequest(orgAppPath("/vendor-users/bulk-status/"), {
-    method: "POST",
-    json: { vendor_data_list: [vendorData], status },
-  });
+export async function lookupUsers({ identifiers, limit, offset }: Record<string, any>): Promise<any> {
+  const lookup = await apiRequest(orgAppPath("/vendor-users/lookup/"), { method: "POST", json: { identifiers } });
+
+  return { ...(await listUsers({ lookup: lookup.lookup_id, limit, offset })), ...lookup };
 }
 
 export async function deleteUsers(vendorDataList?: string[], deleteAll?: unknown, confirm?: unknown): Promise<any> {
@@ -63,6 +72,9 @@ export const VENDOR_USER_TOOLS: readonly RegisteredTool[] = [
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
+          ...VENDOR_FILTER_PROPS,
+          country: { type: "string", description: "ISO 3166-1 alpha-3, comma-separated" },
+          search: { type: "string", description: "vendor_data, name or email" },
           limit: { type: "string" },
           offset: { type: "string" },
         },
@@ -83,6 +95,15 @@ export const VENDOR_USER_TOOLS: readonly RegisteredTool[] = [
           ...ORG_APP_PROPS,
           vendor_data: { type: "string", description: "REQUIRED. Your unique identifier for the user" },
           full_name: { type: "string" },
+          first_name: { type: "string" },
+          last_name: { type: "string" },
+          email: { type: "string" },
+          phone_number: { type: "string" },
+          country: { type: "string", description: "ISO 3166 code" },
+          send_verification_link: { type: "boolean", description: "Email them a link to a verification (needs email, workflow_id and confirm:true; also create:sessions)" },
+          workflow_id: { type: "string" },
+          language: { type: "string", description: "Of the email" },
+          confirm: { type: "boolean", description: "REQUIRED true with send_verification_link. Only set after explicit user confirmation of this exact action." },
           display_name: { type: "string" },
           date_of_birth: { type: "string", description: "YYYY-MM-DD" },
           status: { type: "string", enum: ENTITY_STATUSES },
@@ -95,6 +116,7 @@ export const VENDOR_USER_TOOLS: readonly RegisteredTool[] = [
       },
     },
     access: "write",
+    openWorld: true,
     permission: "create:users", // POST …/vendor-users/ → vendor_user.py:330
     run: (args) => createUser(args),
   },
@@ -128,6 +150,7 @@ export const VENDOR_USER_TOOLS: readonly RegisteredTool[] = [
           display_name: { type: "string" },
           date_of_birth: { type: "string", description: "YYYY-MM-DD" },
           status: { type: "string", enum: ENTITY_STATUSES, description: "Monitoring status" },
+          reason: { type: "string", description: "Why the status changes" },
           metadata: { type: "object" },
           approved_emails: { type: "array", items: { type: "string" } },
           approved_phones: { type: "array", items: { type: "string" } },
@@ -150,13 +173,33 @@ export const VENDOR_USER_TOOLS: readonly RegisteredTool[] = [
           ...ORG_APP_PROPS,
           vendor_data: { type: "string", description: "The vendor_data value that identifies the user" },
           status: { type: "string", enum: ENTITY_STATUSES, description: "New status" },
+          reason: { type: "string" },
         },
         required: ["vendor_data", "status"],
       },
     },
     access: "write",
-    permission: "write:users", // POST …/vendor-users/bulk-status/ → vendor_user.py:1169
-    run: (args) => updateUserStatus(args.vendor_data, args.status),
+    permission: "write:users", // PATCH …/vendor-users/{vendor_data}/update/ → vendor_user.py:1098
+    run: ({ vendor_data, status, reason }) => updateUser(vendor_data, { status, reason }),
+  },
+  {
+    def: {
+      name: "didit_vendor_user_lookup",
+      description: "Find a list of users at once, in the order given: the matching users, and not_found with the identifiers nobody has.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          identifiers: { type: "array", items: { type: "string" }, description: "vendor_data, Didit user ids and verified emails, mixed" },
+          limit: { type: "string" },
+          offset: { type: "string" },
+        },
+        required: ["identifiers"],
+      },
+    },
+    access: "read",
+    permission: ["list:users", "read:users"], // POST …/vendor-users/lookup/ → user_lookup.py:56, then GET …/vendor-users/
+    run: (args) => lookupUsers(args),
   },
   {
     def: {

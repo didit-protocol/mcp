@@ -21,6 +21,7 @@ export const INTERNAL_DESTRUCTIVE_TOOLS: string[] = [];
 export const INTERNAL_OPEN_WORLD_TOOLS: string[] = [];
 export const INTERNAL_READ_TOOLS: string[] = [];
 export const INTERNAL_PERSON_ONLY_TOOLS: string[] = [];
+export const INTERNAL_KEY_ONLY_TOOLS: string[] = [];
 
 export const REGULATION_GRAPH_HINT = "";
 

@@ -1,9 +1,9 @@
 import { DIDIT_AUTH_BASE_URL, apiRequest, requestContext, resolveApplicationId, resolveOrganizationId } from "./config";
 import { DiditError, pathSegment } from "./security";
 
-// The application API key behind the standalone phone OTP endpoints.
+// The application API key behind the public email and phone endpoints (codes, number validation).
 //
-// `POST /phone/send/` and `POST /phone/check/` are public product APIs, not console
+// `POST /email/…`, `/phone/send/`, `/phone/check/` and `/phone/validate/` are public product APIs, not console
 // endpoints. Their only permission class is `IsValidClient` (service-didit-verification
 // `core/permissions.py:183`), which accepts an introspected credential carrying NO
 // `identifier`: an application `x-api-key`. A user Bearer always carries one

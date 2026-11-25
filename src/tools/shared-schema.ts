@@ -26,6 +26,37 @@ export const LAST_N_DAYS_PROP = {
 export const SESSION_SEARCH_DESCRIPTION =
   "Free-text search (name, email, vendor_data, document or phone number). S-<number> finds a user verification by number exactly, B-<number> with session_kind business a business one; numbers are per application. A bare number is a prefix search.";
 
+/** Filters the session list and search tools share, as the list endpoints name them. */
+export const SESSION_FILTER_PROPS = {
+  tags: { type: "string", description: "Tag uuids, comma-separated" },
+  assignee: { type: "string", description: '"me", "unassigned" or member emails, comma-separated' },
+  country: { type: "string", description: "ISO 3166-1 alpha-3, comma-separated (business: alpha-2)" },
+  document_type: { type: "string", description: "P, ID, DL, RP..., comma-separated; user verifications only" },
+  warning: { type: "string", description: "Risk codes, comma-separated" },
+  decided_from: { type: "string", description: "ISO date-time of the last status change, from" },
+  decided_to: { type: "string", description: "ISO date-time, before" },
+} as const;
+
+/** Filters the case list and search tools share. */
+export const CASE_FILTER_PROPS = {
+  priority: { type: "string", description: "LOW, MEDIUM, HIGH, comma-separated" },
+  assignee: { type: "string", description: '"me", "unassigned" or member emails, comma-separated' },
+  unassigned: { type: "boolean" },
+  overdue: { type: "boolean" },
+  tag: { type: "string" },
+} as const;
+
+/** Filters the vendor user and vendor business lists share. */
+export const VENDOR_FILTER_PROPS = {
+  status: { type: "string", description: "ACTIVE, FLAGGED, BLOCKED, comma-separated" },
+  risk: { type: "string", description: "LOW, MEDIUM, HIGH, comma-separated" },
+  latest_verification_status: { type: "string", description: "Session statuses, comma-separated" },
+  tag: { type: "string", description: "Tag uuids, comma-separated" },
+  has_open_alerts: { type: "boolean" },
+  aml_monitoring: { type: "boolean" },
+  ordering: { type: "string", enum: ["-last_activity_at", "-created_at", "created_at", "-last_session_at", "status"] },
+} as const;
+
 /** The status a user or business record of the application can have (its own statuses, not a session's). */
 export const ENTITY_STATUSES = ["ACTIVE", "FLAGGED", "BLOCKED"];
 

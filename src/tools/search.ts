@@ -1,12 +1,12 @@
-import { getOrgAppMap, mapWithConcurrency, ORG_APP_PROPS, runForScope, OrgRef, AppRef } from "../orgapp";
+import { APPLICATION_IDS_PROP, getOrgAppMap, mapWithConcurrency, namedApplications, ORG_APP_PROPS, runForScope, OrgRef, AppRef } from "../orgapp";
 import { leftOutFields, liveReadableScopes } from "../live-access";
 import type { RegisteredTool } from "./registry";
-import { LAST_N_DAYS_PROP, SESSION_SEARCH_DESCRIPTION, SESSION_STATUSES } from "./shared-schema";
+import { CASE_FILTER_PROPS, LAST_N_DAYS_PROP, SESSION_FILTER_PROPS, SESSION_SEARCH_DESCRIPTION, SESSION_STATUSES } from "./shared-schema";
 import { applyRelativeWindow } from "../dates";
 import { apiRequest, orgPath, requestContext } from "../config";
-import { listSessions } from "./sessions";
+import { assertSessionKindFilters, bothSessionKinds, listSessionsOfKind, newestFirst, SESSION_LIST_PATHS } from "./sessions";
 import { listTransactions } from "./transactions";
-import { listCases } from "./cases";
+import { caseListParams, listCases } from "./cases";
 import { listUsers } from "./users";
 import { listBusinesses } from "./businesses";
 import { listEveryWorkflow, getWorkflow, isPublishedVersion, labelWorkflowVersion, WORKFLOW_IDS_NOTE } from "./settings";
@@ -73,18 +73,23 @@ function allDeniedError(attempts: number, firstDenial: DiditError): DiditError {
 interface SearchArgs {
   organization_id?: string;
   application_id?: string;
+  application_ids?: string[];
   limit?: number;
   [filter: string]: any;
 }
+
+const searchLimit = (limit: number | undefined): number => Math.max(1, Math.min(limit ?? 20, MAX_LIMIT));
 
 async function aggregateSearch(
   listFn: ListFn,
   args: SearchArgs,
   orgResourcePath?: string,
 ): Promise<any> {
-  const { organization_id, application_id, limit: rawLimit, ...rawFilters } = args;
+  const { organization_id, application_id, application_ids, limit: rawLimit, ...rawFilters } = args;
   const filters = applyRelativeWindow(rawFilters); // last_n_days → date_from/date_to
-  const limit = Math.max(1, Math.min(rawLimit ?? 20, MAX_LIMIT));
+  const limit = searchLimit(rawLimit);
+
+  const named = namedApplications(application_id, application_ids);
 
   // Fully-scoped → a single per-app call, no fan-out.
   if (organization_id && application_id) {
@@ -100,13 +105,12 @@ async function aggregateSearch(
   // membership. One question, not one per organization; another organization's auth failure cannot
   // fail the call; and liveReadableScopes judges, and can report in left_out_applications, only a
   // scope the call actually reads (an internal issue review).
-  const namedApp = application_id ? String(application_id).toLowerCase() : undefined;
   const scopedMap = map
     .filter((o) => {
       if (organization_id && o.orgId !== organization_id) return false;
-      return !namedApp || o.apps.some((a) => a.appId.toLowerCase() === namedApp);
+      return !named || o.apps.some((a) => named.has(a.appId.toLowerCase()));
     })
-    .map((o) => (namedApp ? { ...o, apps: o.apps.filter((a) => a.appId.toLowerCase() === namedApp) } : o));
+    .map((o) => (named ? { ...o, apps: o.apps.filter((a) => named.has(a.appId.toLowerCase())) } : o));
   // Every organization AND application this fan-out is about to read, minus the ones the caller's
   // live membership no longer allows: the map is cached for 60 s, so a removal from an
   // organization, or an application taken off the membership, would otherwise keep returning its
@@ -116,6 +120,16 @@ async function aggregateSearch(
   // The map is already cut to the application the call named, so no other application's rows can be
   // returned in place of the one asked for (an internal issue review).
   const orgs = readable;
+  // An order holds within one application: the merge of several sorts by date.
+  if (filters.ordering) {
+    const scopes = orgs.flatMap((o) => o.apps.map((a) => ({ orgId: o.orgId, appId: a.appId })));
+    if (scopes.length !== 1) {
+      throw new DiditError({ code: "bad_request", message: "ordering works in one application: name only one with application_id.", field: "ordering" });
+    }
+    const page = await runForScope(scopes[0].orgId, scopes[0].appId, () => listFn({ ...filters, limit }));
+
+    return { results: rowsOf(page).slice(0, limit), aggregated: false, scanned_apps: 1, skipped_apps: 0, ...leftOutFields(leftOutOrganizations, leftOutApplications) };
+  }
 
   // Leaf calls that actually ran, and how many of them a role refused (403). Every scope
   // refused must not read as "no results" — see allDeniedError.
@@ -166,7 +180,7 @@ async function aggregateSearch(
   // Prefer the org-level endpoint: one query per org, rows already carry app/org attribution.
   // Not for an API key connection: the organization-wide routes only answer to a person, and its
   // one application is exactly what the per-app fan-out below reads.
-  if (orgResourcePath && !namedApp && !requestContext.getStore()?.apiKey) {
+  if (orgResourcePath && !named && !requestContext.getStore()?.apiKey) {
     let fellBack = 0;
     const batches = await mapWithConcurrency(orgs, FANOUT_CONCURRENCY, async (o) => {
       // A scope that lost an application must take the per-app path: the organization-wide endpoint
@@ -240,24 +254,71 @@ async function aggregateSearch(
   };
 }
 
-export async function searchSessions(args: SearchArgs): Promise<any> {
-  return aggregateSearch(listSessions as ListFn, args, "/sessions/");
+/** User verifications unless `session_kind` says otherwise; `all` merges both kinds. */
+export async function searchSessions({ session_kind, ...args }: SearchArgs): Promise<any> {
+  assertSessionKindFilters(session_kind, args);
+  const search = (kind: "user" | "business") =>
+    aggregateSearch((params) => listSessionsOfKind(kind, params), args, SESSION_LIST_PATHS[kind]);
+  if (session_kind !== "all") return search(session_kind ?? "user");
+  // Each kind would skip or order its own rows: the merged list has neither an offset nor an order of its own.
+  const oneKind = ["offset", "ordering"].find((field) => args[field]);
+  if (oneKind) {
+    throw new DiditError({ code: "bad_request", message: `${oneKind} works in one kind: pass session_kind user or business.`, field: oneKind });
+  }
+  const { pages, left_out_note } = await bothSessionKinds(search);
+  const results = newestFirst(pages).slice(0, searchLimit(args.limit));
+  const notes = [...pages.map((page) => page.left_out_note), left_out_note].filter(Boolean).join(" ");
+  // Each kind reads the applications on its own: what either one could not read is missing from the answer.
+  const counted = (field: string) => (pages.some((page) => page[field] !== undefined) ? { [field]: Math.max(...pages.map((page) => page[field] ?? 0)) } : {});
+  const skipped = pages.reduce((total, page) => total + (page.skipped_apps ?? 0), 0);
+  const leftOut = (field: string) => {
+    const names = [...new Map(pages.flatMap((page) => page[field] ?? []).map((name: unknown) => [JSON.stringify(name), name])).values()];
+
+    return names.length ? { [field]: names } : {};
+  };
+
+  return {
+    ...pages[0],
+    results,
+    returned: results.length,
+    ...counted("scanned_apps"),
+    ...(pages.some((page) => page.skipped_apps !== undefined) ? { skipped_apps: skipped } : {}),
+    ...leftOut("left_out_applications"),
+    ...leftOut("left_out_organizations"),
+    ...(notes ? { left_out_note: notes } : {}),
+  };
 }
 
+/** The transaction lists name the window start_date / end_date, take days only, and ignore any other name. */
 export async function searchTransactions(args: SearchArgs): Promise<any> {
-  return aggregateSearch(listTransactions as ListFn, args, "/transactions/");
+  const { date_from, date_to, ...filters } = applyRelativeWindow(args);
+  const day = (date: unknown) => (typeof date === "string" ? date.slice(0, 10) : undefined);
+  // didit_transaction_list spans the applications through here too, with the API's own names.
+  const window = { start_date: filters.start_date ?? day(date_from), end_date: filters.end_date ?? day(date_to) };
+
+  return aggregateSearch(listTransactions as ListFn, { ...filters, ...window }, "/transactions/");
 }
 
 export async function searchCases(args: SearchArgs): Promise<any> {
-  return aggregateSearch(listCases as ListFn, args, "/cases/");
+  return aggregateSearch(listCases as ListFn, caseListParams(args), "/cases/");
+}
+
+/** The vendor lists have no vendor_data filter: their `search` reads it, with the names. */
+function vendorSearchArgs({ vendor_data, ...args }: SearchArgs): SearchArgs {
+  if (vendor_data === undefined) return args;
+  if (args.search !== undefined) {
+    throw new DiditError({ code: "bad_request", message: "Pass search or vendor_data, not both.", field: "vendor_data" });
+  }
+
+  return { ...args, search: vendor_data };
 }
 
 export async function searchVendorUsers(args: SearchArgs): Promise<any> {
-  return aggregateSearch(listUsers as ListFn, args);
+  return aggregateSearch(listUsers as ListFn, vendorSearchArgs(args));
 }
 
 export async function searchVendorBusinesses(args: SearchArgs): Promise<any> {
-  return aggregateSearch(listBusinesses as ListFn, args);
+  return aggregateSearch(listBusinesses as ListFn, vendorSearchArgs(args));
 }
 
 const workflowMatchesId = (w: any, id: string): boolean =>
@@ -311,7 +372,7 @@ function liveListedVersion(listed: any[], wf: any): any {
  *  substring). Each row is tagged with its org/app — so an agent can locate a workflow by id
  *  without walking dozens of apps. Workflows have no org-level endpoint → per-app fan-out. */
 export async function searchWorkflows(args: SearchArgs & { offset?: unknown }): Promise<any> {
-  const { organization_id, application_id, workflow_id, search, limit: rawLimit } = args;
+  const { organization_id, application_id, application_ids, workflow_id, search, limit: rawLimit } = args;
   const limit = Math.max(1, Math.min(rawLimit ?? 50, MAX_LIMIT));
   // didit_workflow_list answers from here when it spans applications, and it takes `offset`.
   const offset = pageParams({ offset: args.offset }).offset ?? 0;
@@ -321,13 +382,13 @@ export async function searchWorkflows(args: SearchArgs & { offset?: unknown }): 
   // before asking the live membership, so one question is asked and left_out_applications names only
   // a scope the call reads. When both ids are named, the application filter still applies: the
   // organization's other applications are not this call's to read (an internal issue review).
-  const namedApp = application_id ? String(application_id).toLowerCase() : undefined;
+  const named = namedApplications(application_id, application_ids);
   const scopedMap = map
     .filter((o) => {
       if (organization_id && o.orgId !== organization_id) return false;
-      return !namedApp || o.apps.some((a) => a.appId.toLowerCase() === namedApp);
+      return !named || o.apps.some((a) => named.has(a.appId.toLowerCase()));
     })
-    .map((o) => (namedApp ? { ...o, apps: o.apps.filter((a) => a.appId.toLowerCase() === namedApp) } : o));
+    .map((o) => (named ? { ...o, apps: o.apps.filter((a) => named.has(a.appId.toLowerCase())) } : o));
   // Ask the caller's live membership for each organization before reading it, and leave out the
   // organizations and applications it no longer allows.
   const { readable: orgs, leftOutOrganizations, leftOutApplications } = await liveReadableScopes(scopedMap);
@@ -524,11 +585,14 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
           ...LAST_N_DAYS_PROP,
           limit: { type: "number", description: "Max results after merging across apps (default 20, max 200)" },
           ...ORG_APP_PROPS,
+          ...APPLICATION_IDS_PROP,
+          ...SESSION_FILTER_PROPS,
         },
       },
     },
     access: "read",
-    permission: ["list:sessions", "read:sessions"], // GET /organization/{org}/sessions/ → application.py:448
+    // GET /organization/{org}/sessions/ → application.py:582; /business-sessions/ takes list:businesses, checked by the API
+    permission: ["list:sessions", "read:sessions", "list:businesses", "read:businesses"],
     routingIds: true,
     run: (args) => searchSessions(args),
   },
@@ -547,6 +611,7 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
           ...LAST_N_DAYS_PROP,
           limit: { type: "number", description: "Max results after merging (default 20, max 200)" },
           ...ORG_APP_PROPS,
+          ...APPLICATION_IDS_PROP,
         },
       },
     },
@@ -564,17 +629,19 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
         type: "object" as const,
         properties: {
           status: { type: "string", description: "Filter by case status" },
+          ...CASE_FILTER_PROPS,
           search: { type: "string", description: "Free-text search" },
           date_from: { type: "string", description: "ISO date lower bound" },
           date_to: { type: "string", description: "ISO date upper bound" },
           ...LAST_N_DAYS_PROP,
           limit: { type: "number", description: "Max results after merging (default 20, max 200)" },
           ...ORG_APP_PROPS,
+          ...APPLICATION_IDS_PROP,
         },
       },
     },
     access: "read",
-    permission: ["list:cases", "read:cases"], // GET /organization/{org}/cases/ → case_management.py:264
+    permission: ["list:cases", "read:cases"], // GET /organization/{org}/cases/ → case_management.py:520
     routingIds: true,
     run: (args) => searchCases(args),
   },
@@ -594,6 +661,7 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
           ...LAST_N_DAYS_PROP,
           limit: { type: "number", description: "Max results after merging (default 20, max 200)" },
           ...ORG_APP_PROPS,
+          ...APPLICATION_IDS_PROP,
         },
       },
     },
@@ -618,6 +686,7 @@ export const SEARCH_TOOLS: readonly RegisteredTool[] = [
           ...LAST_N_DAYS_PROP,
           limit: { type: "number", description: "Max results after merging (default 20, max 200)" },
           ...ORG_APP_PROPS,
+          ...APPLICATION_IDS_PROP,
         },
       },
     },

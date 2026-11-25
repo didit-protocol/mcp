@@ -52,6 +52,14 @@ const PAGE_PROPS = {
   offset: { type: "number", description: "Rows to skip." },
 } as const;
 
+/** The email to the person about a decision, as the session status update takes it. */
+const EMAIL_PROPS = {
+  send_email: { type: "boolean", description: "Email the decision to the person; name the recipient when asking for approval." },
+  email_address: { type: "string", description: "Required with send_email." },
+  email_language: { type: "string" },
+} as const;
+const EMAIL_FIELDS = Object.keys(EMAIL_PROPS);
+
 const APPROVAL_NOTE =
   " Requires human approval: describe the exact action to the user, wait for their explicit confirmation, then call with confirm:true.";
 
@@ -73,6 +81,10 @@ export const INVESTIGATOR_TOOL_DEFS: ToolDef[] = [
         confidence: { type: "string", enum: ["high", "moderate", "low"] },
         ready: { type: "boolean", description: "true: only Ready to accept; false: only the others." },
         search: { type: "string", description: "Name, company, case number or transaction id." },
+        sort: { type: "string", enum: ["priority", "sla", "age"] },
+        sla: { type: "string", enum: ["breached", "due_soon", "on_track", "none"] },
+        priority_min: { type: "integer", minimum: 0, maximum: 200 },
+        contested: { type: "boolean", description: "Only cases of a decision the person contested." },
         ...PAGE_PROPS,
       },
     },
@@ -102,6 +114,7 @@ export const INVESTIGATOR_TOOL_DEFS: ToolDef[] = [
         ...ORG_APP_PROPS,
         run_id: { type: "string" },
         narrative: { type: "string", description: "Optional edited narrative (max 4000 characters)." },
+        ...EMAIL_PROPS,
         confirm: CONFIRM_PROP,
       },
       required: ["run_id", "confirm"],
@@ -122,6 +135,7 @@ export const INVESTIGATOR_TOOL_DEFS: ToolDef[] = [
         action: { type: "string", enum: RECOMMENDATIONS, description: "The decision to take instead." },
         category: { type: "string", enum: OVERRIDE_CATEGORIES },
         reason: { type: "string", description: "Why, in 10 to 500 characters." },
+        ...EMAIL_PROPS,
         confirm: CONFIRM_PROP,
       },
       required: ["run_id", "action", "category", "reason", "confirm"],
@@ -289,6 +303,11 @@ export const INVESTIGATOR_TOOL_DEFS: ToolDef[] = [
     inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, scope: SCOPE_PROP } },
   },
   {
+    name: "didit_investigator_status_get",
+    description: "Get the Investigator's state: summary (stage, queues, open reports, plan, spend), guardrails and settings.",
+    inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS } },
+  },
+  {
     name: "didit_investigator_activity_list",
     description:
       "List the Investigator's append-only Activity log, newest first: what the agent and people did (reports, " +
@@ -325,6 +344,9 @@ export const INVESTIGATOR_DECISION_TOOLS: string[] = [
   "didit_investigator_rereview",
 ];
 
+/** Can email the person the decision is about. */
+export const INVESTIGATOR_OPEN_WORLD_TOOLS: string[] = ["didit_investigator_accept", "didit_investigator_override"];
+
 /** Read-like by name, but it stores a backtest. */
 export const INVESTIGATOR_WRITE_TOOLS: string[] = ["didit_investigator_backtest_start"];
 
@@ -348,6 +370,7 @@ export const INVESTIGATOR_TOOL_PERMISSIONS: Record<string, string | null> = {
   didit_investigator_backtest_get: null, // GET backtests/{id}/ — any read (config read)
   didit_investigator_performance_get: null, // GET performance/ — any read
   didit_investigator_dashboard_get: null, // GET dashboard/ — any read
+  didit_investigator_status_get: null, // GET summary/, guardrails/, settings/ — any read
   didit_investigator_activity_list: null, // GET activity/ — any read
 };
 
@@ -426,20 +449,21 @@ export async function dispatchInvestigatorTool(name: string, rawArgs: Record<str
   const args = rawArgs ?? {};
   switch (name) {
     case "didit_investigator_queue_list": {
-      const params = pick(args, ["scope", "kind", "queue", "recommendation", "confidence", "search", "limit", "offset"]);
+      const params = pick(args, ["scope", "kind", "queue", "recommendation", "confidence", "search", "sort", "sla", "priority_min", "limit", "offset"]);
       if (typeof args.ready === "boolean") params.ready = String(args.ready);
+      if (typeof args.contested === "boolean") params.contested = String(args.contested);
       return call("/investigator/queue/", { params });
     }
     case "didit_investigator_report_get":
       return call(runPath(args.run_id));
     case "didit_investigator_accept":
       assertConfirmed(args.confirm, "Accepting a recommendation");
-      return call(`${runPath(args.run_id)}accept/`, { method: "POST", json: pick(args, ["narrative"]) });
+      return call(`${runPath(args.run_id)}accept/`, { method: "POST", json: pick(args, ["narrative", ...EMAIL_FIELDS]) });
     case "didit_investigator_override":
       assertConfirmed(args.confirm, "Overriding a recommendation");
       return call(`${runPath(args.run_id)}override/`, {
         method: "POST",
-        json: pick(args, ["action", "category", "reason"]),
+        json: pick(args, ["action", "category", "reason", ...EMAIL_FIELDS]),
       });
     case "didit_investigator_batch_accept": {
       assertConfirmed(args.confirm, "Accepting a batch of recommendations");
@@ -486,6 +510,11 @@ export async function dispatchInvestigatorTool(name: string, rawArgs: Record<str
       return call("/investigator/performance/", { params: pick(args, ["scope", "period"]) });
     case "didit_investigator_dashboard_get":
       return call("/investigator/dashboard/", { params: pick(args, ["scope"]) });
+    case "didit_investigator_status_get": {
+      const [summary, guardrails, settings] = await Promise.all(["summary", "guardrails", "settings"].map((part) => call(`/investigator/${pathSegment(part, "part")}/`)));
+
+      return { summary, guardrails, settings };
+    }
     case "didit_investigator_activity_list":
       return call("/investigator/activity/", { params: pick(args, ["scope", "group", "actor", "since", "until", "limit", "offset"]) });
     default:

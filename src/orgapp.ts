@@ -1,6 +1,6 @@
 import { DIDIT_AUTH_BASE_URL, apiRequest, requestContext } from "./config";
 import { everyPage } from "./paging";
-import { pathSegment } from "./security";
+import { DiditError, pathSegment } from "./security";
 import { listOrganizations, listApplications } from "./tools/auth";
 
 // Cross-org/app context layer. The Didit management API is resource-path-scoped
@@ -234,6 +234,40 @@ export async function mapWithConcurrency<T, R>(
     Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () => worker()),
   );
   return results;
+}
+
+/** Several applications for a read that spans them (the *_search tools and the analytics). */
+export const APPLICATION_IDS_PROP = {
+  application_ids: {
+    type: "array",
+    items: { type: "string" },
+    description: "Only these applications.",
+  },
+} as const;
+
+const ids = (values: readonly unknown[]): string[] =>
+  values.map((value) => String(value ?? "").trim().toLowerCase()).filter(Boolean);
+
+/**
+ * The applications a spanning read is narrowed to, lowercase; undefined when the call names none (a
+ * blank argument is one the model filled in, as everywhere: blank-args.ts). Both named and
+ * disagreeing is refused before anything is read: neither may widen the other.
+ */
+export function namedApplications(applicationId: unknown, applicationIds: unknown): Set<string> | undefined {
+  const one = ids([applicationId]);
+  const listed = ids(Array.isArray(applicationIds) ? applicationIds : []);
+
+  if (one.length > 0 && listed.length > 0 && !listed.includes(one[0])) {
+    throw new DiditError({
+      code: "bad_request",
+      message: "application_id is not one of application_ids, so nothing was read.",
+      hint: "Name the application in application_id alone, or add it to application_ids.",
+      status: 400,
+    });
+  }
+  const named = one.length > 0 ? one : listed;
+
+  return named.length > 0 ? new Set(named) : undefined;
 }
 
 // Org/app selectors shared by the console (management) tools, which target

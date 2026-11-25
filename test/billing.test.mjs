@@ -44,6 +44,36 @@ test("getBalance: omitting organization_id still resolves from the per-request t
   assert.equal(balance.balance, 100);
 });
 
+test("getBalance: the usage filters reach the top-up read, and a date the API would ignore is refused", async () => {
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    return json({ balance: 1 });
+  };
+  const read = (usage) => inContext({ accessToken: "tok", organizationId: "org-1" }, () => getBalance(undefined, { usage }));
+  await read({ date_from: "2026-11-01", date_to: "2026-11-24", usage_application_ids: ["app-1", "app-2"] });
+  await read({});
+
+  const base = `${API}/organization/org-1/top-up/`;
+  assert.deepEqual(urls.filter((url) => url.startsWith(base)), [`${base}?date_from=2026-11-01&date_to=2026-11-24&application_id=app-1%2Capp-2`, base]);
+  urls.length = 0;
+  await assert.rejects(read({ date_from: "last week" }), /date_from must be a date/);
+  assert.deepEqual(urls, []);
+});
+
+test("getBalance: an API key connection refuses usage filters its balance route cannot apply", async () => {
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    return json({ balance: 1 });
+  };
+  const viaKey = (usage) => inContext({ apiKey: "k".repeat(40), organizationId: "org-1" }, () => getBalance(undefined, { usage }));
+  await assert.rejects(viaKey({ date_from: "2026-11-01" }), /date_from needs a signed-in person/);
+  assert.deepEqual(urls, []);
+  await viaKey({});
+  assert.equal(urls.length, 1);
+});
+
 test("getBalance: no explicit id and no context org still throws the actionable resolver error", async () => {
   const err = await inContext({ accessToken: "tok-none" }, () => getBalance()).then(
     () => null,

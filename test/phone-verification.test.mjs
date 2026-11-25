@@ -682,16 +682,15 @@ test("the phone tool descriptions describe the endpoints that really exist", asy
 
     assert.match(send.description, /WhatsApp by default/);
     assert.match(send.description, /falling back to SMS/);
-    assert.match(send.description, /valid for 5 minutes/);
+    assert.match(send.description, /application's setting \(1 to 15 minutes; expires_in/);
     assert.match(send.description, /Success.*Retry.*Blocked/s);
     assert.match(send.description, /PHONE_RATE_LIMITED/);
     assert.match(send.description, /403 until the organization's first top-up/);
     assert.ok(!/via SMS\./.test(send.description), "the old SMS-only claim survived");
 
-    assert.match(check.description, /Maximum 3 attempts/);
-    assert.match(check.description, /expires 5 minutes/);
+    assert.match(check.description, /attempts per code \(3 to 10\) and its lifetime are the application's settings/);
     assert.match(check.description, /Approved.*Failed.*Declined.*Expired or Not Found/s);
-    assert.match(check.description, /sandbox application mocks the check and approves any code/);
+    assert.match(check.description, /sandbox application accepts code 123456/);
 
     for (const tool of [send, check]) {
       assert.match(tool.description, /role needs create:sessions \(Owner, Admin or Developer/);
@@ -699,13 +698,11 @@ test("the phone tool descriptions describe the endpoints that really exist", asy
       assert.match(tool.description, /MCP sign-in needs the didit:management scope/);
     }
 
-    assert.deepEqual(Object.keys(send.inputSchema.properties).sort(), [
-      "application_id",
-      "organization_id",
-      "phone_number",
-    ]);
+    for (const never of ["code", "fraud_override", "trusted_user", "rate_limits", "factor_id"]) {
+      assert.ok(!(never in send.inputSchema.properties), `${never} is never an argument of the send`);
+    }
     assert.deepEqual(send.inputSchema.required, ["phone_number"]);
-    assert.deepEqual(check.inputSchema.required, ["phone_number", "code"]);
+    assert.deepEqual(check.inputSchema.required, ["code"]);
     assert.match(check.inputSchema.properties.code.description, /WhatsApp or SMS/);
   });
 });

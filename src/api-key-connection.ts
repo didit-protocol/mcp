@@ -22,7 +22,7 @@
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
-import { INTERNAL_PERSON_ONLY_TOOLS } from "./internal-tools";
+import { INTERNAL_KEY_ONLY_TOOLS, INTERNAL_PERSON_ONLY_TOOLS } from "./internal-tools";
 
 /** The application an API key belongs to: everything its connection can act on. */
 export interface ApiKeyScope {
@@ -172,6 +172,7 @@ export const PERSON_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "didit_workflow_build_graph",
   ...INTERNAL_PERSON_ONLY_TOOLS,
   // The organization's plan, cards, receipts and billing details (organization-wide console routes).
+  "didit_org_entitlements_get",
   "didit_billing_get_plan",
   "didit_billing_quote_plan",
   "didit_billing_list_payment_methods",
@@ -184,6 +185,14 @@ export const PERSON_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "didit_session_get_signed_document",
   "didit_session_get_signature_field_image",
 ]);
+
+/** The reverse: tools whose route admits an application API key and refuses every person's sign-in. */
+export const KEY_ONLY_TOOLS: ReadonlySet<string> = new Set(INTERNAL_KEY_ONLY_TOOLS);
+
+/** Why a key-only tool does not run on a person's connection, and what to do instead. */
+export function keyOnlyRefusal(name: string): string {
+  return `'${name}' is only answered to an application API key, and this connection is a person's sign-in. Connect with the application's API key, or call the Didit API with it.`;
+}
 
 const DOWNLOAD_TOOLS: ReadonlySet<string> = new Set([
   "didit_session_generate_pdf",

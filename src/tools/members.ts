@@ -1,6 +1,7 @@
 import { apiRequest, resolveOrganizationId, DIDIT_AUTH_BASE_URL } from "../config";
 import type { RegisteredTool } from "./registry";
 import { ORG_APP_PROPS } from "../orgapp";
+import { MAX_PAGE_SIZE, PAGE_PROPS, pageParams } from "../paging";
 import { assertBoolean, DiditError, redactApiKey, redactCollection, pathSegment } from "../security";
 
 // Org members / roles / API keys — served by service-didit-auth (apx/auth/v2), org-level,
@@ -10,32 +11,45 @@ function authPath(org: string, resource: string): string {
   return `/organizations/${pathSegment(org, "organization_id")}${resource}`;
 }
 
-export async function listMembers(organizationId?: string, params?: Record<string, any>): Promise<any> {
+export async function listMembers(organizationId?: string, { include_pending: includePending, ...args }: Record<string, any> = {}): Promise<any> {
   const org = resolveOrganizationId(organizationId);
-  return apiRequest(authPath(org, "/members/"), { baseUrl: DIDIT_AUTH_BASE_URL, params });
+  // The endpoint pages only when it is sent a `limit`, and ignores an `offset` sent alone.
+  const page = pageParams(args);
+  const params = page.offset === undefined ? page : { limit: MAX_PAGE_SIZE, ...page };
+  const members = await apiRequest(authPath(org, "/members/"), { baseUrl: DIDIT_AUTH_BASE_URL, params });
+  if (!includePending) return members;
+  const pending = await apiRequest(authPath(org, "/members/pending/"), { baseUrl: DIDIT_AUTH_BASE_URL });
+
+  return Array.isArray(members) ? { members, pending } : { ...members, pending };
 }
 
 export async function inviteMember(data: Record<string, any>, organizationId?: string): Promise<any> {
   const org = resolveOrganizationId(organizationId);
   // POST /members/invite/ — the collection route above is GET-only, so an invite sent there
-  // answers 405. InviteMemberSerializer takes exactly emails (1-5), role and app_ids; build
-  // the body from those fields rather than forwarding the tool args verbatim.
+  // answers 405. InviteMemberSerializer takes exactly emails (1-5), role or product_roles and app_ids;
+  // build the body from those fields rather than forwarding the tool args verbatim.
   return apiRequest(authPath(org, "/members/invite/"), {
     baseUrl: DIDIT_AUTH_BASE_URL,
     method: "POST",
-    json: { emails: data.emails, role: data.role, app_ids: data.app_ids },
+    json: { emails: data.emails, role: data.role, product_roles: data.product_roles, app_ids: data.app_ids },
   });
 }
 
 export async function updateMember(memberId: string, data: Record<string, any>, organizationId?: string): Promise<any> {
   const org = resolveOrganizationId(organizationId);
   // The detail route is declared WITHOUT a trailing slash (APPEND_SLASH only adds one), and
-  // OrganizationMemberUpdateSerializer takes role + accessible_applications — member_id is a
+  // OrganizationMemberUpdateSerializer takes any of these fields — member_id is a
   // path segment, not a body field.
   return apiRequest(authPath(org, `/members/${pathSegment(memberId, "member_id")}`), {
     baseUrl: DIDIT_AUTH_BASE_URL,
     method: "PATCH",
-    json: { role: data.role, accessible_applications: data.accessible_applications },
+    json: {
+      role: data.role,
+      product_roles: data.product_roles,
+      accessible_applications: data.accessible_applications,
+      status: data.status,
+      suspended_at: data.suspended_at,
+    },
   });
 }
 
@@ -45,9 +59,11 @@ export async function removeMember(memberId: string, organizationId?: string): P
   return apiRequest(authPath(org, `/members/${pathSegment(memberId, "member_id")}`), { baseUrl: DIDIT_AUTH_BASE_URL, method: "DELETE" });
 }
 
-export async function listRoles(organizationId?: string): Promise<any> {
+export async function listRoles(organizationId?: string, roleId?: string): Promise<any> {
   const org = resolveOrganizationId(organizationId);
-  return apiRequest(authPath(org, "/roles/"), { baseUrl: DIDIT_AUTH_BASE_URL });
+  // The detail route has no trailing slash.
+  const resource = roleId ? `/roles/${pathSegment(roleId, "role_id")}` : "/roles/";
+  return apiRequest(authPath(org, resource), { baseUrl: DIDIT_AUTH_BASE_URL });
 }
 
 export async function listApiKeys(organizationId?: string, applicationId?: string): Promise<any> {
@@ -134,6 +150,12 @@ export async function createApiKey(
   };
 }
 
+const PRODUCT_ROLES = {
+  type: "object",
+  description: "A role per product instead of role: identity, transactions, authentication -> role UUID, or null for no access.",
+  additionalProperties: { type: ["string", "null"] },
+} as const;
+
 // ── The organization member and API key tools (tools/registry.ts) ──────────────────────────────────
 // Each tool declares here what index.ts and permissions.ts used to keep in their name-keyed tables.
 // The definitions are listed where these tools always were, so the tool list does not change.
@@ -141,8 +163,15 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_org_list_members",
-      description: "List the organization's members.",
-      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+      description: "List the organization's members: all of them, or a page when limit is sent.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          organization_id: ORG_APP_PROPS.organization_id,
+          ...PAGE_PROPS,
+          include_pending: { type: "boolean", description: "Add the invitations not accepted yet, under pending" },
+        },
+      },
     },
     // The auth service path is built from the organization the caller sent; the ids never reach the request body.
     access: "read",
@@ -153,16 +182,17 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_org_invite_member",
-      description: "Invite up to 5 members to the organization (emails + role + the applications they may access).",
+      description: "Invite up to 5 members to the organization (emails + exactly one of role or product_roles + the applications they may access).",
       inputSchema: {
         type: "object" as const,
         properties: {
           organization_id: ORG_APP_PROPS.organization_id,
           emails: { type: "array", items: { type: "string" }, description: "Email addresses to invite (1-5)." },
           role: { type: "string", description: "Role UUID (from didit_org_list_roles)." },
+          product_roles: PRODUCT_ROLES,
           app_ids: { type: "array", items: { type: "string" }, description: "Application UUIDs the invitee may access (from didit_org_list_applications)." },
         },
-        required: ["emails", "role", "app_ids"],
+        required: ["emails", "app_ids"],
       },
     },
     access: "write",
@@ -174,16 +204,19 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_org_update_member",
-      description: "Update a member's role and the applications they may access.",
+      description: "Update a member: only what is sent changes. role or product_roles, not both; status or suspended_at, not both.",
       inputSchema: {
         type: "object" as const,
         properties: {
           organization_id: ORG_APP_PROPS.organization_id,
           member_id: { type: "string", description: "Member UUID (from didit_org_list_members)." },
           role: { type: "string", description: "Role UUID (from didit_org_list_roles)." },
-          accessible_applications: { type: "array", items: { type: "string" }, description: "Application UUIDs the member may access (from didit_org_list_applications)." },
+          product_roles: PRODUCT_ROLES,
+          accessible_applications: { type: "array", items: { type: "string" }, description: "Application UUIDs the member may access (from didit_org_list_applications); replaces the list." },
+          status: { type: "string", enum: ["active", "suspended"], description: "suspended blocks the member's access" },
+          suspended_at: { type: ["string", "null"], description: "ISO 8601 time to suspend at; null cancels it" },
         },
-        required: ["member_id", "role", "accessible_applications"],
+        required: ["member_id"],
       },
     },
     access: "write",
@@ -216,13 +249,16 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_org_list_roles",
-      description: "List the roles available in the organization.",
-      inputSchema: { type: "object" as const, properties: { organization_id: ORG_APP_PROPS.organization_id } },
+      description: "List the roles available in the organization, or get one with its permissions.",
+      inputSchema: {
+        type: "object" as const,
+        properties: { organization_id: ORG_APP_PROPS.organization_id, role_id: { type: "string", description: "Only this role, with its permissions" } },
+      },
     },
     access: "read",
     permission: ["list:roles", "read:roles"], // GET auth /organizations/{org}/roles/ → roles.py:55
     routingIds: true,
-    run: (args) => listRoles(args.organization_id),
+    run: (args) => listRoles(args.organization_id, args.role_id),
   },
   {
     def: {
@@ -255,6 +291,8 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
             additionalProperties: { type: "string", enum: ["read", "write"] },
           },
           workflow_ids: { type: "array", items: { type: "string" }, description: "Optional: only these workflows' sessions (needs scopes)." },
+          approved_sessions_only: { type: "boolean", description: "Optional: only approved sessions (needs scopes)." },
+          allowed_ips: { type: "array", items: { type: "string" }, description: "Optional: only these IPs or CIDR ranges." },
           expires_at: { type: "string", description: "Optional ISO 8601 expiry." },
           confirm: {
             type: "boolean",
@@ -277,7 +315,7 @@ export const ORG_MEMBER_TOOLS: readonly RegisteredTool[] = [
       inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS }, required: ["application_id"] },
     },
     access: "read",
-    permission: ["read:applications", "list:applications"], // GET auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py:24
+    permission: "read:api-keys", // GET auth /organizations/{org}/applications/{app}/api-keys/ → application_api_keys.py ApplicationApiKeyListCreateView
     routingIds: true,
     run: (args) => listApiKeys(args.organization_id, args.application_id),
   },

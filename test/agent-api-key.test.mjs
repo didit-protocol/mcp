@@ -1,3 +1,4 @@
+import { TOOL_PERMISSIONS } from "../dist/permissions.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "../dist/index.js";
@@ -103,6 +104,21 @@ test("a second key for the same connected app surfaces the backend's refusal", a
   const result = await call({ organization_id: ORG, application_id: APP, confirm: true });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /already has an API key/);
+});
+
+test("a key limited to approved sessions and to addresses is asked for as the backend takes it", async () => {
+  const seen = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "POST") seen.push(JSON.parse(init.body));
+    return json({ uuid: "key-3", api_key: "sk_test_x" }, 201);
+  };
+  const limits = { scopes: { sessions: "read" }, approved_sessions_only: true, allowed_ips: ["192.0.2.0/24"] };
+  await call({ organization_id: ORG, application_id: APP, label: "Acme", confirm: true, ...limits });
+  assert.deepEqual(seen, [{ label: "Acme", ...limits }]);
+  const { tools } = await withClient({}, (c) => c.listTools());
+  const { properties } = tools.find((tool) => tool.name === "didit_org_create_api_key").inputSchema;
+  assert.ok("approved_sessions_only" in properties && "allowed_ips" in properties);
+  assert.equal(TOOL_PERMISSIONS.didit_org_list_api_keys, "read:api-keys");
 });
 
 test("didit_org_list_api_keys reaches the application the caller named", async () => {

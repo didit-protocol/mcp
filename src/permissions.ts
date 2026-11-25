@@ -51,8 +51,8 @@ export const TOOL_PERMISSIONS: Record<string, ToolPermission> = {
   // ── Alerts, analytics, audit ──
   didit_analytics: ["read:analytics", "list:analytics"], // GET …/analytics/ → analytics.py:196
   // ── Standalone verification APIs (proxy.py:36 gates every …/apis/* POST on create:sessions) ──
-  // The phone OTP pair does not go through that proxy (it registers no phone/send or
-  // phone/check route): it calls the public APIs with the application api-key, which the
+  // The email and phone codes do not go through that proxy (it registers no email/phone send or
+  // check route): they call the public APIs with the application api-key, which the
   // console application read only shows to a role holding create:sessions (app-api-key.ts).
   // ── Workflows (delete reuses write; graph helpers are read-gated POSTs) ──
   didit_workflow_build_graph: "read:workflows", // POST …/compliance/build-workflow/ → compliance.py:137

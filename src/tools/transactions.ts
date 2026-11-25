@@ -197,6 +197,15 @@ const RULE_EVALUATION_MODE_PROP = {
 } as const;
 const RULE_SCOPE_PROP = { scope: RULE_SCOPE_SCHEMA } as const;
 
+/** What the create, update and backtest tools share: the whole rule contract. */
+export const RULE_CONTRACT_PROPS: Readonly<Record<string, object>> = {
+  ...RULE_CONDITIONS_PROP,
+  ...RULE_AGGREGATION_PROP,
+  ...RULE_ACTIONS_PROP,
+  ...RULE_EVALUATION_MODE_PROP,
+  ...RULE_SCOPE_PROP,
+};
+
 // Transaction monitoring (AML) — org/app-scoped console resource.
 
 export async function listTransactions(params?: Record<string, string>): Promise<any> {
@@ -207,8 +216,34 @@ export async function createTransaction(data: Record<string, any>): Promise<any>
   return apiRequest(orgAppPath("/transactions/"), { method: "POST", json: data });
 }
 
-export async function getTransaction(transactionId: string): Promise<any> {
-  return apiRequest(orgAppPath(`/transactions/${pathSegment(transactionId, "transaction_id")}/`));
+const TRANSACTION_INCLUDES = ["notes", "related"];
+
+export async function getTransaction(transactionId: string, include?: string[]): Promise<any> {
+  const base = `/transactions/${pathSegment(transactionId, "transaction_id")}/`;
+  const sections = [...new Set(include ?? [])];
+  if (sections.some((section) => !TRANSACTION_INCLUDES.includes(section))) {
+    throw new DiditError({
+      code: "bad_request",
+      message: "include names a section a transaction does not have.",
+      field: "include",
+      allowed: TRANSACTION_INCLUDES,
+    });
+  }
+  const detail = await apiRequest(orgAppPath(base));
+  if (sections.length === 0) return detail;
+  const included: Record<string, any> = {};
+  for (const section of sections) {
+    included[section] = await apiRequest(orgAppPath(`${base}${pathSegment(section, "include")}/`));
+  }
+
+  return { ...detail, included };
+}
+
+export async function createTransactionNote(transactionId: string, data: Record<string, any>): Promise<any> {
+  return apiRequest(orgAppPath(`/transactions/${pathSegment(transactionId, "transaction_id")}/notes/`), {
+    method: "POST",
+    json: data,
+  });
 }
 
 export async function screenWallet(data: Record<string, any>): Promise<any> {
@@ -565,6 +600,27 @@ export const TRANSACTION_TOOLS: readonly RegisteredTool[] = [
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
+          search: { type: "string", description: "Vendor data, party name or payment details" },
+          status: { type: "string", description: "APPROVED, IN_REVIEW, DECLINED, AWAITING_USER; comma separated for several, as severity, transaction_type, action_type, currency, country, rule and assignee" },
+          severity: { type: "string", description: "UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL" },
+          direction: { type: "string", enum: ["INBOUND", "OUTBOUND"] },
+          transaction_type: { type: "string" },
+          action_type: { type: "string" },
+          currency: { type: "string" },
+          country: { type: "string", description: "The counterparty's" },
+          amount_min: { type: "number" },
+          amount_max: { type: "number" },
+          score_min: { type: "integer" },
+          score_max: { type: "integer" },
+          start_date: { type: "string", description: "YYYY-MM-DD, inclusive" },
+          end_date: { type: "string", description: "YYYY-MM-DD, inclusive" },
+          flagged: { type: "boolean", description: "Whether a rule flagged it" },
+          rule: { type: "string", description: "UUID of a rule that hit it" },
+          assignee: { type: "string", description: "me, unassigned, rules or a member's email" },
+          vendor_data: { type: "string" },
+          txn_id: { type: "string", description: "Part of your own id" },
+          didit_id: { type: "string", description: "Transaction UUID or number" },
+          travel_rule_status: { type: "string" },
           limit: { type: "string" },
           offset: { type: "string" },
         },
@@ -615,13 +671,14 @@ export const TRANSACTION_TOOLS: readonly RegisteredTool[] = [
         properties: {
           ...ORG_APP_PROPS,
           transaction_id: { type: "string", description: "Transaction ID" },
+          include: { type: "array", items: { type: "string", enum: TRANSACTION_INCLUDES }, description: "Also its notes, or the same parties' other transactions" },
         },
         required: ["transaction_id"],
       },
     },
     access: "read",
     permission: ["list:transactions", "read:transactions"], // GET …/transactions/{id}/ → transactions.py:479
-    run: (args) => getTransaction(args.transaction_id),
+    run: (args) => getTransaction(args.transaction_id, args.include),
   },
   {
     def: {
@@ -635,8 +692,12 @@ export const TRANSACTION_TOOLS: readonly RegisteredTool[] = [
           wallet_address: { type: "string", description: "REQUIRED. The crypto address to screen (must match the chain's address format)" },
           blockchain: {
             type: "string",
-            enum: ["BTC", "ETH", "LTC", "XRP", "BCH", "DOGE", "TRX", "SOL", "MATIC", "BNB", "USDT", "USDC"],
-            description: "REQUIRED. Asset / chain identifier",
+            // The backend's SUPPORTED_SCREENING_BLOCKCHAINS (services/aml_monitoring/base.py).
+            enum: [
+              "BTC", "LIGHTNING", "ETH", "LTC", "XRP", "BCH", "DOGE", "TRX", "SOL", "MATIC", "BNB", "BASE", "OP", "ARB", "AVAX",
+              "ADA", "XLM", "HBAR", "CELO", "MODE", "PLUME", "USDT", "USDC",
+            ],
+            description: "Read from the address when omitted; a 0x address needs it (the 422 lists its possible networks)",
           },
           direction: {
             type: "string",
@@ -644,11 +705,30 @@ export const TRANSACTION_TOOLS: readonly RegisteredTool[] = [
             description: "Optional screening direction context",
           },
         },
-        required: ["wallet_address", "blockchain"],
+        required: ["wallet_address"],
       },
     },
     access: "write",
     permission: "create:transactions", // POST …/transactions/screen-wallet/ → transactions.py:371
     run: (args) => screenWallet(args),
+  },
+  {
+    def: {
+      name: "didit_transaction_note_create",
+      description: "Add an internal note to a monitored transaction (read them with didit_transaction_get include notes).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          transaction_id: { type: "string", description: "Transaction UUID" },
+          note: { type: "string" },
+          mentioned_emails: { type: "array", items: { type: "string" }, description: "Team members the note mentions" },
+        },
+        required: ["transaction_id", "note"],
+      },
+    },
+    access: "write",
+    permission: "write:transactions", // POST …/transactions/{id}/notes/ → transactions.py:1653
+    run: ({ transaction_id, ...data }) => createTransactionNote(transaction_id, data),
   },
 ];

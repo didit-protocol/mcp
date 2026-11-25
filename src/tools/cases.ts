@@ -1,21 +1,64 @@
 import { apiRequest, orgAppPath } from "../config";
 import type { RegisteredTool } from "./registry";
 import { searchCases } from "./search";
+import { CASE_FILTER_PROPS } from "./shared-schema";
 import { ORG_APP_PROPS } from "../orgapp";
-import { pathSegment, DiditError } from "../security";
+import { PAGE_PROPS, pageParams } from "../paging";
+import { assertBoolean, pathSegment, DiditError } from "../security";
 
 // Case management — org/app-scoped console resource. Read/create are dedicated tools;
-// the many per-case actions (assign/resolve/reopen/escalate/comment) fold into one
-// action-dispatch tool to keep the surface small.
+// the many per-case actions fold into one action-dispatch tool to keep the surface small.
 
 const cid = (id: string) => pathSegment(id, "case_id");
 
-export async function listCases(params?: Record<string, any>): Promise<any> {
-  return apiRequest(orgAppPath("/cases/"), { params });
+/**
+ * The filters as the list endpoints name them: the statuses travel as `status__in`, and a window in days. One value
+ * the list cannot read drops every filter with it, so a date that carries a time is cut to its day.
+ */
+export function caseListParams({ status, date_from, date_to, cursor, ...filters }: Record<string, any> = {}): Record<string, any> {
+  if (cursor !== undefined) {
+    throw new DiditError({ code: "bad_request", message: "The case list has no cursor: page with limit and offset.", field: "cursor" });
+  }
+  const day = (date: unknown) => (typeof date === "string" ? date.slice(0, 10) : date);
+  const given = { date_from: day(date_from), date_to: day(date_to), status__in: status === undefined ? undefined : String(status).toUpperCase() };
+
+  return { ...filters, ...Object.fromEntries(Object.entries(given).filter(([, value]) => value !== undefined)) };
 }
 
-export async function getCase(caseId: string): Promise<any> {
-  return apiRequest(orgAppPath(`/cases/${cid(caseId)}/`));
+export async function listCases(params?: Record<string, any>): Promise<any> {
+  return apiRequest(orgAppPath("/cases/"), { params: caseListParams(params) });
+}
+
+const CASE_PARTS = ["notes", "links", "events", "checklist", "aml"];
+
+/** A case, with the parts of it that have an endpoint of their own when `include` names them. */
+export async function getCase(caseId: string, include: unknown = []): Promise<any> {
+  const parts: string[] = [...new Set(Array.isArray(include) ? include : [include])];
+  assertKnown(parts, CASE_PARTS, "include");
+  const path = `/cases/${cid(caseId)}/`;
+  const [found, ...read] = await Promise.all([path, ...parts.map((part) => `${path}${part}/`)].map((each) => apiRequest(orgAppPath(each))));
+
+  return parts.length ? { ...found, included: Object.fromEntries(parts.map((part, i) => [part, read[i]])) } : found;
+}
+
+function assertKnown(values: unknown[], allowed: string[], field: string): void {
+  const unknown = values.find((value) => !allowed.includes(String(value)));
+  if (unknown === undefined) return;
+  throw new DiditError({ code: "bad_request", message: `${field} does not take ${String(unknown)}.`, field, allowed });
+}
+
+const CASE_CATALOGS: Record<string, string> = {
+  reviewers: "/cases/reviewers/",
+  teams: "/cases/teams/",
+  blueprints: "/cases/blueprints/",
+  presets: "/cases/blueprints/presets/",
+  report_templates: "/report-templates/",
+};
+
+export async function listCaseCatalog(args: Record<string, any>): Promise<any> {
+  assertKnown([args.kind], Object.keys(CASE_CATALOGS), "kind");
+
+  return apiRequest(orgAppPath(CASE_CATALOGS[args.kind]), { params: pageParams(args) });
 }
 
 export async function createCase(data: Record<string, any>): Promise<any> {
@@ -38,48 +81,61 @@ export async function caseStatistics(params?: Record<string, any>): Promise<any>
   return apiRequest(orgAppPath("/cases/statistics/"), { params });
 }
 
-const KNOWN_CASE_ACTIONS = ["assign", "resolve", "reopen", "escalate", "comment", "update", "sar", "file_sar"];
-const SAR_STATUS = "SAR_FILED";
+interface CaseAction {
+  /** The path under the case. */
+  path: (data: Record<string, any>) => string;
+  method?: "PATCH" | "DELETE";
+  /** What the endpoint reads: it would ignore anything else. */
+  fields?: string[];
+  /** Why it needs confirm:true. */
+  decides?: string;
+}
 
-// action ∈ assign | resolve | reopen | escalate | comment | update | sar
+// Approving a resolution is not here: the API takes it from a second person only, and refuses an agent's token.
+const CASE_ACTIONS: Record<string, CaseAction> = {
+  assign: { path: () => "assign/", fields: ["assignee_user_id", "assignee_email", "assignee_name"] },
+  update: { path: () => "", method: "PATCH", fields: ["title", "priority", "due_at", "tags", "team"] },
+  resolve: { path: () => "resolve/", fields: ["resolution", "note", "checker"], decides: "Resolving a case records its finding." },
+  reopen: { path: () => "reopen/" },
+  escalate: { path: () => "escalate/", fields: ["comment"] },
+  request_info: { path: () => "request-info/" },
+  note: { path: () => "notes/", fields: ["comment", "reply_to", "mentioned_emails", "is_internal", "tags"] },
+  link: { path: () => "links/", fields: ["entity_type", "entity_uuid"] },
+  unlink: { path: ({ link_uuid }) => `links/${pathSegment(link_uuid, "link_uuid")}/`, method: "DELETE", fields: ["link_uuid"] },
+  checklist: { path: ({ item_uuid }) => `checklist/${pathSegment(item_uuid, "item_uuid")}/`, method: "PATCH", fields: ["item_uuid", "is_completed"] },
+  transfer: { path: () => "transfer/", fields: ["target_blueprint"] },
+  entity_action: { path: () => "entity-actions/", fields: ["action", "status", "tags", "note"], decides: "An entity action changes the subject of the case." },
+  reject_approval: { path: () => "reject-approval/", fields: ["notes"], decides: "Rejecting a resolution sends the case back." },
+};
+/** Ids of the path, never of the body. */
+const PATH_IDS = ["link_uuid", "item_uuid"];
+
 export async function manageCase(
   caseId: string,
-  action: string,
+  requested: unknown,
   data: Record<string, any> = {},
   confirm?: unknown,
 ): Promise<any> {
-  if (typeof action !== "string" || !KNOWN_CASE_ACTIONS.includes(action)) {
-    throw new DiditError({
-      code: "bad_request",
-      message: "Unknown case action.",
-      field: "action",
-      hint: `action must be one of: ${KNOWN_CASE_ACTIONS.join(", ")}.`,
-      allowed: KNOWN_CASE_ACTIONS,
-    });
-  }
-  // Filing a SAR is a high-impact regulatory action — gate the explicit action AND the
-  // status-smuggling path (resolving with status:SAR_FILED) behind confirm:true.
-  const callerStatus = typeof data.status === "string" ? data.status.trim().toUpperCase() : undefined;
-  const filesSar = action === "sar" || action === "file_sar" || callerStatus === SAR_STATUS;
-  if (filesSar && confirm !== true) {
+  // `comment` is what the note action was called before.
+  const name = requested === "comment" ? "note" : String(requested);
+  assertKnown([name], Object.keys(CASE_ACTIONS), "action");
+  const { path, method, fields = [], decides } = CASE_ACTIONS[name];
+  assertBoolean(confirm, "confirm");
+  if (decides && confirm !== true) {
     throw new DiditError({
       code: "unsafe_operation",
-      message: "Filing a SAR (Suspicious Activity Report) is a high-impact regulatory action.",
+      message: decides,
       field: "confirm",
-      hint: "Re-call with confirm:true once a human has authorized filing — applies to action 'sar'/'file_sar' AND any resolve with status:'SAR_FILED'.",
+      hint: "Show the person the exact action, and re-call with confirm:true only once they have explicitly approved it.",
     });
   }
-  if (action === "update") {
-    return apiRequest(orgAppPath(`/cases/${cid(caseId)}/`), { method: "PATCH", json: data });
-  }
-  if (action === "comment") {
-    return apiRequest(orgAppPath(`/cases/${cid(caseId)}/comments/`), { method: "POST", json: data });
-  }
-  if (action === "sar" || action === "file_sar") {
-    const { status: _s, ...rest } = data;
-    return apiRequest(orgAppPath(`/cases/${cid(caseId)}/resolve/`), { method: "POST", json: { ...rest, status: SAR_STATUS } });
-  }
-  return apiRequest(orgAppPath(`/cases/${cid(caseId)}/${pathSegment(action, "action")}/`), { method: "POST", json: data });
+  assertKnown(Object.keys(data), fields, "data");
+  const body = Object.fromEntries(Object.entries(data).filter(([key]) => !PATH_IDS.includes(key)));
+
+  return apiRequest(orgAppPath(`/cases/${cid(caseId)}/`) + path(data), {
+    method: method ?? "POST",
+    ...(method === "DELETE" ? {} : { json: body }),
+  });
 }
 
 // ── The case tools (tools/registry.ts) ──────────────────────────────────
@@ -90,10 +146,22 @@ export const CASE_TOOLS: readonly RegisteredTool[] = [
     def: {
       name: "didit_case_list",
       description: "List investigation/compliance cases for ONE app; with multiple apps (or no scope) it auto-spans all your apps. For a cross-app query prefer didit_case_search.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, status: { type: "string" }, cursor: { type: "string" } } },
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          status: { type: "string", description: "OPEN, AWAITING_USER, RESOLVED, comma-separated" },
+          ...CASE_FILTER_PROPS,
+          search: { type: "string", description: "Title, case number, tag or subject" },
+          date_from: { type: "string", description: "YYYY-MM-DD" },
+          date_to: { type: "string", description: "YYYY-MM-DD" },
+          ordering: { type: "string", enum: ["-created_at", "created_at", "due_at", "-due_at"] },
+          ...PAGE_PROPS,
+        },
+      },
     },
     access: "read",
-    permission: ["list:cases", "read:cases"], // GET …/cases/ → case_management.py:264
+    permission: ["list:cases", "read:cases"], // GET …/cases/ → case_management.py:429
     run: (args) => listCases(args),
     spanAllApplications: (args) => searchCases(args),
   },
@@ -101,11 +169,19 @@ export const CASE_TOOLS: readonly RegisteredTool[] = [
     def: {
       name: "didit_case_get",
       description: "Get a case with its details.",
-      inputSchema: { type: "object" as const, properties: { ...ORG_APP_PROPS, case_id: { type: "string" } }, required: ["case_id"] },
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          case_id: { type: "string" },
+          include: { type: "array", items: { type: "string", enum: CASE_PARTS }, description: "Also read these, under `included`" },
+        },
+        required: ["case_id"],
+      },
     },
     access: "read",
-    permission: ["read:cases", "list:cases"], // GET …/cases/{id}/ → case_management.py:353
-    run: (args) => getCase(args.case_id),
+    permission: ["read:cases", "list:cases"], // GET …/cases/{id}/ → case_management.py:545
+    run: (args) => getCase(args.case_id, args.include),
   },
   {
     def: {
@@ -190,18 +266,30 @@ export const CASE_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_case_manage",
-      description: "Act on a case: assign, resolve, reopen, escalate, comment, or update.",
+      description:
+        "Act on a case. Fields of `data` by action: assign assignee_user_id (null unassigns); update title, priority, due_at, tags, team; " +
+        "resolve resolution, note, checker; escalate comment; note comment, reply_to, mentioned_emails, is_internal; link entity_type, " +
+        "entity_uuid; unlink link_uuid; checklist item_uuid, is_completed; transfer target_blueprint; entity_action (on the case's subject) action, status, " +
+        "tags, note; reject_approval notes; reopen and request_info (waits for the person) take none. A pending resolution is approved in the console, by a second person.",
       inputSchema: {
         type: "object" as const,
         properties: {
           ...ORG_APP_PROPS,
           case_id: { type: "string" },
-          action: { type: "string", enum: ["assign", "resolve", "reopen", "escalate", "comment", "update"] },
-          data: { type: "object", description: "Action payload (e.g. {assignee_id}, {comment}, or fields to update)" },
+          action: { type: "string", enum: Object.keys(CASE_ACTIONS) },
+          data: {
+            type: "object",
+            properties: {
+              assignee_user_id: { type: ["string", "null"] },
+              priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
+              resolution: { type: "string", enum: ["FALSE_POSITIVE", "VALID_THREAT", "INCONCLUSIVE", "REQUIREMENTS_NOT_MET", "REQUIREMENTS_SATISFIED"] },
+              entity_type: { type: "string", enum: ["session", "business_session", "transaction"] },
+              action: { type: "string", enum: ["set_status", "add_tags", "add_note", "add_to_blocklist"] },
+            },
+          },
           confirm: {
             type: "boolean",
-            description:
-              "REQUIRED when filing a SAR (action 'sar'/'file_sar', or any action whose data.status is 'SAR_FILED') - a high-impact regulatory action. Only set after explicit user confirmation of this exact action.",
+            description: "REQUIRED true for resolve, entity_action and reject_approval. Only set after explicit user confirmation of this exact action.",
           },
         },
         required: ["case_id", "action"],
@@ -209,7 +297,23 @@ export const CASE_TOOLS: readonly RegisteredTool[] = [
     },
     // Resolves, reopens, escalates or reassigns a case: a client asks before running it.
     access: "destructive",
-    permission: "write:cases", // POST …/cases/{id}/{resolve|assign|reopen|escalate}/, PATCH …/cases/{id}/ → case_management.py
+    permission: "write:cases", // POST …/cases/{id}/{action}/, PATCH …/cases/{id}/ → case_management.py
     run: (args) => manageCase(args.case_id, args.action, args.data || {}, args.confirm),
+  },
+  {
+    def: {
+      name: "didit_case_catalog_list",
+      description:
+        "The records a case refers to: reviewers (assignee and checker), teams, blueprints (review policies), presets (policies to install) " +
+        "or report_templates (regulatory reports).",
+      inputSchema: {
+        type: "object" as const,
+        properties: { ...ORG_APP_PROPS, kind: { type: "string", enum: Object.keys(CASE_CATALOGS) }, ...PAGE_PROPS },
+        required: ["kind"],
+      },
+    },
+    access: "read",
+    permission: ["list:cases", "read:cases"], // GET …/cases/{reviewers|teams|blueprints}/ → case_routing.py, …/report-templates/ → regulatory_reports.py:398
+    run: (args) => listCaseCatalog(args),
   },
 ];

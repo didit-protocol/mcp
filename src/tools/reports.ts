@@ -8,8 +8,8 @@ import { DiditError, pathSegment } from "../security";
 
 // The `columns` schema the backend enforces per export `kind` (400 "Invalid columns" on
 // a miss) — mirrored from service-didit-verification's src/applications/serializers/csv.py
-// (BASE/PHONE/KYC/POA_COLUMNS for sessions, VENDOR_USER_EXPORT_COLUMNS,
-// VENDOR_BUSINESS_EXPORT_COLUMNS). `transactions` and `businesses` are NOT listed here —
+// (BASE/PHONE/KYC/POA/BIOMETRIC_CONSENT_COLUMNS for sessions, VENDOR_USER_EXPORT_COLUMNS,
+// VENDOR_BUSINESS_EXPORT_COLUMNS) and services/report_generators.py (EVENT_EXPORT_COLUMNS). `transactions` and `businesses` are NOT listed here —
 // their views accept any column string (unknown ones just render blank), so there's no
 // finite schema to validate against.
 const SESSION_EXPORT_COLUMNS = [
@@ -24,16 +24,18 @@ const SESSION_EXPORT_COLUMNS = [
   "poa_name_on_document", "poa_issuing_state", "poa_document_type", "poa_document_language", "poa_issuer",
   "poa_issue_date", "poa_address_line_1", "poa_address_line_2", "poa_address_city", "poa_address_state",
   "poa_address_country", "poa_address_zip_code",
+  "biometric_consent_required", "biometric_consent_trigger", "biometric_consent_status", "biometric_consent_at",
+  "biometric_consent_text_version", "biometric_consent_ip_address", "biometric_consent_ip_country", "biometric_consent_ip_state",
 ];
 const VENDOR_USER_EXPORT_COLUMNS = [
   "didit_internal_id", "vendor_data", "display_name", "full_name", "date_of_birth", "status", "session_count",
-  "approved_count", "declined_count", "in_review_count", "last_session_at", "first_session_at", "created_at",
-  "updated_at", "tags", "approved_emails", "approved_phones", "issuing_states", "id_document_types",
+  "approved_count", "declined_count", "in_review_count", "last_session_at", "first_session_at", "last_activity_at",
+  "created_at", "updated_at", "tags", "approved_emails", "approved_phones", "issuing_states", "id_document_types",
   "id_document_countries", "poa_document_types", "poa_document_countries", "payment_method_types",
   "payment_method_account_ids", "payment_method_countries", "payment_method_owner_names", "location_countries",
   "location_cities", "device_brands", "device_models", "platforms", "has_vpn_or_tor", "has_datacenter",
   "metadata", "email", "phone_number", "address_line_1", "address_line_2", "address_city", "address_state",
-  "address_country", "address_zip_code",
+  "address_country", "address_zip_code", "latest_verification", "risk", "open_alerts", "aml_monitoring_enabled",
 ];
 const VENDOR_BUSINESS_EXPORT_COLUMNS = [
   "didit_internal_id", "vendor_data", "display_name", "legal_name", "registration_number", "country_code",
@@ -49,12 +51,19 @@ const VENDOR_BUSINESS_EXPORT_COLUMNS = [
   "beneficial_owners_ownership_shares", "aml_status", "aml_matches_count", "aml_risk_level",
   "aml_last_screened", "aml_monitoring_enabled", "documents_count", "documents_verified_count",
   "documents_pending_count", "documents_declined_count", "documents_types",
+  "latest_kyb", "risk", "owners_verified", "industry",
+];
+const EVENT_EXPORT_COLUMNS = [
+  "time", "event", "event_type", "subject", "vendor_data", "source", "severity", "outcome", "ip_address", "country",
+  "device", "record", "application", "environment",
 ];
 const KNOWN_COLUMN_SCHEMAS: Record<string, string[]> = {
   sessions: SESSION_EXPORT_COLUMNS,
   "vendor-users": VENDOR_USER_EXPORT_COLUMNS,
   "vendor-businesses": VENDOR_BUSINESS_EXPORT_COLUMNS,
+  events: EVENT_EXPORT_COLUMNS,
 };
+const EXPORT_KINDS = ["sessions", "transactions", "businesses", "vendor-users", "vendor-businesses", "cases", "cases-sla", "events", "compliance"];
 
 export async function listReports(params?: Record<string, any>): Promise<any> {
   return apiRequest(orgAppPath("/reports/"), { params });
@@ -68,8 +77,14 @@ export async function getReportDownloadUrl(reportId: string): Promise<any> {
   return apiRequest(orgAppPath(`/reports/${pathSegment(reportId, "report_id")}/download-url/`));
 }
 
-// kind ∈ sessions | transactions | businesses | vendor-users | vendor-businesses
+export async function retryReport(reportId: string, data: Record<string, any>): Promise<any> {
+  return apiRequest(orgAppPath(`/reports/${pathSegment(reportId, "report_id")}/retry/`), { method: "POST", json: data });
+}
+
 export async function exportReport(kind: string, data: Record<string, any> = {}): Promise<any> {
+  if (!EXPORT_KINDS.includes(kind)) {
+    throw new DiditError({ code: "bad_request", message: `kind must be one of ${EXPORT_KINDS.join(", ")}.`, field: "kind", allowed: EXPORT_KINDS });
+  }
   try {
     return await apiRequest(orgAppPath(`/reports/${pathSegment(kind, "kind")}/`), { method: "POST", json: data });
   } catch (error) {
@@ -138,16 +153,45 @@ export const REPORT_TOOLS: readonly RegisteredTool[] = [
   {
     def: {
       name: "didit_report_export",
-      description: "Start an export report. kind ∈ sessions | transactions | businesses | vendor-users | vendor-businesses. `data.columns` is a kind-specific schema — for sessions/vendor-users/vendor-businesses an unknown column 400s with `Invalid columns`, and that error's `allowed` field carries the full valid-column list for that kind, so retry from the error alone rather than guessing names like `date`/`status`/`total_price`.",
+      description: "Start an export report. `data.columns` is a kind-specific schema — for sessions/vendor-users/vendor-businesses an unknown column 400s with `Invalid columns`, and that error's `allowed` field carries the full valid-column list for that kind, so retry from the error alone rather than guessing names like `date`/`status`/`total_price`.",
       inputSchema: {
         type: "object" as const,
-        properties: { ...ORG_APP_PROPS, kind: { type: "string" }, data: { type: "object", description: "Filters for the export" } },
+        properties: {
+          ...ORG_APP_PROPS,
+          kind: { type: "string", enum: EXPORT_KINDS },
+          data: {
+            type: "object",
+            description:
+              "The export's columns and filters. cases, cases-sla: filter_status[], filter_priority[], date_from, date_to, format CSV|PDF. events: from, to (366 days at most), columns, format CSV|JSON, and filters such as source, type, severity. " +
+              "compliance: report_type (COMPLIANCE_KYC_KYB, _AML_LOG, _TRAVEL_RULE, _SANCTIONS_PEP, _RISK_SUMMARY, _SAR_STR_DRAFT, _CTR, _CASE_SUMMARY), date_from, date_to, formats [PDF|CSV|REGULATOR], jurisdiction (FINCEN, GOAML, OTHER) for SAR/CTR, case_id for SAR, case_ids for the case summary, threshold_amount and currency for CTR.",
+          },
+        },
         required: ["kind"],
       },
     },
     // Its name reads like a read, but it starts an export job that writes a file.
     access: "write",
-    permission: null, // POST …/reports/{kind}/ — permission varies by kind (read:sessions|transactions|businesses|users)
+    permission: null, // POST …/reports/{kind}/ — permission varies by kind (report_generators.py create_claims_for)
     run: (args) => exportReport(args.kind, args.data || {}),
+  },
+  {
+    def: {
+      name: "didit_report_resend",
+      description: "Run a report again, as a new report with the same options (the original is kept). Send both dates for another period.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          ...ORG_APP_PROPS,
+          report_id: { type: "string" },
+          date_from: { type: "string", description: "YYYY-MM-DD" },
+          date_to: { type: "string", description: "YYYY-MM-DD" },
+          item_ids: { type: "array", items: { type: "string" }, description: "Only these failed sessions of your own sessions export" },
+        },
+        required: ["report_id"],
+      },
+    },
+    access: "write",
+    permission: null, // POST …/reports/{id}/retry/ → reports.py:461, the claims its type needs, checked per report
+    run: ({ report_id, ...data }) => retryReport(report_id, data),
   },
 ];
