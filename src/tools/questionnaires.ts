@@ -658,7 +658,19 @@ function reorderWarning(stored: string[], elements: FormElementInput[]): string 
   return `The order of ${keys.length} questions changed: ${keys.join(", ")} (was ${stored.join(", ")}). The questions and their ids are unchanged.`;
 }
 
-export async function updateQuestionnaire(uuid: string, data: QuestionnaireWrite): Promise<any> {
+/** An update's EMPTY `form_elements` keeps the stored questions. A questionnaire cannot have none,
+ * and an empty list built an empty graph that the backend refuses ("graph: start_node: This field
+ * is required"), while a PATCH without a graph publishes or renames the stored draft — prod
+ * 2026-11-25, four publishes from the assistant refused. Were an empty graph ever accepted, the
+ * same call would have deleted every question. */
+function keepingStoredQuestions(data: QuestionnaireWrite): QuestionnaireWrite {
+  if (!Array.isArray(data.form_elements) || data.form_elements.length > 0) return data;
+  const { form_elements: _empty, ...rest } = data;
+  return rest;
+}
+
+export async function updateQuestionnaire(uuid: string, input: QuestionnaireWrite): Promise<any> {
+  const data = keepingStoredQuestions(input);
   // Build (and so validate) the graph before any read: a malformed conditional field is still
   // refused before any request, as it was before.
   let json = toGraphPayload(data, true);
@@ -888,7 +900,14 @@ export const QUESTIONNAIRE_TOOLS: readonly RegisteredTool[] = [
           questionnaire_id: { type: "string", description: "Questionnaire UUID" },
           title: { type: "string" },
           description: { type: "string" },
-          ...FORM_ELEMENTS_PROP,
+          form_elements: {
+            ...FORM_ELEMENTS_PROP.form_elements,
+            // Optional on update: "REQUIRED." made callers send `[]` to publish (prod 2026-11-25).
+            description: FORM_ELEMENTS_PROP.form_elements.description.replace(
+              /^REQUIRED\. /,
+              "Omit it to keep the stored questions (to publish or rename only). ",
+            ),
+          },
           ...QUESTIONNAIRE_LANG_PROPS,
           ...QUESTIONNAIRE_UPDATE_STATUS_PROP,
         },

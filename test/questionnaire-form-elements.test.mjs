@@ -146,7 +146,8 @@ function fakeBackend(t, initial = STORED, options = {}) {
       }
       stored = {
         ...stored,
-        graph: request.body.graph,
+        // Like the backend: a PATCH without a graph keeps the stored questions.
+        ...("graph" in request.body && { graph: request.body.graph }),
         ...("languages" in request.body && { languages: request.body.languages }),
         ...("default_language" in request.body && { default_language: request.body.default_language }),
       };
@@ -668,4 +669,27 @@ test("inserting a choice before unchanged ones warns about the new choice only",
   assert.ok(Array.isArray(result.warnings) && result.warnings.length === 1, "one grouped warning");
   assert.match(result.warnings[0], /occupation\.choices\[0\]\.label/, "the new choice is named");
   assert.doesNotMatch(result.warnings[0], /choices\[[12]\]/, "the choices that moved are not");
+});
+
+// Prod 2026-11-25 (assistant thread c07d35d5, four calls): publishing a questionnaire sent
+// `{ status: "published", form_elements: [] }` and the backend answered
+// "graph: start_node: This field is required" every time. The empty list became an empty graph,
+// which the backend validates; a PATCH without a graph publishes the stored draft. A questionnaire
+// cannot have zero questions, so an empty list means "the questions stay as they are".
+test("publishing with an empty form_elements sends no graph and keeps the stored questions", async (t) => {
+  const calls = fakeBackend(t);
+  await update("q-1", { status: "published", form_elements: [] });
+  const patch = calls.find((call) => call.method === "PATCH");
+
+  assert.equal(patch.body.status, "published", "the status still travels");
+  assert.equal("graph" in patch.body, false, "no graph: the stored questions are not replaced");
+  assert.deepEqual((await read()).form_elements, WALKED, "every stored question is still there");
+});
+
+test("the update schema does not call form_elements required: a status-only update omits it", () => {
+  const description = tool("didit_questionnaire_update").def.inputSchema.properties.form_elements.description;
+
+  assert.doesNotMatch(description, /^REQUIRED/, "the update variant is optional");
+  assert.match(description, /omit/i, "it says to omit the list to keep the stored questions");
+  assert.match(tool("didit_questionnaire_create").def.inputSchema.properties.form_elements.description, /^REQUIRED/, "create still requires it");
 });
